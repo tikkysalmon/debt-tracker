@@ -148,9 +148,37 @@
     ];
   }
 
+  // ---------- Persistence (localStorage) ----------
+  var STORAGE_KEY = 'debtTracker.v1';
+  var appliedPaymentKeys = {}; // signature -> true, guards against re-adding the same payment row
+  function loadPersisted() {
+    try {
+      var raw = window.localStorage.getItem(STORAGE_KEY);
+      if (!raw) return null;
+      var p = JSON.parse(raw);
+      if (p && Array.isArray(p.appliedPaymentKeys)) p.appliedPaymentKeys.forEach(function (k) { appliedPaymentKeys[k] = true; });
+      return p;
+    } catch (e) { return null; }
+  }
+  function savePersisted() {
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        orders: state.orders,
+        customerNotes: state.customerNotes,
+        appliedPaymentKeys: Object.keys(appliedPaymentKeys),
+        savedAt: new Date().toISOString()
+      }));
+    } catch (e) {}
+  }
+  function clearPersisted() {
+    try { window.localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+    appliedPaymentKeys = {};
+  }
+  var persisted = loadPersisted();
+
   // ---------- State ----------
   var state = {
-    orders: generateMock(),
+    orders: (persisted && persisted.orders && persisted.orders.length) ? persisted.orders : generateMock(),
     query: '',
     selectedCustomerId: null,
     uploadMsgDebt: '',
@@ -167,7 +195,8 @@
     filterCrmStatus: 'all',
     filterGrade: 'all',
     dueFrom: '', dueTo: '', paidFrom: '', paidTo: '',
-    customerNotes: {},
+    customerNotes: (persisted && persisted.customerNotes) || {},
+    lastSavedAt: (persisted && persisted.savedAt) || '',
     customerNoteDraft: '',
     appliedQuery: '',
     appliedAccountStatus: 'all',
@@ -521,6 +550,7 @@
     if (!state.selectedCustomerId) return;
     state.customerNotes[state.selectedCustomerId] = state.customerNoteDraft;
     state.customerNoteDraft = '';
+    savePersisted();
     render();
   }
   function updateInstallment(orderId, no, field, value) {
@@ -535,6 +565,7 @@
         })
       });
     });
+    savePersisted();
     render();
   }
   function resetOverride(orderId, no) {
@@ -547,6 +578,17 @@
         })
       });
     });
+    savePersisted();
+    render();
+  }
+  function resetAllData() {
+    clearPersisted();
+    state.orders = generateMock();
+    state.customerNotes = {};
+    state.selectedCustomerId = null;
+    state.lastSavedAt = '';
+    state.uploadMsgDebt = '';
+    state.uploadMsgPayment = 'ล้างข้อมูลแล้ว — กลับไปเป็นข้อมูลตัวอย่าง';
     render();
   }
 
@@ -644,9 +686,25 @@
       var newOrders = Object.keys(byOrder).map(function (k) { return byOrder[k]; });
       var map = {};
       state.orders.forEach(function (o) { map[o.orderId] = o; });
-      newOrders.forEach(function (o) { map[o.orderId] = o; });
+      // Re-importing the debtor file updates contract structure (due date / amount / product)
+      // but PRESERVES payments already recorded for the same คำสั่งซื้อ+งวด.
+      newOrders.forEach(function (o) {
+        var old = map[o.orderId];
+        if (old) {
+          o.installments.forEach(function (ni) {
+            var oi = old.installments.find(function (x) { return x.no === ni.no; });
+            if (oi) {
+              ni.amountPaid = oi.amountPaid; ni.paidDate = oi.paidDate;
+              ni.status = oi.status; ni.statusOverride = oi.statusOverride;
+              ni.discount = oi.discount; ni.note = oi.note;
+            }
+          });
+        }
+        map[o.orderId] = o;
+      });
       state.orders = Object.keys(map).map(function (k) { return map[k]; });
-      state.uploadMsgDebt = 'นำเข้าสำเร็จ ' + newOrders.length + ' คำสั่งซื้อ (' + rows.length + ' แถว)';
+      savePersisted();
+      state.uploadMsgDebt = 'นำเข้าสำเร็จ ' + newOrders.length + ' คำสั่งซื้อ (' + rows.length + ' แถว) — ยอดชำระเดิมถูกเก็บไว้';
       render();
     }).catch(function (err) { state.uploadMsgDebt = 'เกิดข้อผิดพลาด: ' + err.message; render(); });
   }
@@ -659,7 +717,7 @@
       status: ['สถานะการชำระเงิน', 'status'], discount: ['ส่วนลด', 'discount'], note: ['หมายเหตุ', 'note']
     };
     readRows(file).then(function (rows) {
-      var matched = 0, missed = 0;
+      var added = 0, missed = 0, duplicate = 0, updatedOnly = 0;
       var orders = state.orders.map(function (o) { return Object.assign({}, o, { installments: o.installments.map(function (i) { return Object.assign({}, i); }) }); });
       rows.forEach(function (r) {
         var orderId = String(resolveField(r, ALIASES.orderId) || '').trim();
@@ -667,20 +725,33 @@
         var order = orders.find(function (o) { return o.orderId === orderId; });
         var inst = order && order.installments.find(function (i) { return i.no === no; });
         if (!inst) { missed++; return; }
-        matched++;
         var amountPaid = resolveField(r, ALIASES.amountPaid);
         var paidDate = resolveField(r, ALIASES.paidDate);
         var status = resolveField(r, ALIASES.status);
         var discount = resolveField(r, ALIASES.discount);
         var note = resolveField(r, ALIASES.note);
-        if (amountPaid !== '') inst.amountPaid = Number(amountPaid);
-        if (paidDate !== '') inst.paidDate = toDateString(paidDate);
+
+        // ACCUMULATE the paid amount onto the running total, with duplicate-row protection.
+        if (amountPaid !== '') {
+          var payKey = orderId + '|' + no + '|' + toDateString(paidDate) + '|' + Number(amountPaid);
+          if (appliedPaymentKeys[payKey]) { duplicate++; return; } // same row already added before → skip
+          appliedPaymentKeys[payKey] = true;
+          inst.amountPaid = Number(inst.amountPaid || 0) + Number(amountPaid);
+          added++;
+        } else {
+          updatedOnly++;
+        }
+        if (paidDate !== '') inst.paidDate = toDateString(paidDate); // latest payment date wins
         if (discount !== '') inst.discount = Number(discount);
         if (note !== '') inst.note = String(note);
         if (status !== '') { inst.status = String(status); inst.statusOverride = true; }
       });
       state.orders = orders;
-      state.uploadMsgPayment = 'นำเข้าสำเร็จ ' + matched + ' งวด' + (missed ? (' (ไม่พบ ' + missed + ' แถว)') : '');
+      savePersisted();
+      state.uploadMsgPayment = 'บวกยอดสำเร็จ ' + added + ' งวด'
+        + (updatedOnly ? (' · อัปเดตข้อมูลอื่น ' + updatedOnly + ' แถว') : '')
+        + (duplicate ? (' · ข้ามแถวซ้ำ ' + duplicate + ' แถว (บวกไปแล้ว)') : '')
+        + (missed ? (' · ไม่พบ ' + missed + ' แถว') : '');
       render();
     }).catch(function (err) { state.uploadMsgPayment = 'เกิดข้อผิดพลาด: ' + err.message; render(); });
   }
@@ -705,9 +776,18 @@
         (msg ? '<div style="margin-top:10px; font-size:13px; color:#4b3fa0;">' + esc(msg) + '</div>' : '') +
       '</div>';
     };
-    return '<div style="display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:28px;">' +
-      card('📁 ข้อมูลลูกหนี้ / ตารางผ่อนชำระ', 'คอลัมน์: รหัสลูกค้า, ชื่อลูกค้า, คำสั่งซื้อ, วันที่ออกสัญญา, รายการสินค้า, ยอดวางดาวน์, ส่วนลด, ประเภทการซื้อ, งวดที่, วันครบกำหนดชำระ, ยอดผ่อนต่องวด', 'debt', 'debtFileInputTop', 'onDebtFile', state.uploadMsgDebt) +
-      card('💳 ข้อมูลยอดชำระเงิน', 'คอลัมน์: คำสั่งซื้อ, งวดที่, ยอดที่ชำระจริง, วันที่ชำระ, สถานะการชำระเงิน (ถ้ามี), ส่วนลด (ถ้ามี), หมายเหตุ (ถ้ามี)', 'payment', 'paymentFileInputTop', 'onPaymentFile', state.uploadMsgPayment) +
+    var savedInfo = state.lastSavedAt ? ('บันทึกล่าสุด: ' + fmtDate(state.lastSavedAt) + ' ' + new Date(state.lastSavedAt).toLocaleTimeString('th-TH')) : 'ยังไม่มีข้อมูลบันทึก (แสดงข้อมูลตัวอย่าง)';
+    var banner = '<div style="background:rgba(18,184,134,0.08); border:1px solid rgba(18,184,134,0.25); border-radius:16px; padding:16px 20px; margin-bottom:20px; display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap;">' +
+        '<div style="font-size:12.5px; color:#0b7a5b; line-height:1.7;">' +
+          '<div style="font-weight:600; font-size:13.5px; margin-bottom:2px;">💾 โหมดยอดสะสม (บวกเพิ่ม) + จำข้อมูลอัตโนมัติ</div>' +
+          'อัปโหลด <b>ไฟล์ยอดชำระ</b> แต่ละครั้ง ระบบจะ <b>บวกยอดเข้ากับยอดเดิม</b> (ต่องวด) และจำไว้ในเบราว์เซอร์นี้ข้ามวัน · ป้องกันอัปไฟล์ซ้ำอัตโนมัติ · <span style="color:#8a6d00;">' + esc(savedInfo) + '</span>' +
+        '</div>' +
+        '<button data-action="resetData" style="background:#fff; border:1px solid rgba(224,49,49,0.4); color:#e03131; font-size:12.5px; padding:8px 16px; border-radius:20px; cursor:pointer; font-weight:600; white-space:nowrap;">🗑 ล้างข้อมูลทั้งหมด</button>' +
+      '</div>';
+    return banner +
+    '<div style="display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:28px;">' +
+      card('📁 ข้อมูลลูกหนี้ / ตารางผ่อนชำระ', 'คอลัมน์: รหัสลูกค้า, ชื่อลูกค้า, คำสั่งซื้อ, วันที่ออกสัญญา, รายการสินค้า, ยอดวางดาวน์, ส่วนลด, ประเภทการซื้อ, งวดที่, วันครบกำหนดชำระ, ยอดผ่อนต่องวด<br><span style="color:#0b7a5b;">อัปซ้ำได้ — ยอดชำระที่บันทึกไว้จะไม่ถูกล้าง</span>', 'debt', 'debtFileInputTop', 'onDebtFile', state.uploadMsgDebt) +
+      card('💳 ข้อมูลยอดชำระเงิน', 'คอลัมน์: คำสั่งซื้อ, งวดที่, ยอดที่ชำระจริง, วันที่ชำระ, สถานะการชำระเงิน (ถ้ามี), ส่วนลด (ถ้ามี), หมายเหตุ (ถ้ามี)<br><span style="color:#0b7a5b;">โหมดบวกเพิ่ม — ควรใส่ “วันที่ชำระ” ทุกแถวเพื่อให้ระบบกันการบวกซ้ำได้แม่นยำ</span>', 'payment', 'paymentFileInputTop', 'onPaymentFile', state.uploadMsgPayment) +
     '</div>';
   }
 
@@ -1150,6 +1230,7 @@
         case 'clearQuery': state.query = ''; render(); break;
         case 'exportCsv': exportFilteredCsv(CV.filteredOrders); break;
         case 'downloadTemplate': downloadTemplate(t.getAttribute('data-type')); break;
+        case 'resetData': if (window.confirm('ล้างข้อมูลทั้งหมดที่บันทึกไว้ และกลับไปเป็นข้อมูลตัวอย่าง?\n(ยกเลิกไม่ได้)')) resetAllData(); break;
         case 'toggleCancelledDetail': state.showCancelledDetail = !state.showCancelledDetail; render(); break;
         case 'toggleSoldDetail': state.showSoldDetail = !state.showSoldDetail; render(); break;
         case 'selectCustomer': selectCustomer(t.getAttribute('data-cid')); break;
