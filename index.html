@@ -292,6 +292,7 @@
     storageError: '',
     customerNoteDraft: '',
     postponeTarget: null, postponeDate: '', postponeReason: '', postponeLateFee: 0, postponeUnlockFee: 0,
+    noteModalTarget: null, noteModalDraft: '',
     appliedQuery: '',
     appliedAccountStatus: 'all',
     appliedDueStatus: 'all',
@@ -759,6 +760,24 @@
     savePersisted();
     render();
   }
+  // ---------- Note popup (the table cell is too narrow to read a long note in place) ----------
+  function openNoteModal(orderId, no) {
+    var order = state.orders.find(function (o) { return o.orderId === orderId; });
+    var inst = order && order.installments.find(function (i) { return i.no === no; });
+    state.noteModalTarget = { orderId: orderId, no: no };
+    state.noteModalDraft = inst ? inst.note : '';
+    render();
+  }
+  function closeNoteModal() {
+    state.noteModalTarget = null;
+    render();
+  }
+  function saveNoteModal() {
+    if (!state.noteModalTarget) return;
+    var orderId = state.noteModalTarget.orderId, no = state.noteModalTarget.no;
+    state.noteModalTarget = null;
+    updateInstallment(orderId, no, 'note', state.noteModalDraft);
+  }
   // Lets staff fill in orders the source file left with zero installment rows (e.g. missing
   // "ระยะเวลาผ่อน" in the debtor export) — appends one blank editable งวด to the order.
   function addInstallment(orderId) {
@@ -767,6 +786,15 @@
       var nextNo = o.installments.reduce(function (m, i) { return Math.max(m, i.no || 0); }, 0) + 1;
       var newInst = { no: nextNo, dueDate: '', amountDue: 0, amountPaid: 0, paidDate: '', status: '', statusOverride: false, discount: 0, note: '' };
       return Object.assign({}, o, { installments: o.installments.concat([newInst]) });
+    });
+    savePersisted();
+    render();
+  }
+  function deleteInstallment(orderId, no) {
+    if (!window.confirm('ลบงวดที่ ' + no + ' ออกจากคำสั่งซื้อนี้?\n(ยกเลิกไม่ได้)')) return;
+    state.orders = state.orders.map(function (o) {
+      if (o.orderId !== orderId) return o;
+      return Object.assign({}, o, { installments: o.installments.filter(function (i) { return i.no !== no; }) });
     });
     savePersisted();
     render();
@@ -1661,9 +1689,25 @@
     if (state.postponeTarget) {
       html += renderPostponeModal();
     }
+    if (state.noteModalTarget) {
+      html += renderNoteModal();
+    }
 
     html += '</div>';
     return html;
+  }
+
+  function renderNoteModal() {
+    return '<div style="position:fixed; inset:0; z-index:9999; background:rgba(43,37,64,0.35); display:flex; align-items:center; justify-content:center; padding:20px;">' +
+      '<div style="max-width:440px; width:100%; background:#fff; border-radius:20px; padding:26px 26px 22px; box-shadow:0 24px 60px rgba(43,37,64,0.3);">' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#2b2540; margin-bottom:18px;">📝 หมายเหตุ · งวดที่ ' + state.noteModalTarget.no + '</div>' +
+        '<textarea data-action="noteModalDraft" rows="6" placeholder="พิมพ์หมายเหตุ..." style="width:100%; box-sizing:border-box; padding:12px 14px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fbfaff; font-size:14px; color:#2b2540; outline:none; margin-bottom:20px; font-family:inherit; resize:vertical;">' + esc(state.noteModalDraft) + '</textarea>' +
+        '<div style="display:flex; justify-content:flex-end; gap:10px;">' +
+          '<div data-action="closeNoteModal" style="padding:11px 20px; border-radius:10px; color:#6b6785; font-size:13.5px; font-weight:600; cursor:pointer;">ยกเลิก</div>' +
+          '<div data-action="saveNoteModal" style="background:#2b2540; color:#fff; padding:11px 22px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer;">บันทึก</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
   }
 
   function renderPostponeModal() {
@@ -1785,8 +1829,9 @@
             STATUS_OPTIONS.map(function (opt) { return '<option value="' + esc(opt) + '"' + (opt === inst.effectiveStatus ? ' selected' : '') + ' style="color:#000; background:#fff;">' + esc(opt) + '</option>'; }).join('') +
           '</select>' +
           (inst.statusOverride ? '<button data-action="resetOverride"' + da + ' title="รีเซ็ตสถานะเป็นอัตโนมัติ" style="border:none; background:transparent; cursor:pointer; font-size:14px; color:#7c5cff; flex-shrink:0;">⟲</button>' : '') +
+          '<button data-action="deleteInstallment"' + da + ' title="ลบงวดนี้" style="border:none; background:transparent; cursor:pointer; font-size:14px; color:#e03131; flex-shrink:0;">🗑</button>' +
         '</div></td>' +
-        '<td style="' + td + '"><input type="text" value="' + esc(inst.note) + '" data-field="note"' + da + ' placeholder="+ หมายเหตุ" style="' + inputBase + ' width:150px; border:1px dashed rgba(124,92,255,0.25); background:transparent;" /></td>' +
+        '<td style="' + td + '"><div data-action="openNoteModal"' + da + ' title="คลิกเพื่อดู/แก้ไขหมายเหตุเต็ม" style="' + inputBase + ' width:150px; max-width:150px; border:1px dashed rgba(124,92,255,0.25); background:transparent; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + (inst.note ? esc(inst.note) : '<span style="color:#a39dc2;">+ หมายเหตุ</span>') + '</div></td>' +
       '</tr>';
     }).join('');
     return '<div style="overflow-x:auto; border:1px solid rgba(124,92,255,0.14); border-radius:16px; background:rgba(255,255,255,0.55); box-shadow:0 4px 16px rgba(124,92,255,0.06);">' +
@@ -1872,9 +1917,13 @@
         case 'saveNote': saveCustomerNote(); break;
         case 'resetOverride': resetOverride(t.getAttribute('data-order'), Number(t.getAttribute('data-no'))); break;
         case 'addInstallment': addInstallment(t.getAttribute('data-order')); break;
+        case 'deleteInstallment': deleteInstallment(t.getAttribute('data-order'), Number(t.getAttribute('data-no'))); break;
         case 'openPostpone': openPostpone(t.getAttribute('data-order'), Number(t.getAttribute('data-no'))); break;
         case 'closePostpone': closePostpone(); break;
         case 'confirmPostpone': confirmPostpone(); break;
+        case 'openNoteModal': openNoteModal(t.getAttribute('data-order'), Number(t.getAttribute('data-no'))); break;
+        case 'closeNoteModal': closeNoteModal(); break;
+        case 'saveNoteModal': saveNoteModal(); break;
       }
     });
 
@@ -1917,6 +1966,7 @@
         case 'postponeReason': state.postponeReason = t.value; break;
         case 'postponeLateFee': state.postponeLateFee = Number(t.value); break;
         case 'postponeUnlockFee': state.postponeUnlockFee = Number(t.value); break;
+        case 'noteModalDraft': state.noteModalDraft = t.value; break;
         case 'filter': state[t.getAttribute('data-key')] = t.value; render(); break;
         case 'dueMonth': state.dueMonth = Number(t.value); render(); break;
         case 'dueYear': state.dueYear = Number(t.value); render(); break;
