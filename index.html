@@ -775,12 +775,16 @@
     });
     return out.join(' + ');
   }
-  // Shift an ISO date by k months, landing on `day` (clamped to the month's last day).
-  function addMonthsClamped(isoStr, k, day) {
-    var p = isoStr.split('-').map(Number);
-    var t = new Date(p[0], p[1] - 1 + k, 1);
+  // Due date of the installment `offset` months from the first unpaid one.
+  // `firstDue` is authoritative — offset 0 is returned verbatim, never overridden by payDay.
+  // Other months land on `payDay` (falling back to the day of firstDue), clamped to the month's
+  // last day so e.g. payDay 30 becomes 28 in February.
+  function scheduleDueDate(firstDue, offset, payDay) {
+    if (offset === 0) return firstDue;
+    var p = firstDue.split('-').map(Number);
+    var t = new Date(p[0], p[1] - 1 + offset, 1);
     var lastDay = new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate();
-    var dd = Math.min(day > 0 ? day : p[2], lastDay);
+    var dd = Math.min(payDay > 0 ? payDay : p[2], lastDay);
     return t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(dd).padStart(2, '0');
   }
   // Which header a field actually matched (for import diagnostics)
@@ -977,7 +981,7 @@
         for (var k = 1; k <= N; k++) {
           o.installments.push({
             no: k,
-            dueDate: rec ? addMonthsClamped(rec.first, k - 1 - paidN, rec.payDay) : '',
+            dueDate: rec ? scheduleDueDate(rec.first, k - 1 - paidN, rec.payDay) : '',
             amountDue: amt,
             amountPaid: k <= paidN ? amt : 0,
             paidDate: '', status: '', statusOverride: false, discount: 0, note: ''
