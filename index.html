@@ -66,6 +66,7 @@
     'ค้างชำระ ล็อคเครื่องไม่ได้': { color: '#9a4b1f', order: 11 }
   };
   var STATUS_OPTIONS = Object.keys(STATUS_META).sort(function (a, b) { return STATUS_META[a].order - STATUS_META[b].order; });
+  var ROW_RENDER_CAP = 500;   // keep the results table snappy on large datasets (export still full)
   var GRADE_COLORS = { A: '#12b886', B: '#f59f00', 'หนี้สงสัยจะสูญ': '#e03131' };
   var GRADE_LABELS = { A: 'เกรด A — ไม่เคยค้างชำระ', B: 'เกรด B — ค้างชำระ 1 งวด', 'หนี้สงสัยจะสูญ': 'หนี้สงสัยจะสูญ — ค้าง ≥2 งวด' };
 
@@ -169,7 +170,12 @@
         appliedPaymentKeys: Object.keys(appliedPaymentKeys),
         savedAt: new Date().toISOString()
       }));
-    } catch (e) {}
+      state.storageError = '';
+    } catch (e) {
+      // Usually QuotaExceededError: data too big for localStorage (~5MB). Never fail silently —
+      // the user would lose everything on refresh without knowing.
+      state.storageError = 'ข้อมูลใหญ่เกินกว่าที่เบราว์เซอร์จะเก็บได้ (พื้นที่เต็ม) — ข้อมูลจะหายเมื่อรีเฟรช/ปิดหน้า กรุณาเชื่อมฐานข้อมูลกลาง (Supabase) หรือลดขนาดไฟล์';
+    }
     scheduleCloudSave();
   }
   function clearPersisted() {
@@ -280,6 +286,8 @@
     customerNotes: (persisted && persisted.customerNotes) || {},
     lastSavedAt: (persisted && persisted.savedAt) || '',
     isSampleData: !(persisted && persisted.orders && persisted.orders.length),
+    searched: false,
+    storageError: '',
     customerNoteDraft: '',
     appliedQuery: '',
     appliedAccountStatus: 'all',
@@ -562,10 +570,9 @@
     if (f.paidFrom || f.paidTo) {
       filteredOrders = filteredOrders.filter(function (o) { return o.installments.some(function (i) { return inRange(i.paidDate, f.paidFrom, f.paidTo); }); });
     }
-    var hasSearched = !!(state.appliedQuery || state.appliedAccountStatus !== 'all' ||
-      state.appliedDueStatus !== 'all' || state.appliedPaymentStatus !== 'all' ||
-      state.appliedGrade !== 'all' || state.appliedDueFrom || state.appliedDueTo ||
-      state.appliedPaidFrom || state.appliedPaidTo);
+    // Once the user presses ค้นหา we always show the result table — even with no criteria,
+    // where it simply lists every order.
+    var hasSearched = state.searched;
 
     var hasPendingChanges = state.query !== state.appliedQuery ||
       state.filterAccountStatus !== state.appliedAccountStatus ||
@@ -610,6 +617,7 @@
 
   // ---------- Actions ----------
   function performSearch() {
+    state.searched = true;
     state.appliedQuery = state.query;
     state.appliedAccountStatus = state.filterAccountStatus;
     state.appliedDueStatus = state.filterDueStatus;
@@ -621,6 +629,7 @@
   }
   function clearAllFilters() {
     Object.assign(state, {
+      searched: false,
       query: '', filterAccountStatus: 'all', filterDueStatus: 'all', filterPaymentStatus: 'all',
       filterCrmStatus: 'all', filterGrade: 'all', dueFrom: '', dueTo: '', paidFrom: '', paidTo: '',
       appliedQuery: '', appliedAccountStatus: 'all', appliedDueStatus: 'all', appliedPaymentStatus: 'all',
@@ -663,6 +672,17 @@
     });
     savePersisted();
     render();
+  }
+  // After an import, point the due-date breakdown at the month that actually has the most
+  // installments, otherwise it sits on a hard-coded month and looks empty.
+  function pickDefaultDueMonth() {
+    var counts = {};
+    state.orders.forEach(function (o) { o.installments.forEach(function (i) {
+      if (i.dueDate) { var k = i.dueDate.slice(0, 7); counts[k] = (counts[k] || 0) + 1; }
+    }); });
+    var best = null, bestN = 0;
+    Object.keys(counts).forEach(function (k) { if (counts[k] > bestN) { bestN = counts[k]; best = k; } });
+    if (best) { state.dueYear = Number(best.slice(0, 4)); state.dueMonth = Number(best.slice(5, 7)); }
   }
   function resetAllData(toSample) {
     clearPersisted();
@@ -805,6 +825,7 @@
       });
       state.orders = Object.keys(map).map(function (k) { return map[k]; });
       state.isSampleData = false;
+      pickDefaultDueMonth();
       savePersisted();
       state.uploadMsgDebt = 'นำเข้าสำเร็จ ' + newOrders.length + ' คำสั่งซื้อ (' + rows.length + ' แถว) — ยอดชำระเดิมถูกเก็บไว้';
       render();
@@ -892,10 +913,13 @@
       '</div>';
     };
     var savedInfo = state.lastSavedAt ? ('บันทึกล่าสุด: ' + fmtDate(state.lastSavedAt) + ' ' + new Date(state.lastSavedAt).toLocaleTimeString('th-TH')) : 'ยังไม่มีข้อมูลบันทึก';
+    var storageWarn = state.storageError
+      ? '<div style="background:rgba(224,49,49,0.10); border:1px solid rgba(224,49,49,0.4); border-radius:16px; padding:14px 20px; margin-bottom:16px; font-size:13px; color:#a51111; line-height:1.7;">🛑 ' + esc(state.storageError) + '</div>'
+      : '';
     var sampleWarn = state.isSampleData
       ? '<div style="background:rgba(240,140,0,0.10); border:1px solid rgba(240,140,0,0.35); border-radius:16px; padding:14px 20px; margin-bottom:16px; font-size:13px; color:#8a4b00; line-height:1.7;">⚠️ ตอนนี้กำลังแสดง <b>ข้อมูลตัวอย่าง</b> — เมื่อคุณอัปโหลด <b>ไฟล์ลูกหนี้จริง</b> ครั้งแรก ข้อมูลตัวอย่างจะถูกแทนที่ด้วยข้อมูลจริงทั้งหมดโดยอัตโนมัติ (หรือกดปุ่ม “เริ่มจากว่างเปล่า” ด้านล่างก่อนก็ได้)</div>'
       : '';
-    var banner = sampleWarn +
+    var banner = storageWarn + sampleWarn +
       '<div style="background:rgba(18,184,134,0.08); border:1px solid rgba(18,184,134,0.25); border-radius:16px; padding:16px 20px; margin-bottom:20px; display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap;">' +
         '<div style="font-size:12.5px; color:#0b7a5b; line-height:1.7;">' +
           '<div style="font-weight:600; font-size:13.5px; margin-bottom:2px;">💾 โหมดยอดสะสม (บวกเพิ่ม) + จำข้อมูลอัตโนมัติ</div>' +
@@ -1191,7 +1215,7 @@
         '<table style="width:100%; border-collapse:collapse; min-width:820px;"><thead><tr style="text-align:left; font-size:12px; color:#6b6785;">' +
           ['รหัสลูกค้า','ชื่อลูกค้า','คำสั่งซื้อ','สินค้า','วันที่ทำสัญญา','ยอดค้างชำระ','งวดค้าง'].map(function (h) { return '<th style="padding:14px 16px; font-weight:600;">' + h + '</th>'; }).join('') +
         '</tr></thead><tbody>' +
-          CV.filteredOrders.map(function (order) {
+          CV.filteredOrders.slice(0, ROW_RENDER_CAP).map(function (order) {
             return '<tr data-action="selectCustomer" data-cid="' + esc(order.customerId) + '" style="cursor:pointer; font-size:14px; color:#2b2540; border-top:1px solid rgba(124,92,255,0.10);">' +
               '<td style="padding:14px 16px; font-weight:600;">' + esc(order.customerId) + '</td>' +
               '<td style="padding:14px 16px;">' + esc(order.customerName) + '</td>' +
@@ -1204,6 +1228,9 @@
           }).join('') +
         '</tbody></table>' +
         (CV.noResults ? '<div style="padding:30px; text-align:center; color:#6b6785; font-size:14px;">ไม่พบข้อมูลที่ค้นหา</div>' : '') +
+        (CV.filteredOrders.length > ROW_RENDER_CAP
+          ? '<div style="padding:14px 18px; text-align:center; color:#c2650a; background:rgba(240,140,0,0.08); border-radius:14px; margin:6px; font-size:13px;">แสดง ' + ROW_RENDER_CAP + ' รายการแรก จากทั้งหมด ' + CV.filteredOrders.length + ' รายการ — ใช้ช่องค้นหา/ตัวกรองเพื่อจำกัดผลลัพธ์ (ปุ่ม “โหลดข้อมูลเป็น CSV” ยังได้ครบทุกรายการ)</div>'
+          : '') +
       '</div>';
     } else {
       html += '<div style="background:rgba(255,255,255,0.45); border:1px dashed rgba(124,92,255,0.3); border-radius:20px; padding:40px; text-align:center; margin-bottom:28px;"><div style="font-size:28px; margin-bottom:10px;">🔍</div><div style="font-size:14.5px; color:#6b6785;">กรอกคำค้นหาหรือเลือกตัวกรอง แล้วกด "ค้นหา" เพื่อแสดงรายการลูกหนี้</div></div>';
