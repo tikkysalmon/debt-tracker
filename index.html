@@ -1441,9 +1441,15 @@
       '</div>';
     };
     var savedInfo = state.lastSavedAt ? ('บันทึกล่าสุด: ' + fmtDate(state.lastSavedAt) + ' ' + new Date(state.lastSavedAt).toLocaleTimeString('th-TH')) : 'ยังไม่มีข้อมูลบันทึก';
-    var storageWarn = state.storageError
-      ? '<div style="background:rgba(224,49,49,0.10); border:1px solid rgba(224,49,49,0.4); border-radius:16px; padding:14px 20px; margin-bottom:16px; font-size:13px; color:#a51111; line-height:1.7;">🛑 ' + esc(state.storageError) + '</div>'
-      : '';
+    // state.storageError only means the browser's own localStorage backup is full — with cloud
+    // sync healthy, Supabase (not localStorage) is the real copy, so the "data will be lost"
+    // wording would be actively misleading. Only show the scary red version when cloud sync
+    // isn't actually covering for it.
+    var cloudHealthy = CLOUD_ENABLED && (cloudStatus === 'online' || cloudStatus === 'saving');
+    var storageWarn = !state.storageError ? '' :
+      cloudHealthy
+        ? '<div style="background:rgba(18,184,134,0.08); border:1px solid rgba(18,184,134,0.25); border-radius:16px; padding:14px 20px; margin-bottom:16px; font-size:13px; color:#0b7a5b; line-height:1.7;">ℹ️ ข้อมูลมีขนาดใหญ่เกินกว่าเบราว์เซอร์จะสำรองไว้ในเครื่องได้ (localStorage เต็ม) แต่ไม่ต้องกังวล — ระบบบันทึกข้อมูลไว้บนฐานข้อมูลกลาง (Supabase) แทนอยู่แล้ว ข้อมูลปลอดภัย</div>'
+        : '<div style="background:rgba(224,49,49,0.10); border:1px solid rgba(224,49,49,0.4); border-radius:16px; padding:14px 20px; margin-bottom:16px; font-size:13px; color:#a51111; line-height:1.7;">🛑 ' + esc(state.storageError) + '</div>';
     var sampleWarn = state.isSampleData
       ? '<div style="background:rgba(240,140,0,0.10); border:1px solid rgba(240,140,0,0.35); border-radius:16px; padding:14px 20px; margin-bottom:16px; font-size:13px; color:#8a4b00; line-height:1.7;">⚠️ ตอนนี้กำลังแสดง <b>ข้อมูลตัวอย่าง</b> — เมื่อคุณอัปโหลด <b>ไฟล์ลูกหนี้จริง</b> ครั้งแรก ข้อมูลตัวอย่างจะถูกแทนที่ด้วยข้อมูลจริงทั้งหมดโดยอัตโนมัติ (หรือกดปุ่ม “เริ่มจากว่างเปล่า” ด้านล่างก่อนก็ได้)</div>'
       : '';
