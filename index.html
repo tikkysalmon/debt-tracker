@@ -291,7 +291,7 @@
     searched: false,
     storageError: '',
     customerNoteDraft: '',
-    postponeTarget: null, postponeDate: '', postponeReason: '', postponeFee: 0,
+    postponeTarget: null, postponeDate: '', postponeReason: '', postponeLateFee: 0, postponeUnlockFee: 0,
     appliedQuery: '',
     appliedAccountStatus: 'all',
     appliedDueStatus: 'all',
@@ -723,7 +723,8 @@
     state.postponeTarget = { orderId: orderId, no: no };
     state.postponeDate = inst ? inst.dueDate : '';
     state.postponeReason = '';
-    state.postponeFee = 0;
+    state.postponeLateFee = 0;
+    state.postponeUnlockFee = 0;
     render();
   }
   function closePostpone() {
@@ -734,18 +735,22 @@
     if (!state.postponeTarget || !state.postponeDate) return;
     var orderId = state.postponeTarget.orderId, no = state.postponeTarget.no;
     var reason = state.postponeReason.trim();
-    var fee = toNumber(state.postponeFee);
+    var lateFee = toNumber(state.postponeLateFee);
+    var unlockFee = toNumber(state.postponeUnlockFee);
     state.orders = state.orders.map(function (o) {
       if (o.orderId !== orderId) return o;
       return Object.assign({}, o, {
         installments: o.installments.map(function (i) {
           if (i.no !== no) return i;
           var logLine = 'เลื่อนชำระ ' + fmtDate(i.dueDate) + '→' + fmtDate(state.postponeDate) +
-            (reason ? (' | เหตุผล: ' + reason) : '') + (fee ? (' | ค่าทำสัญญา ฿' + fmtMoney(fee)) : '');
+            (reason ? (' | เหตุผล: ' + reason) : '') +
+            (lateFee ? (' | ค่าปรับชำระล่าช้า ฿' + fmtMoney(lateFee)) : '') +
+            (unlockFee ? (' | ค่าปลดล็อคเครื่อง ฿' + fmtMoney(unlockFee)) : '');
           return Object.assign({}, i, {
             dueDate: state.postponeDate,
             note: i.note ? (i.note + ' • ' + logLine) : logLine,
-            rescheduleFee: toNumber(i.rescheduleFee || 0) + fee
+            lateFee: toNumber(i.lateFee || 0) + lateFee,
+            unlockFee: toNumber(i.unlockFee || 0) + unlockFee
           });
         })
       });
@@ -963,6 +968,7 @@
       // Schedule-style workbook: remaining term + first unpaid due date + monthly payment day
       term: ['ระยะเวลาผ่อน (ผ่อน)', 'ระยะเวลาผ่อน (ดาวน์)', 'ระยะเวลาผ่อน', 'จำนวนงวดคงเหลือ', 'จำนวนงวด', 'งวดทั้งหมด'],
       paidCount: ['จำนวนงวดที่ชำระแล้ว', 'งวดที่ชำระแล้ว', 'จำนวนงวดที่รับชำระ'],
+      paidTotal: ['ยอดชำระหลังทำสัญญา', 'ยอดชำระแล้ว', 'ยอดที่ชำระแล้ว'],
       firstDue: ['วันครบกำหนดชำระงวดแรก', 'วันครบกำหนดงวดแรก', 'กำหนดชำระงวดแรก'],
       payDay: ['ชำระทุกวันที่', 'วันที่ชำระทุกเดือน', 'ชำระทุกวัน']
     };
@@ -1043,6 +1049,7 @@
           _perInst: resolveNumber(r, ALIASES.amountDue),
           _term: Math.round(resolveNumber(r, ALIASES.term)),
           _paidCount: Math.round(resolveNumber(r, ALIASES.paidCount)),
+          _paidTotal: resolveNumber(r, ALIASES.paidTotal),
           installments: []
         };
       }
@@ -1075,13 +1082,21 @@
         var amt = o._perInst || 0;
         var paidN = Math.max(0, Math.min(240, o._paidCount || 0));
         var N = Math.max(0, Math.min(240, paidN + Math.max(0, o._term || 0)));
+        // "ยอดชำระหลังทำสัญญา" (actual cumulative paid) is the authoritative amount when present —
+        // distribute it across installments in order rather than assuming each paid installment
+        // is exactly `amt` (handles partial/short/over payments). Falls back to paidN × amt when
+        // the file has no such column.
+        var remainingPaid = (o._paidTotal && o._paidTotal > 0) ? o._paidTotal : (paidN * amt);
+        var uploadDate = toDateString(new Date());
         for (var k = 1; k <= N; k++) {
+          var paidHere = 0;
+          if (remainingPaid > 0 && amt > 0) { paidHere = Math.min(remainingPaid, amt); remainingPaid -= paidHere; }
           o.installments.push({
             no: k,
             dueDate: rec ? scheduleDueDate(rec.first, k - 1 - paidN, rec.payDay) : '',
             amountDue: amt,
-            amountPaid: k <= paidN ? amt : 0,
-            paidDate: '', status: '', statusOverride: false, discount: 0, note: ''
+            amountPaid: paidHere,
+            paidDate: paidHere > 0 ? uploadDate : '', status: '', statusOverride: false, discount: 0, note: ''
           });
           instCount++;
         }
@@ -1113,7 +1128,7 @@
       var noInstOrders = 0;
       Object.keys(byOrder).forEach(function (k) {
         var o = byOrder[k];
-        delete o._perInst; delete o._term; delete o._paidCount;
+        delete o._perInst; delete o._term; delete o._paidCount; delete o._paidTotal;
         if (!o.installments.length) { noInstOrders++; return; }
         var anyNo = o.installments.some(function (i) { return isFinite(i.no) && i.no > 0; });
         if (anyNo) o.installments.sort(function (a, b) { return (a.no || 0) - (b.no || 0); });
@@ -1654,13 +1669,15 @@
   function renderPostponeModal() {
     return '<div style="position:fixed; inset:0; z-index:9999; background:rgba(43,37,64,0.35); display:flex; align-items:center; justify-content:center; padding:20px;">' +
       '<div style="max-width:420px; width:100%; background:#fff; border-radius:20px; padding:26px 26px 22px; box-shadow:0 24px 60px rgba(43,37,64,0.3);">' +
-        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#2b2540; margin-bottom:18px;">🔁 เลื่อนวันที่ชำระ · งวดที่ ' + state.postponeTarget.no + '</div>' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#2b2540; margin-bottom:18px;">🔁 เลื่อนวันชำระ · งวดที่ ' + state.postponeTarget.no + '</div>' +
         '<div style="font-size:12px; color:#6b6785; margin-bottom:6px;">วันที่ชำระใหม่</div>' +
         '<input type="date" value="' + esc(state.postponeDate) + '" data-action="postponeDate" style="width:100%; box-sizing:border-box; padding:11px 14px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fbfaff; font-size:14px; color:#2b2540; outline:none; margin-bottom:14px;" />' +
         '<div style="font-size:12px; color:#6b6785; margin-bottom:6px;">เหตุผลการเลื่อน</div>' +
         '<input type="text" value="' + esc(state.postponeReason) + '" data-action="postponeReason" placeholder="เช่น ลูกค้าขอเลื่อนรับเงินเดือน" style="width:100%; box-sizing:border-box; padding:11px 14px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fbfaff; font-size:14px; color:#2b2540; outline:none; margin-bottom:14px;" />' +
-        '<div style="font-size:12px; color:#6b6785; margin-bottom:6px;">ค่าทำสัญญา (บาท)</div>' +
-        '<input type="number" step="0.01" value="' + esc(state.postponeFee) + '" data-action="postponeFee" style="width:100%; box-sizing:border-box; padding:11px 14px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fbfaff; font-size:14px; color:#2b2540; outline:none; margin-bottom:20px;" />' +
+        '<div style="font-size:12px; color:#6b6785; margin-bottom:6px;">ค่าปรับชำระล่าช้า (บาท)</div>' +
+        '<input type="number" step="0.01" value="' + esc(state.postponeLateFee) + '" data-action="postponeLateFee" style="width:100%; box-sizing:border-box; padding:11px 14px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fbfaff; font-size:14px; color:#2b2540; outline:none; margin-bottom:14px;" />' +
+        '<div style="font-size:12px; color:#6b6785; margin-bottom:6px;">ค่าปลดล็อคเครื่อง (บาท)</div>' +
+        '<input type="number" step="0.01" value="' + esc(state.postponeUnlockFee) + '" data-action="postponeUnlockFee" style="width:100%; box-sizing:border-box; padding:11px 14px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fbfaff; font-size:14px; color:#2b2540; outline:none; margin-bottom:20px;" />' +
         '<div style="display:flex; justify-content:flex-end; gap:10px;">' +
           '<div data-action="closePostpone" style="padding:11px 20px; border-radius:10px; color:#6b6785; font-size:13.5px; font-weight:600; cursor:pointer;">ยกเลิก</div>' +
           '<div data-action="confirmPostpone" style="background:#2b2540; color:#fff; padding:11px 22px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer;">ยืนยัน</div>' +
@@ -1753,7 +1770,7 @@
         '<td style="' + td + '"><div style="width:26px; height:26px; border-radius:50%; background:' + inst.statusSoft + '; color:' + inst.statusColor + '; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:12.5px;">' + inst.no + '</div></td>' +
         '<td style="' + td + '"><div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">' +
           '<input type="date" value="' + esc(inst.dueDate) + '" data-field="dueDate"' + da + ' style="' + inputBase + ' border:1px solid rgba(124,92,255,0.2);" />' +
-          '<button data-action="openPostpone"' + da + ' title="เลื่อนวันที่ชำระ" style="border:1px solid rgba(124,92,255,0.3); background:#fff; color:#7c5cff; border-radius:8px; padding:6px 9px; font-size:12px; cursor:pointer; white-space:nowrap;">🔁</button>' +
+          '<button data-action="openPostpone"' + da + ' style="border:1px solid rgba(124,92,255,0.3); background:#fff; color:#7c5cff; border-radius:8px; padding:6px 10px; font-size:11.5px; font-weight:600; cursor:pointer; white-space:nowrap;">🔁 เลื่อนวันชำระ</button>' +
           (overdue > 0 ? '<span style="background:rgba(224,49,49,0.10); color:#e03131; padding:3px 10px; border-radius:20px; font-size:11px; font-weight:700; white-space:nowrap;">⏰ เกิน ' + overdue + ' วัน</span>' : '') +
         '</div></td>' +
         '<td style="' + td + '"><input type="number" step="0.01" value="' + esc(toNumber(inst.amountDue).toFixed(2)) + '" data-field="amountDue"' + da + ' style="' + inputBase + ' width:92px; text-align:right; font-weight:600; border:1px solid rgba(124,92,255,0.2);" /></td>' +
@@ -1898,7 +1915,8 @@
         case 'noteDraft': state.customerNoteDraft = t.value; break;
         case 'postponeDate': state.postponeDate = t.value; break;
         case 'postponeReason': state.postponeReason = t.value; break;
-        case 'postponeFee': state.postponeFee = Number(t.value); break;
+        case 'postponeLateFee': state.postponeLateFee = Number(t.value); break;
+        case 'postponeUnlockFee': state.postponeUnlockFee = Number(t.value); break;
         case 'filter': state[t.getAttribute('data-key')] = t.value; render(); break;
         case 'dueMonth': state.dueMonth = Number(t.value); render(); break;
         case 'dueYear': state.dueYear = Number(t.value); render(); break;
