@@ -72,6 +72,16 @@
   var ROW_RENDER_CAP = 500;   // keep the results table snappy on large datasets (export still full)
   var GRADE_COLORS = { A: '#12b886', B: '#f59f00', 'หนี้สงสัยจะสูญ': '#e03131' };
   var GRADE_LABELS = { A: 'เกรด A — ไม่เคยค้างชำระ', B: 'เกรด B — ค้างชำระ 1 งวด', 'หนี้สงสัยจะสูญ': 'หนี้สงสัยจะสูญ — ค้าง ≥2 งวด' };
+  // Purchase types come straight from whatever the debtor file actually has (e.g. "ผ่อนชำระ 0%")
+  // rather than a fixed list — real data has more variants than any hardcoded set would cover.
+  function getPurchaseTypeOptions() {
+    var seen = {}, out = [];
+    state.orders.forEach(function (o) {
+      var t = o.purchaseType;
+      if (t && !seen[t]) { seen[t] = true; out.push(t); }
+    });
+    return out.sort();
+  }
 
   // ---------- Helpers ----------
   function esc(s) {
@@ -107,6 +117,12 @@
       return s.color + ' ' + start.toFixed(2) + '% ' + acc.toFixed(2) + '%';
     });
     return 'conic-gradient(' + parts.join(', ') + ')';
+  }
+  // "ผ่อนเครื่อง"-style purchases (installment-based) show cumulative paid instead of a down
+  // payment; "ดาวน์*" types (down payment ± accessories) keep showing ยอดวางดาวน์.
+  function isInstallmentPurchaseType(purchaseType) {
+    var s = String(purchaseType || '');
+    return /ผ่อน/.test(s) && !/ดาวน์/.test(s);
   }
   function computeStatus(inst, cfg) {
     var due = new Date(inst.dueDate);
@@ -284,6 +300,7 @@
     filterPaymentStatus: 'all',
     filterCrmStatus: 'all',
     filterGrade: 'all',
+    filterPurchaseTypes: [],
     dueFrom: '', dueTo: '', paidFrom: '', paidTo: '',
     customerNotes: (persisted && persisted.customerNotes) || {},
     lastSavedAt: (persisted && persisted.savedAt) || '',
@@ -298,6 +315,7 @@
     appliedDueStatus: 'all',
     appliedPaymentStatus: 'all',
     appliedGrade: 'all',
+    appliedPurchaseTypes: [], // types EXCLUDED from results; empty = show every purchase type
     appliedDueFrom: '', appliedDueTo: '', appliedPaidFrom: '', appliedPaidTo: ''
   };
 
@@ -541,6 +559,7 @@
       filterDueStatus: state.appliedDueStatus,
       filterPaymentStatus: state.appliedPaymentStatus,
       filterGrade: state.appliedGrade,
+      purchaseTypes: state.appliedPurchaseTypes,
       dueFrom: state.appliedDueFrom, dueTo: state.appliedDueTo,
       paidFrom: state.appliedPaidFrom, paidTo: state.appliedPaidTo
     };
@@ -581,6 +600,9 @@
         return g === f.filterGrade;
       });
     }
+    if (f.purchaseTypes.length) {
+      filteredOrders = filteredOrders.filter(function (o) { return f.purchaseTypes.indexOf(o.purchaseType) === -1; });
+    }
     if (f.dueFrom || f.dueTo) {
       filteredOrders = filteredOrders.filter(function (o) { return o.installments.some(function (i) { return inRange(i.dueDate, f.dueFrom, f.dueTo); }); });
     }
@@ -596,6 +618,7 @@
       state.filterDueStatus !== state.appliedDueStatus ||
       state.filterPaymentStatus !== state.appliedPaymentStatus ||
       state.filterGrade !== state.appliedGrade ||
+      state.filterPurchaseTypes.join(',') !== state.appliedPurchaseTypes.join(',') ||
       state.dueFrom !== state.appliedDueFrom || state.dueTo !== state.appliedDueTo ||
       state.paidFrom !== state.appliedPaidFrom || state.paidTo !== state.appliedPaidTo;
 
@@ -642,17 +665,28 @@
     state.appliedDueStatus = state.filterDueStatus;
     state.appliedPaymentStatus = state.filterPaymentStatus;
     state.appliedGrade = state.filterGrade;
+    state.appliedPurchaseTypes = state.filterPurchaseTypes.slice();
     state.appliedDueFrom = state.dueFrom; state.appliedDueTo = state.dueTo;
     state.appliedPaidFrom = state.paidFrom; state.appliedPaidTo = state.paidTo;
+    render();
+  }
+  function togglePurchaseType(type) {
+    var i = state.filterPurchaseTypes.indexOf(type);
+    if (i === -1) state.filterPurchaseTypes.push(type); else state.filterPurchaseTypes.splice(i, 1);
+    render();
+  }
+  function toggleAllPurchaseTypes() {
+    state.filterPurchaseTypes = state.filterPurchaseTypes.length === 0 ? getPurchaseTypeOptions() : [];
     render();
   }
   function clearAllFilters() {
     Object.assign(state, {
       searched: false,
+      selectedCustomerId: null,
       query: '', filterAccountStatus: 'all', filterDueStatus: 'all', filterPaymentStatus: 'all',
-      filterCrmStatus: 'all', filterGrade: 'all', dueFrom: '', dueTo: '', paidFrom: '', paidTo: '',
+      filterCrmStatus: 'all', filterGrade: 'all', filterPurchaseTypes: [], dueFrom: '', dueTo: '', paidFrom: '', paidTo: '',
       appliedQuery: '', appliedAccountStatus: 'all', appliedDueStatus: 'all', appliedPaymentStatus: 'all',
-      appliedGrade: 'all', appliedDueFrom: '', appliedDueTo: '', appliedPaidFrom: '', appliedPaidTo: ''
+      appliedGrade: 'all', appliedPurchaseTypes: [], appliedDueFrom: '', appliedDueTo: '', appliedPaidFrom: '', appliedPaidTo: ''
     });
     render();
   }
@@ -683,7 +717,19 @@
     state.orders = state.orders.map(function (o) {
       if (o.orderId !== orderId) return o;
       var patch = {}; patch[field] = value;
-      return Object.assign({}, o, patch);
+      var updated = Object.assign({}, o, patch);
+      // ราคาสินค้า − ยอดวางดาวน์ split evenly across every งวด is the contractual ยอดผ่อนต่องวด
+      // (เช่น สินค้า 10,000 − ดาวน์ 2,000 = 8,000 ผ่อน 4 งวด → งวดละ 2,000) — recompute it for
+      // not-yet-paid installments whenever either figure changes. Only fires once ราคาสินค้าถูกกรอกแล้ว
+      // so orders that haven't set it yet don't get their installment amounts zeroed out.
+      if ((field === 'productPrice' || field === 'downPayment') && toNumber(updated.productPrice) > 0 && updated.installments.length) {
+        var perInstallment = Math.max(0, toNumber(updated.productPrice) - toNumber(updated.downPayment)) / updated.installments.length;
+        updated.installments = updated.installments.map(function (inst) {
+          if (toNumber(inst.amountPaid) > 0) return inst;
+          return Object.assign({}, inst, { amountDue: perInstallment });
+        });
+      }
+      return updated;
     });
     var order = state.orders.find(function (o) { return o.orderId === orderId; });
     if (order && order.firstDueDate && order.payDay) applySchedule(orderId);
@@ -717,6 +763,41 @@
       return Object.assign({}, o, { installments: updated });
     });
   }
+  // Editing "ยอดผ่อนสะสม" directly re-distributes that total across installments in order
+  // (same approach as the debtor-file paidTotal import) rather than editing a single stored field.
+  function setPaidTotal(orderId, total) {
+    state.orders = state.orders.map(function (o) {
+      if (o.orderId !== orderId) return o;
+      var sorted = o.installments.slice().sort(function (a, b) { return (a.no || 0) - (b.no || 0); });
+      var remaining = Math.max(0, toNumber(total));
+      var paidByNo = {};
+      sorted.forEach(function (inst) {
+        var due = Math.max(0, toNumber(inst.amountDue) - toNumber(inst.discount));
+        var paidHere = Math.min(remaining, due);
+        paidByNo[inst.no] = paidHere;
+        remaining -= paidHere;
+      });
+      return Object.assign({}, o, { installments: o.installments.map(function (inst) { return Object.assign({}, inst, { amountPaid: paidByNo[inst.no] }); }) });
+    });
+    savePersisted();
+    render();
+  }
+  // Editing "ยอดผ่อนต่องวด" at the order level applies to every not-yet-paid installment
+  // uniformly — paid ones keep their original amount (history shouldn't change retroactively).
+  function setInstallmentAmount(orderId, amount) {
+    var amt = Math.max(0, toNumber(amount));
+    state.orders = state.orders.map(function (o) {
+      if (o.orderId !== orderId) return o;
+      return Object.assign({}, o, {
+        installments: o.installments.map(function (inst) {
+          if (toNumber(inst.amountPaid) > 0) return inst;
+          return Object.assign({}, inst, { amountDue: amt });
+        })
+      });
+    });
+    savePersisted();
+    render();
+  }
   // ---------- Postpone (เลื่อนวันที่ชำระ) ----------
   function openPostpone(orderId, no) {
     var order = state.orders.find(function (o) { return o.orderId === orderId; });
@@ -743,13 +824,10 @@
       return Object.assign({}, o, {
         installments: o.installments.map(function (i) {
           if (i.no !== no) return i;
-          var logLine = 'เลื่อนชำระ ' + fmtDate(i.dueDate) + '→' + fmtDate(state.postponeDate) +
-            (reason ? (' | เหตุผล: ' + reason) : '') +
-            (lateFee ? (' | ค่าปรับชำระล่าช้า ฿' + fmtMoney(lateFee)) : '') +
-            (unlockFee ? (' | ค่าปลดล็อคเครื่อง ฿' + fmtMoney(unlockFee)) : '');
+          var entry = { from: i.dueDate, to: state.postponeDate, reason: reason, lateFee: lateFee, unlockFee: unlockFee, at: toDateString(new Date()) };
           return Object.assign({}, i, {
             dueDate: state.postponeDate,
-            note: i.note ? (i.note + ' • ' + logLine) : logLine,
+            postponeHistory: (i.postponeHistory || []).concat([entry]),
             lateFee: toNumber(i.lateFee || 0) + lateFee,
             unlockFee: toNumber(i.unlockFee || 0) + unlockFee
           });
@@ -943,8 +1021,10 @@
     var m;
     // 2026-06-01 / 2569-06-01  (also 2026/6/1)
     if ((m = s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/))) return isoOf(+m[1], +m[2], +m[3]);
-    // 01/06/2026 · 1-6-2569 · 01.06.69   (day first — Thai/EU convention)
-    if ((m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/))) return isoOf(+m[3], +m[2], +m[1]);
+    // 01/06/2026 · 1-6-2569 · 01.06.69 · 01/06/2026 13:53   (day first — Thai/EU convention;
+    // payment exports often append a time-of-day, so don't require the whole string to match or
+    // it falls through to the native Date parser below, which reads it as mm/dd/yyyy instead)
+    if ((m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})(?=[\s]|$)/))) return isoOf(+m[3], +m[2], +m[1]);
     // Only trust the loose Date parser when a 4-digit year is present — otherwise strings like
     // "ม.ค. 69" silently become 1969.
     if (/\d{4}/.test(s)) {
@@ -987,6 +1067,10 @@
       contractDate: ['วันที่ทำสัญญา', 'วันที่ที่ออกสัญญา', 'วันที่ออกสัญญา', 'contractdate', 'contract date', 'วันที่สัญญา', 'วันทำสัญญา', 'วันที่'],
       productList: ['รายการสินค้า (ผ่อน)', 'รายการสินค้า (ดาวน์)', 'รายการสินค้าอุปกรณ์เสริม', 'รายการสินค้า', 'productlist', 'product', 'product name', 'สินค้า', 'รายการ', 'ชื่อสินค้า'],
       downPayment: ['ยอดวางดาวน์', 'downpayment', 'down payment', 'เงินดาวน์', 'ดาวน์', 'ยอดดาวน์'],
+      // Deliberately narrow — "ราคาสุทธิ (ผ่อน/ดาวน์)" etc. don't reliably equal ราคาสินค้า, and a
+      // wrong auto-fill here would trigger the ยอดผ่อนต่องวด recalc below and overwrite the
+      // file's real per-installment amount. Leave productPrice blank unless the column is exact.
+      productPrice: ['ราคาสินค้า', 'product price'],
       discount: ['ส่วนลด', 'discount'],
       purchaseType: ['ประเภทการซื้อ', 'purchasetype', 'purchase type', 'ประเภท', 'ประเภทสัญญา'],
       installmentNo: ['งวดที่', 'installmentno', 'installment', 'installment no', 'งวด', 'งวดที่ชำระ', 'เลขงวด'],
@@ -994,7 +1078,7 @@
       amountDue: ['ยอดผ่อนต่องวด', 'ราคาผ่อนต่องวด (ดาวน์)', 'amountdue', 'amount due', 'ยอดผ่อน', 'ค่างวด', 'จำนวนเงินต่องวด', 'ยอดชำระต่องวด'],
       age: ['อายุลูกค้า', 'อายุ', 'age'],
       // Schedule-style workbook: remaining term + first unpaid due date + monthly payment day
-      term: ['ระยะเวลาผ่อน (ผ่อน)', 'ระยะเวลาผ่อน (ดาวน์)', 'ระยะเวลาผ่อน', 'จำนวนงวดคงเหลือ', 'จำนวนงวด', 'งวดทั้งหมด'],
+      term: ['ระยะเวลาผ่อน (ผ่อน)', 'ระยะเวลาผ่อน (ดาวน์)', 'ระยะเวลาผ่อน', 'จำนวนงวดคงเหลือ', 'จำนวนงวด', 'งวดทั้งหมด', 'จำนวนงวดที่ผ่อน'],
       paidCount: ['จำนวนงวดที่ชำระแล้ว', 'งวดที่ชำระแล้ว', 'จำนวนงวดที่รับชำระ'],
       paidTotal: ['ยอดชำระหลังทำสัญญา', 'ยอดชำระแล้ว', 'ยอดที่ชำระแล้ว'],
       firstDue: ['วันครบกำหนดชำระงวดแรก', 'วันครบกำหนดงวดแรก', 'กำหนดชำระงวดแรก'],
@@ -1069,6 +1153,7 @@
           contractDate: toDateString(resolveField(r, ALIASES.contractDate)),
           productList: joinText(r, ALIASES.productList),
           downPayment: resolveNumber(r, ALIASES.downPayment),
+          productPrice: resolveNumber(r, ALIASES.productPrice),
           discount: resolveNumber(r, ALIASES.discount),
           purchaseType: String(resolveField(r, ALIASES.purchaseType) || ''),
           age: Math.round(resolveNumber(r, ALIASES.age)),
@@ -1229,35 +1314,85 @@
     var ALIASES = {
       orderId: ['คำสั่งซื้อ', 'orderid', 'order id', 'order no', 'orderno', 'เลขที่คำสั่งซื้อ', 'หมายเลขคำสั่งซื้อ', 'เลขคำสั่งซื้อ', 'so', 'so number', 'sonumber', 'เลขที่ so', 'เลขที่เอกสาร', 'เลขที่ใบสั่งขาย', 'เลขที่สัญญา', 'เลขสัญญา', 'เลขที่บิล'],
       installmentNo: ['งวดที่', 'installmentno', 'installment', 'installment no', 'งวด', 'งวดที่ชำระ', 'เลขงวด'],
-      amountPaid: ['ยอดที่ชำระจริง', 'amountpaid', 'amount paid', 'ยอดชำระจริง', 'ยอดชำระ', 'จำนวนเงินที่ชำระ', 'ยอดรับชำระ', 'รับชำระ'],
+      amountPaid: ['ยอดที่ชำระจริง', 'amountpaid', 'amount paid', 'ยอดชำระจริง', 'ยอดชำระ', 'ยอดที่ชำระ', 'จำนวนเงินที่ชำระ', 'ยอดรับชำระ', 'รับชำระ'],
       paidDate: ['วันที่ชำระ', 'paiddate', 'paid date', 'วันชำระ', 'วันที่รับชำระ', 'วันรับชำระ'],
       status: ['สถานะการชำระเงิน', 'status', 'สถานะ', 'สถานะการชำระ'],
       discount: ['ส่วนลด', 'discount'],
-      note: ['หมายเหตุ', 'note', 'remark', 'remarks']
+      note: ['หมายเหตุ', 'note', 'remark', 'remarks'],
+      // Payment-export rows are tagged ค่าผ่อน (installment) or ค่าปรับขาดผ่อน (penalty, combines
+      // late fee + unlock fee) — penalty amounts must NOT be added to amountPaid or the loan
+      // progress numbers become wrong.
+      type: ['ประเภท', 'type']
     };
     readRows(file).then(function (rows) {
       var headers = rows.length ? Object.keys(rows[0]) : [];
-      var added = 0, missed = 0, duplicate = 0, updatedOnly = 0;
+      var added = 0, addedPenalty = 0, missed = 0, duplicate = 0, updatedOnly = 0;
       var orders = state.orders.map(function (o) { return Object.assign({}, o, { installments: o.installments.map(function (i) { return Object.assign({}, i); }) }); });
       rows.forEach(function (r) {
         var orderId = String(resolveField(r, ALIASES.orderId) || '').trim();
-        var no = Number(resolveField(r, ALIASES.installmentNo) || 0);
+        var noRaw = resolveField(r, ALIASES.installmentNo);
+        var no = Number(noRaw || 0);
         var order = orders.find(function (o) { return o.orderId === orderId; });
-        var inst = order && order.installments.find(function (i) { return i.no === no; });
-        if (!inst) { missed++; return; }
+        if (!order) { missed++; return; }
         var amountPaid = resolveField(r, ALIASES.amountPaid);
         var paidDate = resolveField(r, ALIASES.paidDate);
         var status = resolveField(r, ALIASES.status);
         var discount = resolveField(r, ALIASES.discount);
         var note = resolveField(r, ALIASES.note);
+        // Real export tags rows "ค่าผ่อน" (pure installment) or "ค่าผ่อนและค่าปรับขาดผ่อน"
+        // (installment + penalty COMBINED into one amount — not two separate rows).
+        var hasPenalty = /ปรับ/.test(String(resolveField(r, ALIASES.type) || ''));
+
+        var inst, payKey;
+        if (no > 0) {
+          inst = order.installments.find(function (i) { return i.no === no; });
+          if (!inst) { missed++; return; }
+          payKey = orderId + '|' + no + '|' + toDateString(paidDate) + '|' + toNumber(amountPaid);
+        } else {
+          // No งวดที่ column in this export. Penalty-tagged rows should land on an installment
+          // that still owes a fee (it may already be fully paid on the amountDue side and so
+          // would otherwise get skipped) — fall back to the earliest not-fully-paid installment
+          // for everything else, same approach as the debtor-file paidTotal distribution.
+          var sortedInsts = order.installments.slice().sort(function (a, b) { return (a.no || 0) - (b.no || 0); });
+          if (hasPenalty) {
+            inst = sortedInsts.find(function (i) { return (toNumber(i.lateFee) + toNumber(i.unlockFee)) > toNumber(i.penaltyPaid) + 0.005; });
+          }
+          if (!inst) {
+            inst = sortedInsts.find(function (i) { return toNumber(i.amountPaid) < (toNumber(i.amountDue) - toNumber(i.discount) - 0.01); }) || order.installments[order.installments.length - 1];
+          }
+          if (!inst) { missed++; return; }
+          payKey = orderId + '|noinst|' + String(paidDate) + '|' + toNumber(amountPaid);
+        }
 
         // ACCUMULATE the paid amount onto the running total, with duplicate-row protection.
+        // A penalty-tagged row's amount is bigger than the installment actually owes — the
+        // excess over what's still due on this installment IS the fee (late fee / unlock fee
+        // are fixed at ฿500 each occurrence), no need to already have a "charged" figure on record.
         if (amountPaid !== '') {
-          var payKey = orderId + '|' + no + '|' + toDateString(paidDate) + '|' + toNumber(amountPaid);
           if (appliedPaymentKeys[payKey]) { duplicate++; return; } // same row already added before → skip
           appliedPaymentKeys[payKey] = true;
-          inst.amountPaid = toNumber(inst.amountPaid) + toNumber(amountPaid);
-          added++;
+          var rowAmount = toNumber(amountPaid);
+          if (hasPenalty) {
+            var dueRemaining = Math.max(0, toNumber(inst.amountDue) - toNumber(inst.discount) - toNumber(inst.amountPaid));
+            var penaltyPortion = Math.max(0, rowAmount - dueRemaining);
+            var installmentPortion = rowAmount - penaltyPortion;
+            inst.amountPaid = toNumber(inst.amountPaid) + installmentPortion;
+            if (penaltyPortion > 0) {
+              inst.penaltyPaid = toNumber(inst.penaltyPaid) + penaltyPortion;
+              // Auto-charge the fixed ฿500/occurrence fee if nothing was manually charged yet
+              // (via the เลื่อนวันชำระ button), so the charged-vs-paid cell reads sensibly.
+              if (!toNumber(inst.lateFee) && !toNumber(inst.unlockFee)) {
+                var occurrences = Math.round(penaltyPortion / 500);
+                inst.lateFee = (occurrences >= 1 ? 500 : 0);
+                inst.unlockFee = (occurrences >= 2 ? (occurrences - 1) * 500 : 0);
+              }
+              addedPenalty++;
+            }
+            if (installmentPortion > 0) added++;
+          } else {
+            inst.amountPaid = toNumber(inst.amountPaid) + rowAmount;
+            added++;
+          }
         } else {
           updatedOnly++;
         }
@@ -1267,16 +1402,17 @@
         if (status !== '') { inst.status = String(status); inst.statusOverride = true; }
       });
       // Nothing matched at all (not even duplicates) → likely wrong columns OR debtor not imported yet.
-      if (added === 0 && updatedOnly === 0 && duplicate === 0) {
+      if (added === 0 && addedPenalty === 0 && updatedOnly === 0 && duplicate === 0) {
         state.uploadMsgPayment = '⚠️ อ่านไฟล์ได้ ' + rows.length + ' แถว แต่จับคู่กับข้อมูลลูกหนี้ไม่ได้ (ยังไม่บันทึก) — '
           + (state.orders.length === 0 ? 'ยังไม่มีข้อมูลลูกหนี้ในระบบ กรุณาอัปโหลด “ไฟล์ลูกหนี้” ก่อน' : ('ตรวจว่าคอลัมน์ “คำสั่งซื้อ” และ “งวดที่” ตรงกับไฟล์ลูกหนี้ — หัวคอลัมน์ในไฟล์นี้คือ: ' + (headers.length ? headers.join(' | ') : '(ไม่พบหัวคอลัมน์)')));
         render();
         return;
       }
       state.orders = orders;
-      if (added || updatedOnly) state.isSampleData = false;
+      if (added || addedPenalty || updatedOnly) state.isSampleData = false;
       savePersisted();
       state.uploadMsgPayment = 'บวกยอดสำเร็จ ' + added + ' งวด'
+        + (addedPenalty ? (' · ค่าปรับ ' + addedPenalty + ' งวด') : '')
         + (updatedOnly ? (' · อัปเดตข้อมูลอื่น ' + updatedOnly + ' แถว') : '')
         + (duplicate ? (' · ข้ามแถวซ้ำ ' + duplicate + ' แถว (บวกไปแล้ว)') : '')
         + (missed ? (' · ไม่พบ ' + missed + ' แถว') : '');
@@ -1541,6 +1677,22 @@
   function selOpt(value, label, selected) {
     return '<option value="' + esc(value) + '"' + (selected ? ' selected' : '') + '>' + esc(label) + '</option>';
   }
+  function renderPurchaseTypeFilter() {
+    var options = getPurchaseTypeOptions();
+    var allChecked = state.filterPurchaseTypes.length === 0;
+    var chk = function (checked) {
+      return '<div style="width:16px; height:16px; border-radius:4px; border:1.5px solid ' + (checked ? '#7c5cff' : 'rgba(124,92,255,0.35)') + '; background:' + (checked ? '#7c5cff' : '#fff') + '; display:flex; align-items:center; justify-content:center; flex-shrink:0;">' + (checked ? '<span style="color:#fff; font-size:11px; line-height:1;">✓</span>' : '') + '</div>';
+    };
+    if (!options.length) return '<div style="font-size:12.5px; color:#a39dc2; padding:9px 12px;">ยังไม่มีข้อมูล</div>';
+    var box = 'width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff;';
+    return '<div style="' + box + '">' +
+      '<label data-action="toggleAllPurchaseTypes" style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; color:#2b2540; font-weight:600; padding-bottom:6px; margin-bottom:6px; border-bottom:1px solid rgba(124,92,255,0.12);">' + chk(allChecked) + '(เลือกทั้งหมด)</label>' +
+      options.map(function (t) {
+        var checked = state.filterPurchaseTypes.indexOf(t) === -1;
+        return '<label data-action="togglePurchaseType" data-type="' + esc(t) + '" style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; color:#2b2540; padding:3px 0;">' + chk(checked) + esc(t) + '</label>';
+      }).join('') +
+    '</div>';
+  }
   // Days between an installment's due date and today: >0 overdue, 0 = due today, <0 = days until due.
   function dueDiffDays(inst) {
     if (!inst.dueDate) return null;
@@ -1632,6 +1784,7 @@
             '<select data-action="filter" data-key="filterGrade" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13.5px; color:#2b2540;">' +
               selOpt('all', 'ทุกสถานะ', state.filterGrade === 'all') + selOpt('A', 'เกรด A — ไม่เคยค้างชำระ', state.filterGrade === 'A') + selOpt('B', 'เกรด B — ค้างชำระ 1 งวด', state.filterGrade === 'B') + selOpt('หนี้สงสัยจะสูญ', 'หนี้สงสัยจะสูญ — ค้าง ≥2 งวด', state.filterGrade === 'หนี้สงสัยจะสูญ') +
             '</select></div>' +
+          '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">🛒 ประเภทการซื้อ</div>' + renderPurchaseTypeFilter() + '</div>' +
         '</div>' +
         '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:14px; margin-bottom:18px;">' +
           dateFilter('🗓 ครบกำหนดตั้งแต่', 'dueFrom', state.dueFrom) +
@@ -1698,10 +1851,35 @@
   }
 
   function renderNoteModal() {
+    var target = state.noteModalTarget;
+    var order = state.orders.find(function (o) { return o.orderId === target.orderId; });
+    var inst = order && order.installments.find(function (i) { return i.no === target.no; });
+    var history = (inst && inst.postponeHistory) || [];
+    var historyHtml = '';
+    if (history.length) {
+      historyHtml = '<div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:8px;">🔁 ประวัติการเลื่อนชำระ (' + history.length + ' ครั้ง)</div>' +
+        '<div style="display:flex; flex-direction:column; gap:8px; margin-bottom:20px; max-height:220px; overflow-y:auto;">' +
+        history.map(function (h, idx) {
+          var fees = [];
+          if (toNumber(h.lateFee)) fees.push('ค่าปรับชำระล่าช้า ฿' + fmtMoney(h.lateFee));
+          if (toNumber(h.unlockFee)) fees.push('ค่าปลดล็อคเครื่อง ฿' + fmtMoney(h.unlockFee));
+          return '<div style="background:rgba(124,92,255,0.05); border:1px solid rgba(124,92,255,0.12); border-radius:12px; padding:10px 12px;">' +
+            '<div style="display:flex; align-items:center; gap:6px; font-size:12.5px; font-weight:700; color:#2b2540; margin-bottom:4px;">' +
+              '<span style="background:rgba(124,92,255,0.15); color:#7c5cff; border-radius:16px; padding:1px 8px; font-size:11px;">ครั้งที่ ' + (idx + 1) + '</span>' +
+              esc(fmtDate(h.from)) + ' → ' + esc(fmtDate(h.to)) +
+            '</div>' +
+            (h.reason ? '<div style="font-size:12.5px; color:#6b6785; margin-bottom:2px;">เหตุผล: ' + esc(h.reason) + '</div>' : '') +
+            (fees.length ? '<div style="font-size:12.5px; color:#c2650a; font-weight:600;">' + fees.join(' · ') + '</div>' : '') +
+          '</div>';
+        }).join('') +
+        '</div>';
+    }
     return '<div style="position:fixed; inset:0; z-index:9999; background:rgba(43,37,64,0.35); display:flex; align-items:center; justify-content:center; padding:20px;">' +
-      '<div style="max-width:440px; width:100%; background:#fff; border-radius:20px; padding:26px 26px 22px; box-shadow:0 24px 60px rgba(43,37,64,0.3);">' +
-        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#2b2540; margin-bottom:18px;">📝 หมายเหตุ · งวดที่ ' + state.noteModalTarget.no + '</div>' +
-        '<textarea data-action="noteModalDraft" rows="6" placeholder="พิมพ์หมายเหตุ..." style="width:100%; box-sizing:border-box; padding:12px 14px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fbfaff; font-size:14px; color:#2b2540; outline:none; margin-bottom:20px; font-family:inherit; resize:vertical;">' + esc(state.noteModalDraft) + '</textarea>' +
+      '<div style="max-width:460px; width:100%; max-height:90vh; overflow-y:auto; background:#fff; border-radius:20px; padding:26px 26px 22px; box-shadow:0 24px 60px rgba(43,37,64,0.3);">' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#2b2540; margin-bottom:18px;">📝 หมายเหตุ · งวดที่ ' + target.no + '</div>' +
+        historyHtml +
+        '<div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:8px;">หมายเหตุเพิ่มเติม</div>' +
+        '<textarea data-action="noteModalDraft" rows="5" placeholder="พิมพ์หมายเหตุ..." style="width:100%; box-sizing:border-box; padding:12px 14px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fbfaff; font-size:14px; color:#2b2540; outline:none; margin-bottom:20px; font-family:inherit; resize:vertical;">' + esc(state.noteModalDraft) + '</textarea>' +
         '<div style="display:flex; justify-content:flex-end; gap:10px;">' +
           '<div data-action="closeNoteModal" style="padding:11px 20px; border-radius:10px; color:#6b6785; font-size:13.5px; font-weight:600; cursor:pointer;">ยกเลิก</div>' +
           '<div data-action="saveNoteModal" style="background:#2b2540; color:#fff; padding:11px 22px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer;">บันทึก</div>' +
@@ -1719,9 +1897,9 @@
         '<div style="font-size:12px; color:#6b6785; margin-bottom:6px;">เหตุผลการเลื่อน</div>' +
         '<input type="text" value="' + esc(state.postponeReason) + '" data-action="postponeReason" placeholder="เช่น ลูกค้าขอเลื่อนรับเงินเดือน" style="width:100%; box-sizing:border-box; padding:11px 14px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fbfaff; font-size:14px; color:#2b2540; outline:none; margin-bottom:14px;" />' +
         '<div style="font-size:12px; color:#6b6785; margin-bottom:6px;">ค่าปรับชำระล่าช้า (บาท)</div>' +
-        '<input type="number" step="0.01" value="' + esc(state.postponeLateFee) + '" data-action="postponeLateFee" style="width:100%; box-sizing:border-box; padding:11px 14px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fbfaff; font-size:14px; color:#2b2540; outline:none; margin-bottom:14px;" />' +
+        '<input type="text" inputmode="decimal" value="' + esc(fmtMoney(state.postponeLateFee)) + '" data-action="postponeLateFee" style="width:100%; box-sizing:border-box; padding:11px 14px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fbfaff; font-size:14px; color:#2b2540; outline:none; margin-bottom:14px;" />' +
         '<div style="font-size:12px; color:#6b6785; margin-bottom:6px;">ค่าปลดล็อคเครื่อง (บาท)</div>' +
-        '<input type="number" step="0.01" value="' + esc(state.postponeUnlockFee) + '" data-action="postponeUnlockFee" style="width:100%; box-sizing:border-box; padding:11px 14px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fbfaff; font-size:14px; color:#2b2540; outline:none; margin-bottom:20px;" />' +
+        '<input type="text" inputmode="decimal" value="' + esc(fmtMoney(state.postponeUnlockFee)) + '" data-action="postponeUnlockFee" style="width:100%; box-sizing:border-box; padding:11px 14px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fbfaff; font-size:14px; color:#2b2540; outline:none; margin-bottom:20px;" />' +
         '<div style="display:flex; justify-content:flex-end; gap:10px;">' +
           '<div data-action="closePostpone" style="padding:11px 20px; border-radius:10px; color:#6b6785; font-size:13.5px; font-weight:600; cursor:pointer;">ยกเลิก</div>' +
           '<div data-action="confirmPostpone" style="background:#2b2540; color:#fff; padding:11px 22px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer;">ยืนยัน</div>' +
@@ -1756,12 +1934,16 @@
           '<div style="background:rgba(240,140,0,0.12); color:#c2650a; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">' + esc(ord.purchaseType) + '</div>' +
           '<div style="margin-left:auto; font-size:12.5px; color:#6b6785;">⏱ ' + ord.installmentCount + ' งวด</div>' +
         '</div>' +
-        '<div style="font-size:12px; color:#6b6785; margin-bottom:2px;">📦 รายการสินค้า</div>' +
-        '<div style="font-size:15px; font-weight:600; color:#2b2540; margin-bottom:16px;">' + esc(ord.productList) + '</div>' +
+        '<div style="display:grid; grid-template-columns:2fr 1fr; gap:16px; margin-bottom:16px;">' +
+          '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">📦 รายการสินค้า</div><div style="font-size:15px; font-weight:600; color:#2b2540;">' + esc(ord.productList) + '</div></div>' +
+          '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">🏷 ราคาสินค้า</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.productPrice)) + '" data-order-field="productPrice" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#2b2540; background:#fff; outline:none;" /></div>' +
+        '</div>' +
         '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:16px; margin-bottom:10px;">' +
-          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดวางดาวน์</div><div style="font-size:15px; font-weight:700; color:#4f46e5;">฿' + ord.downPaymentDisp + '</div></div>' +
-          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดผ่อนต่องวด</div><div style="font-size:15px; font-weight:700; color:#4f46e5;">฿' + ord.firstInstallmentAmountDisp + '</div></div>' +
-          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ส่วนลด</div><div style="font-size:15px; font-weight:700; color:#2b2540;">฿' + ord.discountDisp + '</div></div>' +
+          (isInstallmentPurchaseType(ord.purchaseType)
+            ? '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดผ่อนสะสม</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.totalPaidRaw)) + '" data-action="setPaidTotal" data-order="' + esc(ord.orderId) + '" title="แก้ยอดนี้จะกระจายยอดชำระไปยังงวดต่างๆ ให้ใหม่ทั้งหมด" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>'
+            : '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดวางดาวน์</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.downPayment)) + '" data-order-field="downPayment" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>') +
+          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดผ่อนต่องวด</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.installments[0] ? ord.installments[0].amountDue : 0)) + '" data-action="setInstallmentAmount" data-order="' + esc(ord.orderId) + '" title="แก้ยอดนี้จะปรับยอดผ่อนของทุกงวดที่ยังไม่ชำระให้เท่ากันหมด" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>' +
+          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ส่วนลด</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.discount)) + '" data-order-field="discount" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#2b2540; background:#fff; outline:none;" /></div>' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดรับชำระ</div><div style="font-size:15px; font-weight:700; color:#12b886;">฿' + ord.totalPaidDisp + '</div></div>' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดคงเหลือ</div><div style="font-size:15px; font-weight:700; color:#e03131;">฿' + ord.totalOutstandingDisp + '</div></div>' +
         '</div>' +
@@ -1788,12 +1970,31 @@
     return html;
   }
 
+  // ค่าปรับชำระล่าช้า/ค่าปลดล็อคเครื่อง are kept separate from ยอดผ่อนต่องวด/ยอดชำระแล้ว so the
+  // installment progress numbers stay accurate — this cell shows what's charged vs. actually paid.
+  function renderFeeCell(inst, da) {
+    var charged = toNumber(inst.lateFee) + toNumber(inst.unlockFee);
+    var paid = toNumber(inst.penaltyPaid);
+    if (!charged && !paid) return '<span style="color:#c4bfe0; font-size:12px;">—</span>';
+    var parts = [];
+    if (toNumber(inst.lateFee)) parts.push('ล่าช้า ฿' + fmtMoney(inst.lateFee));
+    if (toNumber(inst.unlockFee)) parts.push('ปลดล็อค ฿' + fmtMoney(inst.unlockFee));
+    var short = paid < charged - 0.005;
+    return '<div style="font-size:11.5px; line-height:1.6;">' +
+      '<div style="color:#c2650a; font-weight:600; margin-bottom:3px;">' + parts.join(' + ') + '</div>' +
+      '<div style="display:flex; align-items:center; gap:5px;">' +
+        '<span style="color:#6b6785; white-space:nowrap;">จ่ายแล้ว</span>' +
+        '<input type="text" inputmode="decimal" value="' + esc(fmtMoney(paid)) + '" data-field="penaltyPaid"' + da + ' style="width:66px; box-sizing:border-box; border-radius:7px; padding:4px 6px; font-size:11px; text-align:right; font-weight:700; color:' + (short ? '#e03131' : '#12b886') + '; border:1px solid ' + (short ? 'rgba(224,49,49,0.3)' : 'rgba(18,184,134,0.3)') + '; background:' + (short ? 'rgba(224,49,49,0.05)' : 'rgba(18,184,134,0.06)') + '; outline:none;" />' +
+      '</div>' +
+      (short ? '<div style="color:#e03131;">ขาด ฿' + fmtMoney(charged - paid) + '</div>' : '') +
+    '</div>';
+  }
   function renderInstallmentTable(orderId, installments) {
     if (!installments.length) {
       return '<div style="padding:32px 20px; text-align:center; color:#8a86a3; font-size:13px; background:rgba(124,92,255,0.03); border:1.5px dashed rgba(124,92,255,0.25); border-radius:16px;">📭 ยังไม่มีงวดชำระ — กด "+ เพิ่มงวด" ด้านบนเพื่อเริ่มกรอก</div>';
     }
     var inputBase = 'box-sizing:border-box; border-radius:9px; padding:7px 10px; font-size:12.5px; color:#2b2540; background:#fff; outline:none;';
-    var cols = ['งวด', 'วันครบกำหนด', 'ยอดผ่อนต่องวด', 'ชำระแล้ว / วันที่ชำระ', 'ขาด/เกิน', 'ส่วนลด', 'สถานะ', 'หมายเหตุ'];
+    var cols = ['งวด', 'วันครบกำหนด', 'ยอดผ่อนต่องวด', 'ชำระแล้ว / วันที่ชำระ', 'ขาด/เกิน', 'ค่าปรับ (แยกจากค่างวด)', 'ส่วนลด', 'สถานะ', 'หมายเหตุ'];
     var head = '<tr>' + cols.map(function (c) {
       return '<th style="text-align:left; padding:12px 14px; font-size:11px; letter-spacing:0.03em; color:#7c5cff; font-weight:700; white-space:nowrap; background:rgba(124,92,255,0.06); border-bottom:1.5px solid rgba(124,92,255,0.16);">' + c + '</th>';
     }).join('') + '</tr>';
@@ -1817,13 +2018,14 @@
           '<button data-action="openPostpone"' + da + ' style="border:1px solid rgba(124,92,255,0.3); background:#fff; color:#7c5cff; border-radius:8px; padding:6px 10px; font-size:11.5px; font-weight:600; cursor:pointer; white-space:nowrap;">🔁 เลื่อนวันชำระ</button>' +
           (overdue > 0 ? '<span style="background:rgba(224,49,49,0.10); color:#e03131; padding:3px 10px; border-radius:20px; font-size:11px; font-weight:700; white-space:nowrap;">⏰ เกิน ' + overdue + ' วัน</span>' : '') +
         '</div></td>' +
-        '<td style="' + td + '"><input type="number" step="0.01" value="' + esc(toNumber(inst.amountDue).toFixed(2)) + '" data-field="amountDue"' + da + ' style="' + inputBase + ' width:92px; text-align:right; font-weight:600; border:1px solid rgba(124,92,255,0.2);" /></td>' +
+        '<td style="' + td + '"><input type="text" inputmode="decimal" value="' + esc(fmtMoney(inst.amountDue)) + '" data-field="amountDue"' + da + ' style="' + inputBase + ' width:92px; text-align:right; font-weight:600; border:1px solid rgba(124,92,255,0.2);" /></td>' +
         '<td style="' + td + '"><div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">' +
-          '<input type="number" step="0.01" value="' + esc(toNumber(inst.amountPaid).toFixed(2)) + '" data-field="amountPaid"' + da + ' style="' + inputBase + ' width:84px; text-align:right; font-weight:700; color:#0b7a5b; border:1px solid rgba(18,184,134,0.3); background:rgba(18,184,134,0.06);" />' +
+          '<input type="text" inputmode="decimal" value="' + esc(fmtMoney(inst.amountPaid)) + '" data-field="amountPaid"' + da + ' style="' + inputBase + ' width:84px; text-align:right; font-weight:700; color:#0b7a5b; border:1px solid rgba(18,184,134,0.3); background:rgba(18,184,134,0.06);" />' +
           '<input type="date" value="' + esc(inst.paidDate) + '" data-field="paidDate"' + da + ' style="' + inputBase + ' font-size:11.5px; color:#6b6785; border:1px solid rgba(124,92,255,0.15);" />' +
         '</div></td>' +
         '<td style="' + td + '">' + diffBadge + '</td>' +
-        '<td style="' + td + '"><input type="number" step="0.01" value="' + esc(toNumber(inst.discount).toFixed(2)) + '" data-field="discount"' + da + ' style="' + inputBase + ' width:70px; text-align:right; border:1px solid rgba(255,159,67,0.3);" /></td>' +
+        '<td style="' + td + '">' + renderFeeCell(inst, da) + '</td>' +
+        '<td style="' + td + '"><input type="text" inputmode="decimal" value="' + esc(fmtMoney(inst.discount)) + '" data-field="discount"' + da + ' style="' + inputBase + ' width:70px; text-align:right; border:1px solid rgba(255,159,67,0.3);" /></td>' +
         '<td style="' + td + '"><div style="display:flex; align-items:center; gap:6px;">' +
           '<select data-field="status"' + da + ' style="padding:7px 10px; border-radius:10px; border:1px solid ' + inst.statusBorder + '; background:' + inst.statusSoft + '; color:' + inst.statusColor + '; font-size:12px; font-weight:700; outline:none; cursor:pointer;">' +
             STATUS_OPTIONS.map(function (opt) { return '<option value="' + esc(opt) + '"' + (opt === inst.effectiveStatus ? ' selected' : '') + ' style="color:#000; background:#fff;">' + esc(opt) + '</option>'; }).join('') +
@@ -1831,7 +2033,10 @@
           (inst.statusOverride ? '<button data-action="resetOverride"' + da + ' title="รีเซ็ตสถานะเป็นอัตโนมัติ" style="border:none; background:transparent; cursor:pointer; font-size:14px; color:#7c5cff; flex-shrink:0;">⟲</button>' : '') +
           '<button data-action="deleteInstallment"' + da + ' title="ลบงวดนี้" style="border:none; background:transparent; cursor:pointer; font-size:14px; color:#e03131; flex-shrink:0;">🗑</button>' +
         '</div></td>' +
-        '<td style="' + td + '"><div data-action="openNoteModal"' + da + ' title="คลิกเพื่อดู/แก้ไขหมายเหตุเต็ม" style="' + inputBase + ' width:150px; max-width:150px; border:1px dashed rgba(124,92,255,0.25); background:transparent; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + (inst.note ? esc(inst.note) : '<span style="color:#a39dc2;">+ หมายเหตุ</span>') + '</div></td>' +
+        '<td style="' + td + '"><div data-action="openNoteModal"' + da + ' title="คลิกเพื่อดู/แก้ไขหมายเหตุเต็ม" style="' + inputBase + ' width:150px; max-width:150px; border:1px dashed rgba(124,92,255,0.25); background:transparent; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' +
+          ((inst.postponeHistory && inst.postponeHistory.length) ? '<span style="color:#7c5cff; font-weight:700;">🔁×' + inst.postponeHistory.length + '</span> ' : '') +
+          (inst.note ? esc(inst.note) : (inst.postponeHistory && inst.postponeHistory.length ? '' : '<span style="color:#a39dc2;">+ หมายเหตุ</span>')) +
+        '</div></td>' +
       '</tr>';
     }).join('');
     return '<div style="overflow-x:auto; border:1px solid rgba(124,92,255,0.14); border-radius:16px; background:rgba(255,255,255,0.55); box-shadow:0 4px 16px rgba(124,92,255,0.06);">' +
@@ -1849,10 +2054,12 @@
     var trackIcon = '<div style="width:11px; height:11px; border:2px solid currentColor; border-radius:50%; box-sizing:border-box; position:absolute; top:3px; left:3px;"></div><div style="position:absolute; width:2px; height:6px; background:currentColor; border-radius:1px; transform:rotate(-45deg); right:2px; bottom:2px;"></div>';
     var uploadIcon = '<div style="width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-bottom:5px solid currentColor;"></div><div style="width:3px; height:5px; background:currentColor;"></div><div style="width:12px; height:2px; background:currentColor; border-radius:1px; margin-top:1px;"></div>';
 
-    var sidebar = '<div style="width:250px; flex-shrink:0; position:sticky; top:0; height:100vh; overflow-y:auto; background:rgba(255,255,255,0.55); backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px); border-right:1px solid rgba(124,92,255,0.12); padding:26px 18px; display:flex; flex-direction:column; gap:4px; z-index:2; box-sizing:border-box;">' +
-      '<div style="display:flex; align-items:center; gap:10px; padding:6px 10px 22px;">' +
-        '<div style="width:38px; height:38px; border-radius:11px; background:linear-gradient(135deg,#7c5cff,#6647e0); display:flex; align-items:center; justify-content:center; flex-shrink:0; box-shadow:0 6px 16px rgba(124,92,255,0.35); gap:3px;"><div style="width:4px; height:10px; border-radius:2px; background:rgba(255,255,255,0.65);"></div><div style="width:4px; height:16px; border-radius:2px; background:#fff;"></div><div style="width:4px; height:13px; border-radius:2px; background:rgba(255,255,255,0.85);"></div></div>' +
-        '<div style="min-width:0; flex:1;"><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:13.5px; color:#2b2540; line-height:1.3; white-space:nowrap;">ระบบติดตามหนี้</div><div style="font-size:11px; color:#8a86a3; white-space:nowrap;">และผ่อนชำระ</div></div>' +
+    // Horizontal top bar instead of a left sidebar — frees up screen width for the wide
+    // installment table (many columns) so it needs less horizontal scrolling.
+    var topbar = '<div style="width:100%; position:sticky; top:0; background:rgba(255,255,255,0.7); backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px); border-bottom:1px solid rgba(124,92,255,0.12); padding:12px 24px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; z-index:2; box-sizing:border-box;">' +
+      '<div style="display:flex; align-items:center; gap:10px; padding:2px 10px 2px 0; margin-right:8px;">' +
+        '<div style="width:34px; height:34px; border-radius:10px; background:linear-gradient(135deg,#7c5cff,#6647e0); display:flex; align-items:center; justify-content:center; flex-shrink:0; box-shadow:0 6px 16px rgba(124,92,255,0.35); gap:3px;"><div style="width:3px; height:9px; border-radius:2px; background:rgba(255,255,255,0.65);"></div><div style="width:3px; height:14px; border-radius:2px; background:#fff;"></div><div style="width:3px; height:11px; border-radius:2px; background:rgba(255,255,255,0.85);"></div></div>' +
+        '<div style="min-width:0;"><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:13.5px; color:#2b2540; line-height:1.3; white-space:nowrap;">ระบบติดตามหนี้และผ่อนชำระ</div></div>' +
       '</div>' +
       navItem('tab-dashboard', 'goDashboard', dashIcon.replace('position:relative;', ''), 'Dashboard') +
       navItem('tab-tracking', 'goTracking', trackIcon, 'ติดตามหนี้') +
@@ -1862,11 +2069,11 @@
     '</div>';
 
     document.getElementById('app').innerHTML =
-      '<div style="min-height:100vh; background: linear-gradient(160deg, #f3f1fb 0%, #eef2fb 45%, #f6f4fd 100%); position:relative; overflow-x:hidden; display:flex; animation:fadeInUp 0.5s ease;">' +
+      '<div style="min-height:100vh; background: linear-gradient(160deg, #f3f1fb 0%, #eef2fb 45%, #f6f4fd 100%); position:relative; overflow-x:hidden; display:flex; flex-direction:column; animation:fadeInUp 0.5s ease;">' +
         '<div style="position:absolute; top:-120px; right:-100px; width:420px; height:420px; border-radius:50%; background:radial-gradient(circle, rgba(124,92,255,0.30), transparent 70%); filter:blur(10px); pointer-events:none; animation:floatBlobA 14s ease-in-out infinite;"></div>' +
         '<div style="position:absolute; bottom:-160px; left:-140px; width:480px; height:480px; border-radius:50%; background:radial-gradient(circle, rgba(79,124,255,0.22), transparent 70%); filter:blur(10px); pointer-events:none; animation:floatBlobB 16s ease-in-out infinite;"></div>' +
-        sidebar +
-        '<div style="flex:1; min-width:0; padding:36px 36px 90px; position:relative; z-index:1;"><div id="main-inner" style="max-width:1200px; margin:0 auto; position:relative;"></div></div>' +
+        topbar +
+        '<div style="flex:1; min-width:0; padding:28px 28px 90px; position:relative; z-index:1;"><div id="main-inner" style="max-width:1600px; margin:0 auto; position:relative;"></div></div>' +
       '</div>';
   }
 
@@ -1924,6 +2131,8 @@
         case 'openNoteModal': openNoteModal(t.getAttribute('data-order'), Number(t.getAttribute('data-no'))); break;
         case 'closeNoteModal': closeNoteModal(); break;
         case 'saveNoteModal': saveNoteModal(); break;
+        case 'togglePurchaseType': togglePurchaseType(t.getAttribute('data-type')); break;
+        case 'toggleAllPurchaseTypes': toggleAllPurchaseTypes(); break;
       }
     });
 
@@ -1950,12 +2159,15 @@
       if (!t.getAttribute) return;
       var field = t.getAttribute('data-field');
       if (field) {
-        updateInstallment(t.getAttribute('data-order'), Number(t.getAttribute('data-no')), field, t.value);
+        var moneyInstFields = ['amountDue', 'amountPaid', 'discount', 'penaltyPaid'];
+        var fieldVal = moneyInstFields.indexOf(field) !== -1 ? toNumber(t.value) : t.value;
+        updateInstallment(t.getAttribute('data-order'), Number(t.getAttribute('data-no')), field, fieldVal);
         return;
       }
       var orderField = t.getAttribute('data-order-field');
       if (orderField) {
-        updateOrderField(t.getAttribute('data-order'), orderField, orderField === 'payDay' ? Number(t.value) : t.value);
+        var numericOrderFields = ['payDay', 'downPayment', 'discount', 'productPrice'];
+        updateOrderField(t.getAttribute('data-order'), orderField, numericOrderFields.indexOf(orderField) !== -1 ? toNumber(t.value) : t.value);
         return;
       }
       var a = t.getAttribute('data-action');
@@ -1964,9 +2176,11 @@
         case 'noteDraft': state.customerNoteDraft = t.value; break;
         case 'postponeDate': state.postponeDate = t.value; break;
         case 'postponeReason': state.postponeReason = t.value; break;
-        case 'postponeLateFee': state.postponeLateFee = Number(t.value); break;
-        case 'postponeUnlockFee': state.postponeUnlockFee = Number(t.value); break;
+        case 'postponeLateFee': state.postponeLateFee = toNumber(t.value); break;
+        case 'postponeUnlockFee': state.postponeUnlockFee = toNumber(t.value); break;
         case 'noteModalDraft': state.noteModalDraft = t.value; break;
+        case 'setPaidTotal': setPaidTotal(t.getAttribute('data-order'), toNumber(t.value)); break;
+        case 'setInstallmentAmount': setInstallmentAmount(t.getAttribute('data-order'), toNumber(t.value)); break;
         case 'filter': state[t.getAttribute('data-key')] = t.value; render(); break;
         case 'dueMonth': state.dueMonth = Number(t.value); render(); break;
         case 'dueYear': state.dueYear = Number(t.value); render(); break;
