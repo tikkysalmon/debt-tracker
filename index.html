@@ -34,6 +34,9 @@
   select:hover, input[type="text"]:hover, input[type="number"]:hover, input[type="date"]:hover { border-color: rgba(124,92,255,0.5) !important; }
   select:focus, input:focus { outline: 2px solid rgba(124,92,255,0.3); outline-offset: 1px; box-shadow: 0 0 0 4px rgba(124,92,255,0.1); }
   tr[data-action="selectCustomer"]:hover { background:rgba(124,92,255,0.06); }
+  tr[data-inst-row]:hover { background:rgba(124,92,255,0.045); }
+  tr[data-inst-row]:nth-child(even) { background:rgba(124,92,255,0.02); }
+  tr[data-inst-row] input, tr[data-inst-row] select { transition: box-shadow .15s ease, border-color .15s ease; }
 </style>
 </head>
 <body>
@@ -685,9 +688,18 @@
     savePersisted();
     render();
   }
-  // Recomputes due dates for every not-yet-paid installment from firstDueDate + payDay
-  // (reuses the same scheduleDueDate() logic the debtor-file import uses). Installments with
-  // amountPaid already recorded keep their existing due date untouched.
+  // Every recalculated due date lands on `payDay` of its month (unlike scheduleDueDate(), used
+  // by file import, which returns the first unpaid installment's date verbatim) — "ชำระทุกวันที่"
+  // means every installment, including the next one due, should land on that day of month.
+  function recalcDueDate(firstDue, offset, payDay) {
+    var p = firstDue.split('-').map(Number);
+    var t = new Date(p[0], p[1] - 1 + offset, 1);
+    var lastDay = new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate();
+    var dd = Math.min(payDay > 0 ? payDay : p[2], lastDay);
+    return t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(dd).padStart(2, '0');
+  }
+  // Recomputes due dates for every not-yet-paid installment from firstDueDate + payDay.
+  // Installments with amountPaid already recorded keep their existing due date untouched.
   function applySchedule(orderId) {
     state.orders = state.orders.map(function (o) {
       if (o.orderId !== orderId || !o.firstDueDate || !o.payDay) return o;
@@ -698,7 +710,7 @@
       var updated = o.installments.map(function (inst) {
         var idx = sorted.findIndex(function (s) { return s.no === inst.no; });
         if (idx < paidN) return inst;
-        return Object.assign({}, inst, { dueDate: scheduleDueDate(o.firstDueDate, idx - paidN, payDayNum) });
+        return Object.assign({}, inst, { dueDate: recalcDueDate(o.firstDueDate, idx - paidN, payDayNum) });
       });
       return Object.assign({}, o, { installments: updated });
     });
@@ -1656,40 +1668,41 @@
 
   function renderInstallmentTable(orderId, installments) {
     if (!installments.length) {
-      return '<div style="padding:20px; text-align:center; color:#8a86a3; font-size:13px; border:1px dashed rgba(124,92,255,0.25); border-radius:16px;">ยังไม่มีงวดชำระ — กด "+ เพิ่มงวด" ด้านบนเพื่อเริ่มกรอก</div>';
+      return '<div style="padding:32px 20px; text-align:center; color:#8a86a3; font-size:13px; background:rgba(124,92,255,0.03); border:1.5px dashed rgba(124,92,255,0.25); border-radius:16px;">📭 ยังไม่มีงวดชำระ — กด "+ เพิ่มงวด" ด้านบนเพื่อเริ่มกรอก</div>';
     }
-    var cols = ['งวด', 'วันครบกำหนด', 'ยอดผ่อนต่องวด', 'ชำระแล้ว / วันที่ชำระ', 'ส่วนลด', 'สถานะ', 'หมายเหตุ', ''];
+    var inputBase = 'box-sizing:border-box; border-radius:9px; padding:7px 10px; font-size:12.5px; color:#2b2540; background:#fff; outline:none;';
+    var cols = ['งวด', 'วันครบกำหนด', 'ยอดผ่อนต่องวด', 'ชำระแล้ว / วันที่ชำระ', 'ส่วนลด', 'สถานะ', 'หมายเหตุ'];
     var head = '<tr>' + cols.map(function (c) {
-      return '<th style="text-align:left; padding:10px 12px; font-size:11.5px; color:#6b6785; font-weight:600; white-space:nowrap; border-bottom:1px solid rgba(124,92,255,0.14);">' + c + '</th>';
+      return '<th style="text-align:left; padding:12px 14px; font-size:11px; letter-spacing:0.03em; color:#7c5cff; font-weight:700; white-space:nowrap; background:rgba(124,92,255,0.06); border-bottom:1.5px solid rgba(124,92,255,0.16);">' + c + '</th>';
     }).join('') + '</tr>';
     var rows = installments.map(function (inst) {
       var da = ' data-order="' + esc(orderId) + '" data-no="' + inst.no + '"';
       var dd = LATE_STATUSES.indexOf(inst.effectiveStatus) !== -1 ? dueDiffDays(inst) : null;
       var overdue = (dd !== null && dd > 0) ? dd : 0;
-      var td = 'padding:10px 12px; border-bottom:1px solid rgba(124,92,255,0.08); vertical-align:middle;';
-      return '<tr>' +
-        '<td style="' + td + ' font-weight:700; color:#2b2540; white-space:nowrap;">' + inst.no + '</td>' +
+      var td = 'padding:12px 14px; border-bottom:1px solid rgba(124,92,255,0.08); vertical-align:middle;';
+      return '<tr data-inst-row style="border-left:3px solid ' + inst.statusColor + ';">' +
+        '<td style="' + td + '"><div style="width:26px; height:26px; border-radius:50%; background:' + inst.statusSoft + '; color:' + inst.statusColor + '; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:12.5px;">' + inst.no + '</div></td>' +
         '<td style="' + td + '"><div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">' +
-          '<input type="date" value="' + esc(inst.dueDate) + '" data-field="dueDate"' + da + ' style="border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:12.5px; color:#2b2540; background:#fff; outline:none;" />' +
-          (overdue > 0 ? '<span style="background:rgba(224,49,49,0.10); color:#e03131; padding:2px 10px; border-radius:20px; font-size:11px; font-weight:700; white-space:nowrap;">เกิน ' + overdue + ' วัน</span>' : '') +
+          '<input type="date" value="' + esc(inst.dueDate) + '" data-field="dueDate"' + da + ' style="' + inputBase + ' border:1px solid rgba(124,92,255,0.2);" />' +
+          (overdue > 0 ? '<span style="background:rgba(224,49,49,0.10); color:#e03131; padding:3px 10px; border-radius:20px; font-size:11px; font-weight:700; white-space:nowrap;">⏰ เกิน ' + overdue + ' วัน</span>' : '') +
         '</div></td>' +
-        '<td style="' + td + '"><input type="number" value="' + esc(inst.amountDue) + '" data-field="amountDue"' + da + ' style="width:90px; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:12.5px; color:#2b2540; background:#fff; outline:none;" /></td>' +
+        '<td style="' + td + '"><input type="number" value="' + esc(inst.amountDue) + '" data-field="amountDue"' + da + ' style="' + inputBase + ' width:88px; text-align:right; font-weight:600; border:1px solid rgba(124,92,255,0.2);" /></td>' +
         '<td style="' + td + '"><div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">' +
-          '<input type="number" value="' + esc(inst.amountPaid) + '" data-field="amountPaid"' + da + ' style="width:80px; border:1px solid rgba(18,184,134,0.3); border-radius:8px; padding:6px 8px; font-size:12.5px; color:#0b7a5b; background:rgba(18,184,134,0.06); outline:none;" />' +
-          '<input type="date" value="' + esc(inst.paidDate) + '" data-field="paidDate"' + da + ' style="border:1px solid rgba(124,92,255,0.15); border-radius:8px; padding:6px 8px; font-size:12px; color:#6b6785; background:#fff; outline:none;" />' +
+          '<input type="number" value="' + esc(inst.amountPaid) + '" data-field="amountPaid"' + da + ' style="' + inputBase + ' width:78px; text-align:right; font-weight:700; color:#0b7a5b; border:1px solid rgba(18,184,134,0.3); background:rgba(18,184,134,0.06);" />' +
+          '<input type="date" value="' + esc(inst.paidDate) + '" data-field="paidDate"' + da + ' style="' + inputBase + ' font-size:11.5px; color:#6b6785; border:1px solid rgba(124,92,255,0.15);" />' +
         '</div></td>' +
-        '<td style="' + td + '"><input type="number" value="' + esc(inst.discount) + '" data-field="discount"' + da + ' style="width:70px; border:1px solid rgba(255,159,67,0.3); border-radius:8px; padding:6px 8px; font-size:12.5px; color:#2b2540; background:#fff; outline:none;" /></td>' +
+        '<td style="' + td + '"><input type="number" value="' + esc(inst.discount) + '" data-field="discount"' + da + ' style="' + inputBase + ' width:66px; text-align:right; border:1px solid rgba(255,159,67,0.3);" /></td>' +
         '<td style="' + td + '"><div style="display:flex; align-items:center; gap:6px;">' +
-          '<select data-field="status"' + da + ' style="padding:6px 10px; border-radius:10px; border:1px solid ' + inst.statusBorder + '; background:' + inst.statusSoft + '; color:' + inst.statusColor + '; font-size:12px; font-weight:600; outline:none;">' +
+          '<select data-field="status"' + da + ' style="padding:7px 10px; border-radius:10px; border:1px solid ' + inst.statusBorder + '; background:' + inst.statusSoft + '; color:' + inst.statusColor + '; font-size:12px; font-weight:700; outline:none; cursor:pointer;">' +
             STATUS_OPTIONS.map(function (opt) { return '<option value="' + esc(opt) + '"' + (opt === inst.effectiveStatus ? ' selected' : '') + ' style="color:#000; background:#fff;">' + esc(opt) + '</option>'; }).join('') +
           '</select>' +
+          (inst.statusOverride ? '<button data-action="resetOverride"' + da + ' title="รีเซ็ตสถานะเป็นอัตโนมัติ" style="border:none; background:transparent; cursor:pointer; font-size:14px; color:#7c5cff; flex-shrink:0;">⟲</button>' : '') +
         '</div></td>' +
-        '<td style="' + td + '"><input type="text" value="' + esc(inst.note) + '" data-field="note"' + da + ' placeholder="+ หมายเหตุ" style="width:140px; box-sizing:border-box; border:1px dashed rgba(124,92,255,0.25); border-radius:8px; padding:6px 8px; font-size:12px; color:#2b2540; background:transparent; outline:none;" /></td>' +
-        '<td style="' + td + '">' + (inst.statusOverride ? '<button data-action="resetOverride"' + da + ' title="รีเซ็ตสถานะเป็นอัตโนมัติ" style="border:none; background:transparent; cursor:pointer; font-size:14px; color:#7c5cff;">⟲</button>' : '') + '</td>' +
+        '<td style="' + td + '"><input type="text" value="' + esc(inst.note) + '" data-field="note"' + da + ' placeholder="+ หมายเหตุ" style="' + inputBase + ' width:150px; border:1px dashed rgba(124,92,255,0.25); background:transparent;" /></td>' +
       '</tr>';
     }).join('');
-    return '<div style="overflow-x:auto; border:1px solid rgba(124,92,255,0.14); border-radius:16px; background:rgba(255,255,255,0.5);">' +
-      '<table style="width:100%; border-collapse:collapse; min-width:820px;"><thead>' + head + '</thead><tbody>' + rows + '</tbody></table>' +
+    return '<div style="overflow-x:auto; border:1px solid rgba(124,92,255,0.14); border-radius:16px; background:rgba(255,255,255,0.55); box-shadow:0 4px 16px rgba(124,92,255,0.06);">' +
+      '<table style="width:100%; border-collapse:collapse; min-width:840px;"><thead>' + head + '</thead><tbody>' + rows + '</tbody></table>' +
     '</div>';
   }
 
