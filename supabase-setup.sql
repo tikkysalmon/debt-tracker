@@ -18,10 +18,14 @@ insert into public.app_state (id, data) values (1, '{}'::jsonb)
 alter table public.app_state enable row level security;
 
 -- 2) ฟังก์ชันอ่านข้อมูล (เปิดกว้าง ไม่ตรวจรหัสผ่าน)
+-- statement_timeout ขยายไว้เพราะข้อมูลจริงมีขนาด ~15-20MB (JSONB ก้อนเดียว) — ค่า default ของ
+-- Supabase (มักอยู่แถว 8 วิ) สั้นเกินไปสำหรับข้อมูลขนาดนี้ ทำให้เจอ "canceling statement due to
+-- statement timeout" ตอนบันทึก
 create or replace function public.get_state(pw text)
 returns table(data jsonb, updated_at timestamptz, updated_by text)
 language plpgsql security definer set search_path = public as $$
 begin
+  set local statement_timeout = '60s';
   return query select s.data, s.updated_at, s.updated_by from public.app_state s where s.id = 1;
 end; $$;
 
@@ -31,6 +35,7 @@ returns timestamptz
 language plpgsql security definer set search_path = public as $$
 declare ts timestamptz;
 begin
+  set local statement_timeout = '60s';
   update public.app_state set data = payload, updated_at = now(), updated_by = client_id
     where id = 1 returning updated_at into ts;
   return ts;
