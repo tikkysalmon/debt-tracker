@@ -399,7 +399,10 @@
     });
 
     var yearsSet = {};
-    orders.forEach(function (o) { o.installments.forEach(function (i) { if (i.dueDate) yearsSet[Number(i.dueDate.slice(0, 4))] = true; }); });
+    orders.forEach(function (o) { o.installments.forEach(function (i) {
+      var y = i.dueDate ? Number(i.dueDate.slice(0, 4)) : NaN;
+      if (isFinite(y)) yearsSet[y] = true;
+    }); });
     var availableYears = Object.keys(yearsSet).map(Number).sort(function (a, b) { return a - b; });
     var monthOptions = MONTH_LABELS.map(function (label, idx) { return { value: idx + 1, label: label }; });
 
@@ -733,18 +736,47 @@
     }
     return '';
   }
+  // Which header a field actually matched (for import diagnostics)
+  function resolveKey(row, aliases) {
+    var keys = Object.keys(row);
+    for (var idx = 0; idx < aliases.length; idx++) {
+      var a = aliases[idx];
+      var k = keys.find(function (kk) { return kk.trim().toLowerCase() === a.toLowerCase(); });
+      if (k !== undefined) return k;
+    }
+    return '';
+  }
+  function isoOf(y, m, d) {
+    if (y > 2400) y -= 543;                       // Buddhist era → CE
+    if (y < 100) y += 2000;
+    if (!(m >= 1 && m <= 12) || !(d >= 1 && d <= 31)) return '';
+    return y + '-' + String(m).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+  }
+  // Returns 'YYYY-MM-DD', or '' when the value cannot be understood (never a raw unparsable string).
   function toDateString(v) {
     if (!v && v !== 0) return '';
     if (v instanceof Date) {
-      var mm = String(v.getMonth() + 1).padStart(2, '0');
-      var dd = String(v.getDate()).padStart(2, '0');
-      return v.getFullYear() + '-' + mm + '-' + dd;
+      if (isNaN(v.getTime())) return '';
+      return isoOf(v.getFullYear(), v.getMonth() + 1, v.getDate());
     }
     if (typeof v === 'number') {
-      var d = new Date(Math.round((v - 25569) * 86400 * 1000));
-      return toDateString(d);
+      if (!isFinite(v) || v <= 0) return '';
+      return toDateString(new Date(Math.round((v - 25569) * 86400 * 1000)));  // Excel serial
     }
-    return String(v);
+    var s = String(v).trim();
+    if (!s) return '';
+    var m;
+    // 2026-06-01 / 2569-06-01  (also 2026/6/1)
+    if ((m = s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/))) return isoOf(+m[1], +m[2], +m[3]);
+    // 01/06/2026 · 1-6-2569 · 01.06.69   (day first — Thai/EU convention)
+    if ((m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/))) return isoOf(+m[3], +m[2], +m[1]);
+    // Only trust the loose Date parser when a 4-digit year is present — otherwise strings like
+    // "ม.ค. 69" silently become 1969.
+    if (/\d{4}/.test(s)) {
+      var d2 = new Date(s);
+      if (!isNaN(d2.getTime())) return isoOf(d2.getFullYear(), d2.getMonth() + 1, d2.getDate());
+    }
+    return '';
   }
   function readRows(file) {
     return file.arrayBuffer().then(function (buf) {
@@ -771,6 +803,9 @@
     };
     readRows(file).then(function (rows) {
       var headers = rows.length ? Object.keys(rows[0]) : [];
+      var matchedDueKey = rows.length ? resolveKey(rows[0], ALIASES.dueDate) : '';
+      var matchedOrderKey = rows.length ? resolveKey(rows[0], ALIASES.orderId) : '';
+      var badDates = 0, badSamples = [], instCount = 0;
       var byOrder = {};
       rows.forEach(function (r) {
         var orderId = String(resolveField(r, ALIASES.orderId) || '').trim();
@@ -789,9 +824,17 @@
             installments: []
           };
         }
+        var rawDue = resolveField(r, ALIASES.dueDate);
+        var dueDate = toDateString(rawDue);
+        if (rawDue !== '' && !dueDate) {
+          badDates++;
+          var sample = String(rawDue);
+          if (badSamples.length < 3 && badSamples.indexOf(sample) === -1) badSamples.push(sample);
+        }
+        instCount++;
         byOrder[orderId].installments.push({
           no: Number(resolveField(r, ALIASES.installmentNo) || byOrder[orderId].installments.length + 1),
-          dueDate: toDateString(resolveField(r, ALIASES.dueDate)),
+          dueDate: dueDate,
           amountDue: Number(resolveField(r, ALIASES.amountDue) || 0),
           amountPaid: 0, paidDate: '', status: '', statusOverride: false, discount: 0, note: ''
         });
@@ -827,7 +870,18 @@
       state.isSampleData = false;
       pickDefaultDueMonth();
       savePersisted();
-      state.uploadMsgDebt = 'นำเข้าสำเร็จ ' + newOrders.length + ' คำสั่งซื้อ (' + rows.length + ' แถว) — ยอดชำระเดิมถูกเก็บไว้';
+
+      var msg = 'นำเข้าสำเร็จ ' + newOrders.length + ' คำสั่งซื้อ · ' + instCount + ' งวด (จาก ' + rows.length + ' แถว) — ยอดชำระเดิมถูกเก็บไว้';
+      var warn = [];
+      if (!matchedDueKey) {
+        warn.push('ไม่พบคอลัมน์ "วันครบกำหนดชำระ" — ทุกงวดจะถูกนับเป็น "ยังไม่ถึงกำหนด" และกราฟ/สถานะจะว่าง');
+      } else if (badDates > 0) {
+        warn.push('อ่านวันที่ไม่ได้ ' + badDates + ' งวด จากคอลัมน์ "' + matchedDueKey + '" (ตัวอย่างค่า: ' + badSamples.map(function (x) { return '“' + x + '”'; }).join(', ') + ')');
+      }
+      if (newOrders.length > 0 && instCount / newOrders.length < 1.2 && instCount > 50) {
+        warn.push('คอลัมน์ "' + (matchedOrderKey || 'คำสั่งซื้อ') + '" มีค่าไม่ซ้ำเกือบทุกแถว (' + newOrders.length + ' สัญญา ต่อ ' + instCount + ' งวด) — ปกติ 1 สัญญาควรมีหลายงวด โปรดตรวจว่าเลือกคอลัมน์คำสั่งซื้อถูกต้อง');
+      }
+      state.uploadMsgDebt = msg + (warn.length ? ('\n⚠️ ' + warn.join('\n⚠️ ')) : '');
       render();
     }).catch(function (err) { state.uploadMsgDebt = 'เกิดข้อผิดพลาด: ' + err.message; render(); });
   }
@@ -909,7 +963,7 @@
         '<div style="font-size:12.5px; color:#6b6785; margin-bottom:14px; line-height:1.6;">' + desc + '</div>' +
         '<label for="' + inputId + '" style="display:inline-flex; align-items:center; gap:8px; background:linear-gradient(135deg,#7c5cff,#6647e0); color:#fff; padding:10px 20px; border-radius:12px; font-size:14px; font-weight:600; cursor:pointer; box-shadow:0 6px 16px rgba(124,92,255,0.35);">⬆ อัพโหลดไฟล์ Excel/CSV</label>' +
         '<input id="' + inputId + '" type="file" accept=".csv,.xlsx,.xls" data-action="' + action + '" style="display:none;" />' +
-        (msg ? '<div style="margin-top:10px; font-size:13px; color:#4b3fa0;">' + esc(msg) + '</div>' : '') +
+        (msg ? '<div style="margin-top:10px; font-size:13px; color:' + (msg.indexOf('⚠️') >= 0 || msg.indexOf('🛑') >= 0 ? '#a5620d' : '#4b3fa0') + '; white-space:pre-line; line-height:1.65;">' + esc(msg) + '</div>' : '') +
       '</div>';
     };
     var savedInfo = state.lastSavedAt ? ('บันทึกล่าสุด: ' + fmtDate(state.lastSavedAt) + ' ' + new Date(state.lastSavedAt).toLocaleTimeString('th-TH')) : 'ยังไม่มีข้อมูลบันทึก';
