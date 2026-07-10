@@ -674,6 +674,18 @@
     savePersisted();
     render();
   }
+  // Lets staff fill in orders the source file left with zero installment rows (e.g. missing
+  // "ระยะเวลาผ่อน" in the debtor export) — appends one blank editable งวด to the order.
+  function addInstallment(orderId) {
+    state.orders = state.orders.map(function (o) {
+      if (o.orderId !== orderId) return o;
+      var nextNo = o.installments.reduce(function (m, i) { return Math.max(m, i.no || 0); }, 0) + 1;
+      var newInst = { no: nextNo, dueDate: '', amountDue: 0, amountPaid: 0, paidDate: '', status: '', statusOverride: false, discount: 0, note: '' };
+      return Object.assign({}, o, { installments: o.installments.concat([newInst]) });
+    });
+    savePersisted();
+    render();
+  }
   function resetOverride(orderId, no) {
     state.orders = state.orders.map(function (o) {
       if (o.orderId !== orderId) return o;
@@ -1400,6 +1412,58 @@
   function selOpt(value, label, selected) {
     return '<option value="' + esc(value) + '"' + (selected ? ' selected' : '') + '>' + esc(label) + '</option>';
   }
+  // Days between an installment's due date and today: >0 overdue, 0 = due today, <0 = days until due.
+  function dueDiffDays(inst) {
+    if (!inst.dueDate) return null;
+    var due = new Date(inst.dueDate);
+    if (isNaN(due.getTime())) return null;
+    var today = new Date();
+    var todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    var dueMid = new Date(due.getFullYear(), due.getMonth(), due.getDate());
+    return Math.round((todayMid - dueMid) / 86400000);
+  }
+  // Aging report over each order's current (earliest unpaid) installment — mirrors the
+  // reference site's "รายงานสินเชื่อที่ครบกำหนด" bucket row.
+  function renderDueBuckets(orders) {
+    var active = orders.filter(function (o) { return !o.isCancelled && !o.isSold; });
+    var b = { due7: 0, due3: 0, dueToday: 0, od10: 0, od30: 0, odOver30: 0 };
+    active.forEach(function (o) {
+      var cur = o.installments.find(function (i) { return i.effectiveStatus !== 'ชำระแล้ว'; });
+      if (!cur) return;
+      var d = dueDiffDays(cur);
+      if (d === null) return;
+      if (d < 0 && d >= -7) b.due7++;
+      if (d < 0 && d >= -3) b.due3++;
+      if (d === 0) b.dueToday++;
+      else if (d >= 1 && d <= 10) b.od10++;
+      else if (d >= 11 && d <= 30) b.od30++;
+      else if (d > 30) b.odOver30++;
+    });
+    var total = active.length;
+    var totalOverdue = b.od10 + b.od30 + b.odOver30;
+    function pct(n) { return total > 0 ? (n / total * 100).toFixed(1) : '0.0'; }
+    var tiles = [
+      { label: 'ทั้งหมด', count: total, pctDisp: '', color: '#2b2540', bg: 'rgba(43,37,64,0.06)' },
+      { label: 'ครบกำหนดภายใน 7 วัน', count: b.due7, pctDisp: pct(b.due7), color: '#4f7cff', bg: 'rgba(79,124,255,0.10)' },
+      { label: 'ครบกำหนดภายใน 3 วัน', count: b.due3, pctDisp: pct(b.due3), color: '#c2650a', bg: 'rgba(240,140,0,0.10)' },
+      { label: 'ครบกำหนดวันนี้', count: b.dueToday, pctDisp: pct(b.dueToday), color: '#c2650a', bg: 'rgba(240,140,0,0.10)' },
+      { label: 'เกินกำหนด 0 ถึง 10 วัน', count: b.od10, pctDisp: pct(b.od10), color: '#c99a00', bg: 'rgba(201,154,0,0.10)' },
+      { label: 'เกินกำหนด 11 ถึง 30 วัน', count: b.od30, pctDisp: pct(b.od30), color: '#e0562f', bg: 'rgba(224,86,47,0.10)' },
+      { label: 'เกินกำหนดมากกว่า 30 วัน', count: b.odOver30, pctDisp: pct(b.odOver30), color: '#e03131', bg: 'rgba(224,49,49,0.12)' },
+      { label: 'เกินกำหนดทั้งหมด', count: totalOverdue, pctDisp: pct(totalOverdue), color: '#9c1f4a', bg: 'rgba(156,31,74,0.10)' }
+    ];
+    return '<div style="margin-bottom:20px;">' +
+      '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540; margin-bottom:12px;">📊 รายงานสินเชื่อที่ครบกำหนด</div>' +
+      '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:12px;">' +
+        tiles.map(function (t) {
+          return '<div style="background:' + t.bg + '; border-radius:14px; padding:16px 14px; text-align:center;">' +
+            '<div style="font-size:12px; color:#6b6785; margin-bottom:8px; line-height:1.3;">' + t.label + '</div>' +
+            '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:19px; color:' + t.color + ';">' + t.count + (t.pctDisp ? ' <span style="font-size:11.5px; font-weight:600; opacity:0.75;">(' + t.pctDisp + '%)</span>' : '') + '</div>' +
+          '</div>';
+        }).join('') +
+      '</div>' +
+    '</div>';
+  }
   function renderTracking() {
     var html = '<div>';
 
@@ -1462,6 +1526,7 @@
 
     // Results / empty
     if (CV.hasSearched) {
+      html += renderDueBuckets(CV.filteredOrders);
       html += '<div style="background:rgba(255,255,255,0.55); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.8); border-radius:20px; padding:6px; margin-bottom:28px; box-shadow:0 8px 30px rgba(124,92,255,0.08); overflow-x:auto;">' +
         '<table style="width:100%; border-collapse:collapse; min-width:820px;"><thead><tr style="text-align:left; font-size:12px; color:#6b6785;">' +
           ['รหัสลูกค้า','ชื่อลูกค้า','คำสั่งซื้อ','สินค้า','วันที่ทำสัญญา','ยอดค้างชำระ','งวดค้าง'].map(function (h) { return '<th style="padding:14px 16px; font-weight:600;">' + h + '</th>'; }).join('') +
@@ -1532,10 +1597,11 @@
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดคงเหลือ</div><div style="font-size:15px; font-weight:700; color:#e03131;">฿' + ord.totalOutstandingDisp + '</div></div>' +
         '</div>' +
         '<div style="font-size:12.5px; color:#6b6785; margin-bottom:18px;">จำนวนงวดที่ผ่อน: <span style="font-weight:600; color:#2b2540;">' + ord.installmentCount + ' งวด</span></div>' +
-        '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540; margin-bottom:14px; display:flex; align-items:center; gap:8px;">🗓️ รายละเอียดงวดชำระ</div>' +
-        '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:16px;">' +
-          ord.installments.map(function (inst) { return renderInstallment(ord.orderId, inst); }).join('') +
+        '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:14px;">' +
+          '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540; display:flex; align-items:center; gap:8px;">🗓️ รายละเอียดงวดชำระ' + (ord.installments.length === 0 ? ' <span style="font-size:12px; font-weight:500; color:#e03131;">(ไฟล์ต้นฉบับไม่มีงวด — เพิ่มเองได้)</span>' : '') + '</div>' +
+          '<button data-action="addInstallment" data-order="' + esc(ord.orderId) + '" style="border:1px dashed rgba(124,92,255,0.4); background:transparent; color:#7c5cff; font-size:12.5px; padding:6px 14px; border-radius:20px; cursor:pointer; white-space:nowrap;">+ เพิ่มงวด</button>' +
         '</div>' +
+        renderInstallmentTable(ord.orderId, ord.installments) +
       '</div>';
     }).join('');
 
@@ -1543,21 +1609,42 @@
     return html;
   }
 
-  function renderInstallment(orderId, inst) {
-    var da = ' data-order="' + esc(orderId) + '" data-no="' + inst.no + '"';
-    return '<div style="border:1.5px solid ' + inst.statusBorder + '; background:rgba(255,255,255,0.6); border-radius:18px; padding:18px; display:flex; flex-direction:column; gap:13px; box-shadow:0 6px 18px rgba(124,92,255,0.06);">' +
-      '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px;"><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:15px; color:#2b2540;">งวดที่ ' + inst.no + '</div><div style="background:' + inst.statusSoft + '; color:' + inst.statusColor + '; padding:4px 12px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">' + esc(inst.effectiveStatus) + '</div></div>' +
-      '<div style="display:flex; align-items:center; gap:8px; font-size:13.5px; color:#2b2540;"><div style="width:20px;height:20px;border-radius:6px;background:#4f7cff;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;flex-shrink:0;">🗓</div><span style="color:#6b6785; white-space:nowrap;">ครบกำหนด:</span><input type="date" value="' + esc(inst.dueDate) + '" data-field="dueDate"' + da + ' style="border:none; background:transparent; font-weight:600; font-size:13.5px; color:#2b2540; padding:0; outline:none; flex:1; min-width:0;" /></div>' +
-      '<div style="display:flex; align-items:center; gap:8px; font-size:13.5px; color:#2b2540;"><div style="width:20px;height:20px;border-radius:6px;background:#12b886;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;flex-shrink:0;">฿</div><span style="color:#6b6785; white-space:nowrap;">ยอดผ่อนต่องวด:</span><input type="number" value="' + esc(inst.amountDue) + '" data-field="amountDue"' + da + ' style="border:none; background:transparent; font-weight:600; font-size:13.5px; color:#2b2540; padding:0; outline:none; flex:1; min-width:0;" /></div>' +
-      '<div style="display:flex; align-items:center; gap:8px; font-size:13.5px; color:#2b2540; flex-wrap:wrap;"><div style="width:20px;height:20px;border-radius:6px;background:#7c5cff;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;flex-shrink:0;">✓</div><span style="color:#6b6785; white-space:nowrap;">รับชำระ:</span><input type="number" value="' + esc(inst.amountPaid) + '" data-field="amountPaid"' + da + ' style="border:none; background:transparent; font-weight:600; font-size:13.5px; color:#2b2540; padding:0; outline:none; width:76px;" /><input type="date" value="' + esc(inst.paidDate) + '" data-field="paidDate"' + da + ' style="border:none; background:transparent; font-size:12px; color:#6b6785; padding:0; outline:none;" /></div>' +
-      '<div style="display:flex; align-items:center; gap:8px; font-size:13px; color:#2b2540;"><div style="width:20px;height:20px;border-radius:6px;background:#ff9f43;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;flex-shrink:0;">%</div><span style="color:#6b6785; white-space:nowrap;">ส่วนลดงวดนี้:</span><input type="number" value="' + esc(inst.discount) + '" data-field="discount"' + da + ' style="border:none; background:transparent; font-weight:600; font-size:13px; color:#2b2540; padding:0; outline:none; flex:1; min-width:0;" /></div>' +
-      '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">สถานะการชำระเงิน</div><div style="display:flex; align-items:center; gap:6px;">' +
-        '<select data-field="status"' + da + ' style="flex:1; padding:9px 12px; border-radius:12px; border:1px solid ' + inst.statusBorder + '; background:' + inst.statusSoft + '; color:' + inst.statusColor + '; font-size:13.5px; font-weight:600; outline:none;">' +
-          STATUS_OPTIONS.map(function (opt) { return '<option value="' + esc(opt) + '"' + (opt === inst.effectiveStatus ? ' selected' : '') + ' style="color:#000; background:#fff;">' + esc(opt) + '</option>'; }).join('') +
-        '</select>' +
-        (inst.statusOverride ? '<button data-action="resetOverride"' + da + ' title="รีเซ็ตเป็นอัตโนมัติ" style="border:none; background:transparent; cursor:pointer; font-size:14px; color:#7c5cff;">⟲</button>' : '') +
-      '</div></div>' +
-      '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">📝 หมายเหตุ</div><input type="text" value="' + esc(inst.note) + '" data-field="note"' + da + ' placeholder="+ เพิ่มหมายเหตุ" style="width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px dashed rgba(124,92,255,0.3); background:rgba(255,255,255,0.5); font-size:13px; color:#2b2540; outline:none;" /></div>' +
+  function renderInstallmentTable(orderId, installments) {
+    if (!installments.length) {
+      return '<div style="padding:20px; text-align:center; color:#8a86a3; font-size:13px; border:1px dashed rgba(124,92,255,0.25); border-radius:16px;">ยังไม่มีงวดชำระ — กด "+ เพิ่มงวด" ด้านบนเพื่อเริ่มกรอก</div>';
+    }
+    var cols = ['งวด', 'วันครบกำหนด', 'ยอดผ่อนต่องวด', 'ชำระแล้ว / วันที่ชำระ', 'ส่วนลด', 'สถานะ', 'หมายเหตุ', ''];
+    var head = '<tr>' + cols.map(function (c) {
+      return '<th style="text-align:left; padding:10px 12px; font-size:11.5px; color:#6b6785; font-weight:600; white-space:nowrap; border-bottom:1px solid rgba(124,92,255,0.14);">' + c + '</th>';
+    }).join('') + '</tr>';
+    var rows = installments.map(function (inst) {
+      var da = ' data-order="' + esc(orderId) + '" data-no="' + inst.no + '"';
+      var dd = LATE_STATUSES.indexOf(inst.effectiveStatus) !== -1 ? dueDiffDays(inst) : null;
+      var overdue = (dd !== null && dd > 0) ? dd : 0;
+      var td = 'padding:10px 12px; border-bottom:1px solid rgba(124,92,255,0.08); vertical-align:middle;';
+      return '<tr>' +
+        '<td style="' + td + ' font-weight:700; color:#2b2540; white-space:nowrap;">' + inst.no + '</td>' +
+        '<td style="' + td + '"><div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">' +
+          '<input type="date" value="' + esc(inst.dueDate) + '" data-field="dueDate"' + da + ' style="border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:12.5px; color:#2b2540; background:#fff; outline:none;" />' +
+          (overdue > 0 ? '<span style="background:rgba(224,49,49,0.10); color:#e03131; padding:2px 10px; border-radius:20px; font-size:11px; font-weight:700; white-space:nowrap;">เกิน ' + overdue + ' วัน</span>' : '') +
+        '</div></td>' +
+        '<td style="' + td + '"><input type="number" value="' + esc(inst.amountDue) + '" data-field="amountDue"' + da + ' style="width:90px; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:12.5px; color:#2b2540; background:#fff; outline:none;" /></td>' +
+        '<td style="' + td + '"><div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">' +
+          '<input type="number" value="' + esc(inst.amountPaid) + '" data-field="amountPaid"' + da + ' style="width:80px; border:1px solid rgba(18,184,134,0.3); border-radius:8px; padding:6px 8px; font-size:12.5px; color:#0b7a5b; background:rgba(18,184,134,0.06); outline:none;" />' +
+          '<input type="date" value="' + esc(inst.paidDate) + '" data-field="paidDate"' + da + ' style="border:1px solid rgba(124,92,255,0.15); border-radius:8px; padding:6px 8px; font-size:12px; color:#6b6785; background:#fff; outline:none;" />' +
+        '</div></td>' +
+        '<td style="' + td + '"><input type="number" value="' + esc(inst.discount) + '" data-field="discount"' + da + ' style="width:70px; border:1px solid rgba(255,159,67,0.3); border-radius:8px; padding:6px 8px; font-size:12.5px; color:#2b2540; background:#fff; outline:none;" /></td>' +
+        '<td style="' + td + '"><div style="display:flex; align-items:center; gap:6px;">' +
+          '<select data-field="status"' + da + ' style="padding:6px 10px; border-radius:10px; border:1px solid ' + inst.statusBorder + '; background:' + inst.statusSoft + '; color:' + inst.statusColor + '; font-size:12px; font-weight:600; outline:none;">' +
+            STATUS_OPTIONS.map(function (opt) { return '<option value="' + esc(opt) + '"' + (opt === inst.effectiveStatus ? ' selected' : '') + ' style="color:#000; background:#fff;">' + esc(opt) + '</option>'; }).join('') +
+          '</select>' +
+        '</div></td>' +
+        '<td style="' + td + '"><input type="text" value="' + esc(inst.note) + '" data-field="note"' + da + ' placeholder="+ หมายเหตุ" style="width:140px; box-sizing:border-box; border:1px dashed rgba(124,92,255,0.25); border-radius:8px; padding:6px 8px; font-size:12px; color:#2b2540; background:transparent; outline:none;" /></td>' +
+        '<td style="' + td + '">' + (inst.statusOverride ? '<button data-action="resetOverride"' + da + ' title="รีเซ็ตสถานะเป็นอัตโนมัติ" style="border:none; background:transparent; cursor:pointer; font-size:14px; color:#7c5cff;">⟲</button>' : '') + '</td>' +
+      '</tr>';
+    }).join('');
+    return '<div style="overflow-x:auto; border:1px solid rgba(124,92,255,0.14); border-radius:16px; background:rgba(255,255,255,0.5);">' +
+      '<table style="width:100%; border-collapse:collapse; min-width:820px;"><thead>' + head + '</thead><tbody>' + rows + '</tbody></table>' +
     '</div>';
   }
 
@@ -1638,6 +1725,7 @@
         case 'closeDetail': state.selectedCustomerId = null; render(); break;
         case 'saveNote': saveCustomerNote(); break;
         case 'resetOverride': resetOverride(t.getAttribute('data-order'), Number(t.getAttribute('data-no'))); break;
+        case 'addInstallment': addInstallment(t.getAttribute('data-order')); break;
       }
     });
 
