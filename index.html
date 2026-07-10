@@ -188,8 +188,8 @@
   // SHARED CLOUD SYNC (Supabase) — ตั้งค่า 2 บรรทัดนี้หลังสร้างโปรเจกต์ Supabase
   //   ถ้าเว้นว่าง = ทำงานแบบเก็บในเครื่อง (localStorage) เหมือนเดิม ไม่ต้องใส่รหัส
   // ========================================================================
-  var SUPABASE_URL = '__SUPABASE_URL__';
-  var SUPABASE_ANON_KEY = '__SUPABASE_ANON_KEY__';
+  var SUPABASE_URL = 'https://mddtfcganbuxzfendgfi.supabase.co';
+  var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kZHRmY2dhbmJ1eHpmZW5kZ2ZpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM2ODc3NzQsImV4cCI6MjA5OTI2Mzc3NH0.eseoVPBdM9fPOh8J8HyqVsBWCIjtG4eTGCRC1scVsTg';
   var CLOUD_ENABLED = SUPABASE_URL.indexOf('http') === 0 && SUPABASE_ANON_KEY.length > 20;
 
   var db = null;                 // supabase client
