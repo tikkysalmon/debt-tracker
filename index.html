@@ -220,6 +220,8 @@
   var cloudPollTimer = null;
   var applyingRemote = false;    // guard: don't re-save while applying a remote snapshot
 
+  var CLOUD_BUCKET = 'app-data';
+  var CLOUD_FILE = 'state.json';
   function initCloud() {
     if (!CLOUD_ENABLED) return false;
     if (!window.supabase || !window.supabase.createClient) { cloudStatus = 'offline'; return false; }
@@ -227,7 +229,10 @@
     return true;
   }
   function currentPayload() {
-    return { orders: state.orders, customerNotes: state.customerNotes, appliedPaymentKeys: Object.keys(appliedPaymentKeys) };
+    return {
+      orders: state.orders, customerNotes: state.customerNotes, appliedPaymentKeys: Object.keys(appliedPaymentKeys),
+      _meta: { updatedAt: new Date().toISOString(), updatedBy: myClientId }
+    };
   }
   function applySnapshot(data) {
     if (!data) return;
@@ -238,16 +243,32 @@
     (data.appliedPaymentKeys || []).forEach(function (k) { appliedPaymentKeys[k] = true; });
     applyingRemote = false;
   }
-  // Connect to the shared cloud state — open access, no password prompt.
-  function cloudConnect() {
-    return db.rpc('get_state', { pw: '' }).then(function (res) {
+  function findCloudFileMeta() {
+    return db.storage.from(CLOUD_BUCKET).list('', { search: CLOUD_FILE }).then(function (res) {
       if (res.error) throw res.error;
-      cloudConnected = true;
-      var row = Array.isArray(res.data) ? res.data[0] : res.data;
-      if (row && row.data && (row.data.orders || row.data.customerNotes)) { applySnapshot(row.data); lastServerTs = row.updated_at; }
-      else { lastServerTs = row ? row.updated_at : null; cloudSaveNow(); } // first-ever: seed with local data
-      cloudStatus = 'online';
-      return true;
+      return (res.data || []).find(function (f) { return f.name === CLOUD_FILE; }) || null;
+    });
+  }
+  // Connect to the shared cloud state — open access, no password prompt. Stored as a file in
+  // Supabase Storage (not a jsonb column) because the real dataset (~15-20MB) blew past
+  // Postgres's statement_timeout for the anon role — Storage uploads skip the query engine
+  // entirely so they aren't subject to that limit.
+  function cloudConnect() {
+    return findCloudFileMeta().then(function (item) {
+      if (!item) { cloudConnected = true; cloudStatus = 'online'; cloudSaveNow(); return true; } // first-ever: seed the bucket
+      return db.storage.from(CLOUD_BUCKET).download(CLOUD_FILE).then(function (res) {
+        cloudConnected = true;
+        if (res.error) throw res.error;
+        return res.data.text().then(function (text) {
+          var parsed = null;
+          try { parsed = JSON.parse(text); } catch (e) {}
+          if (parsed && (parsed.orders || parsed.customerNotes)) applySnapshot(parsed);
+          else cloudSaveNow();
+          lastServerTs = item.updated_at;
+          cloudStatus = 'online';
+          return true;
+        });
+      });
     });
   }
   function scheduleCloudSave() {
@@ -259,34 +280,50 @@
   function cloudSaveNow() {
     if (!CLOUD_ENABLED || !db || !cloudConnected) return;
     cloudStatus = 'saving'; updateCloudStatus();
-    var payload = currentPayload();
-    var payloadStr = JSON.stringify(payload);
-    db.rpc('save_state', { pw: '', payload: payload, client_id: myClientId }).then(function (res) {
+    var text = JSON.stringify(currentPayload());
+    var blob = new Blob([text], { type: 'application/json' });
+    db.storage.from(CLOUD_BUCKET).upload(CLOUD_FILE, blob, { upsert: true, contentType: 'application/json' }).then(function (res) {
       if (res.error) {
         cloudStatus = 'offline';
-        cloudErrorDetail = (res.error.message || res.error.details || JSON.stringify(res.error)) + ' (payload ~' + Math.round(payloadStr.length / 1024) + ' KB)';
-        console.error('[cloudSaveNow] save_state failed:', res.error, 'payload size:', payloadStr.length, 'bytes');
-      } else {
-        lastServerTs = Array.isArray(res.data) ? res.data[0] : res.data; cloudStatus = 'online'; cloudErrorDetail = '';
+        cloudErrorDetail = (res.error.message || JSON.stringify(res.error)) + ' (payload ~' + Math.round(text.length / 1024) + ' KB)';
+        console.error('[cloudSaveNow] upload failed:', res.error, 'payload size:', text.length, 'bytes');
+        updateCloudStatus();
+        return;
       }
-      updateCloudStatus();
+      cloudErrorDetail = '';
+      // Upload response doesn't include the new updated_at — fetch it so the next poll
+      // recognizes this save as already-applied instead of re-downloading the whole file.
+      findCloudFileMeta().then(function (item) {
+        lastServerTs = item ? item.updated_at : lastServerTs;
+        cloudStatus = 'online';
+        updateCloudStatus();
+      }).catch(function () { cloudStatus = 'online'; updateCloudStatus(); });
     }).catch(function (err) {
       cloudStatus = 'offline';
-      cloudErrorDetail = (err && err.message ? err.message : String(err)) + ' (payload ~' + Math.round(payloadStr.length / 1024) + ' KB)';
-      console.error('[cloudSaveNow] save_state threw:', err, 'payload size:', payloadStr.length, 'bytes');
+      cloudErrorDetail = (err && err.message ? err.message : String(err)) + ' (payload ~' + Math.round(text.length / 1024) + ' KB)';
+      console.error('[cloudSaveNow] upload threw:', err, 'payload size:', text.length, 'bytes');
       updateCloudStatus();
     });
   }
   function cloudPoll() {
     if (!CLOUD_ENABLED || !db || !cloudConnected) return;
-    db.rpc('get_state', { pw: '' }).then(function (res) {
-      if (res.error) { cloudStatus = 'offline'; cloudErrorDetail = res.error.message || ''; updateCloudStatus(); return; }
-      var row = Array.isArray(res.data) ? res.data[0] : res.data;
-      if (!row) return;
-      if (row.updated_at !== lastServerTs && row.updated_by !== myClientId) {
-        applySnapshot(row.data); lastServerTs = row.updated_at;
-        cloudStatus = 'online'; render();
-      } else { if (cloudStatus === 'offline') cloudStatus = 'online'; updateCloudStatus(); }
+    findCloudFileMeta().then(function (item) {
+      if (!item || item.updated_at === lastServerTs) {
+        if (cloudStatus === 'offline') cloudStatus = 'online';
+        updateCloudStatus();
+        return;
+      }
+      db.storage.from(CLOUD_BUCKET).download(CLOUD_FILE).then(function (res) {
+        if (res.error) { cloudStatus = 'offline'; updateCloudStatus(); return; }
+        res.data.text().then(function (text) {
+          lastServerTs = item.updated_at;
+          var parsed = null;
+          try { parsed = JSON.parse(text); } catch (e) {}
+          if (!parsed || (parsed._meta && parsed._meta.updatedBy === myClientId)) { cloudStatus = 'online'; updateCloudStatus(); return; }
+          applySnapshot(parsed);
+          cloudStatus = 'online'; render();
+        });
+      }).catch(function () { cloudStatus = 'offline'; updateCloudStatus(); });
     }).catch(function (err) { cloudStatus = 'offline'; cloudErrorDetail = err && err.message ? err.message : String(err); updateCloudStatus(); });
   }
   var CLOUD_POLL_MS = Number(window.DEBT_TRACKER_POLL_MS) || 12000;

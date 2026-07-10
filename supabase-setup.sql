@@ -4,48 +4,34 @@
 --
 -- โหมดเปิด (ไม่มีรหัสผ่าน) — ใครก็ตามที่มีลิงก์เว็บนี้อ่าน/แก้ไขข้อมูลได้ทันที
 -- ไม่มีการตรวจสิทธิ์ใดๆ ที่ระดับฐานข้อมูล ตั้งใจเลือกแบบนี้เพื่อความสะดวก
+--
+-- ข้อมูลจริงมีขนาด ~15-20MB (JSONB ก้อนเดียว) — บันทึกผ่านตาราง Postgres ธรรมดาแล้วเจอ
+-- "canceling statement due to statement timeout" เพราะ Supabase จำกัดเวลา query ของ
+-- role anon/authenticated ไว้ที่ระดับแพลตฟอร์ม (แก้ด้วย SET LOCAL statement_timeout ในฟังก์ชัน
+-- ไม่ได้ผล) จึงเปลี่ยนมาเก็บเป็นไฟล์ใน Supabase Storage แทน ซึ่งไม่ผ่าน query engine เลย
 -- ============================================================
 
--- 1) ตารางเก็บข้อมูลรวม (เปิด RLS = ห้ามเข้าถึงตรง เข้าได้ผ่าน 2 ฟังก์ชันด้านล่างเท่านั้น)
-create table if not exists public.app_state (
-  id int primary key default 1,
-  data jsonb not null default '{}'::jsonb,
-  updated_at timestamptz not null default now(),
-  updated_by text
-);
-insert into public.app_state (id, data) values (1, '{}'::jsonb)
-  on conflict (id) do nothing;
-alter table public.app_state enable row level security;
+-- 1) Storage bucket สำหรับเก็บไฟล์ข้อมูลรวม (state.json)
+insert into storage.buckets (id, name, public)
+values ('app-data', 'app-data', true)
+on conflict (id) do nothing;
 
--- 2) ฟังก์ชันอ่านข้อมูล (เปิดกว้าง ไม่ตรวจรหัสผ่าน)
--- statement_timeout ขยายไว้เพราะข้อมูลจริงมีขนาด ~15-20MB (JSONB ก้อนเดียว) — ค่า default ของ
--- Supabase (มักอยู่แถว 8 วิ) สั้นเกินไปสำหรับข้อมูลขนาดนี้ ทำให้เจอ "canceling statement due to
--- statement timeout" ตอนบันทึก
-create or replace function public.get_state(pw text)
-returns table(data jsonb, updated_at timestamptz, updated_by text)
-language plpgsql security definer set search_path = public as $$
-begin
-  set local statement_timeout = '60s';
-  return query select s.data, s.updated_at, s.updated_by from public.app_state s where s.id = 1;
-end; $$;
+-- 2) อนุญาตให้ anon อ่าน/เขียนเฉพาะใน bucket นี้ (เปิดกว้างตามที่ตั้งใจไว้)
+drop policy if exists "app-data anon read" on storage.objects;
+drop policy if exists "app-data anon insert" on storage.objects;
+drop policy if exists "app-data anon update" on storage.objects;
+create policy "app-data anon read" on storage.objects
+  for select to anon using (bucket_id = 'app-data');
+create policy "app-data anon insert" on storage.objects
+  for insert to anon with check (bucket_id = 'app-data');
+create policy "app-data anon update" on storage.objects
+  for update to anon using (bucket_id = 'app-data');
 
--- 3) ฟังก์ชันบันทึกข้อมูล (เปิดกว้าง ไม่ตรวจรหัสผ่าน)
-create or replace function public.save_state(pw text, payload jsonb, client_id text)
-returns timestamptz
-language plpgsql security definer set search_path = public as $$
-declare ts timestamptz;
-begin
-  set local statement_timeout = '60s';
-  update public.app_state set data = payload, updated_at = now(), updated_by = client_id
-    where id = 1 returning updated_at into ts;
-  return ts;
-end; $$;
-
--- 4) อนุญาตให้เรียกเฉพาะ 2 ฟังก์ชันนี้ (ตัวตารางยังล็อกอยู่)
-revoke all on function public.get_state(text) from public;
-revoke all on function public.save_state(text, jsonb, text) from public;
-grant execute on function public.get_state(text) to anon, authenticated;
-grant execute on function public.save_state(text, jsonb, text) to anon, authenticated;
-
--- ตาราง app_config (รหัสผ่านเดิม) ไม่ได้ใช้แล้ว — จะลบทิ้งก็ได้ (ไม่บังคับ):
+-- ============================================================
+-- ตารางเดิม (public.app_state, get_state, save_state) ไม่ได้ใช้แล้วหลังจากนี้ — ปล่อยไว้เฉยๆ
+-- ก็ได้ ไม่กระทบอะไร หรือจะลบทิ้งก็ได้ (ไม่บังคับ):
+-- drop function if exists public.get_state(text);
+-- drop function if exists public.save_state(text, jsonb, text);
+-- drop table if exists public.app_state;
 -- drop table if exists public.app_config;
+-- ============================================================
