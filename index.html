@@ -1083,6 +1083,15 @@
     }
     return '';
   }
+  // Sortable key for the old system's own edit-log timestamp column ("04/05/26, 17:59"), used only
+  // to pick the latest row per SO+งวด when importing a status-history export — never stored.
+  function parseLogTimestamp(v) {
+    var s = String(v || '').trim();
+    var m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4}),?\s*(\d{1,2}):(\d{2})/);
+    if (!m) return 0;
+    var yy = +m[3]; if (yy < 100) yy += 2000;
+    return yy * 100000000 + (+m[2]) * 1000000 + (+m[1]) * 10000 + (+m[4]) * 100 + (+m[5]);
+  }
   function readRows(file) {
     return file.arrayBuffer().then(function (buf) {
       var wb = window.XLSX.read(buf, { type: 'array', cellDates: true });
@@ -1363,21 +1372,83 @@
     if (!window.XLSX) { state.uploadMsgPayment = 'ไม่พบไลบรารีอ่านไฟล์ กรุณาลองใหม่'; render(); return; }
     var ALIASES = {
       orderId: ['คำสั่งซื้อ', 'orderid', 'order id', 'order no', 'orderno', 'เลขที่คำสั่งซื้อ', 'หมายเลขคำสั่งซื้อ', 'เลขคำสั่งซื้อ', 'so', 'so number', 'sonumber', 'เลขที่ so', 'เลขที่เอกสาร', 'เลขที่ใบสั่งขาย', 'เลขที่สัญญา', 'เลขสัญญา', 'เลขที่บิล'],
-      installmentNo: ['งวดที่', 'installmentno', 'installment', 'installment no', 'งวด', 'งวดที่ชำระ', 'เลขงวด'],
-      amountPaid: ['ยอดที่ชำระจริง', 'amountpaid', 'amount paid', 'ยอดชำระจริง', 'ยอดชำระ', 'ยอดที่ชำระ', 'จำนวนเงินที่ชำระ', 'ยอดรับชำระ', 'รับชำระ'],
+      installmentNo: ['งวดที่', 'installmentno', 'installment', 'installment no', 'งวด', 'งวดที่ชำระ', 'เลขงวด', 'งวดที่รับชำระ'],
+      amountPaid: ['ยอดที่ชำระจริง', 'amountpaid', 'amount paid', 'ยอดชำระจริง', 'ยอดชำระ', 'ยอดที่ชำระ', 'จำนวนเงินที่ชำระ', 'ยอดรับชำระ', 'รับชำระ', 'จำนวนเงินที่รับชำระ'],
       paidDate: ['วันที่ชำระ', 'paiddate', 'paid date', 'วันชำระ', 'วันที่รับชำระ', 'วันรับชำระ'],
-      status: ['สถานะการชำระเงิน', 'status', 'สถานะ', 'สถานะการชำระ'],
-      discount: ['ส่วนลด', 'discount'],
+      status: ['สถานะการชำระเงิน', 'status', 'สถานะ', 'สถานะการชำระ', 'สถานะการรับชำระ'],
+      discount: ['ส่วนลด', 'discount', 'ส่วนลดปิดยอด'],
       note: ['หมายเหตุ', 'note', 'remark', 'remarks'],
       // Payment-export rows are tagged ค่าผ่อน (installment) or ค่าปรับขาดผ่อน (penalty, combines
       // late fee + unlock fee) — penalty amounts must NOT be added to amountPaid or the loan
       // progress numbers become wrong.
-      type: ['ประเภท', 'type']
+      type: ['ประเภท', 'type'],
+      // Presence of this column (only in the old system's "แก้ไขรับชำระ" status-history export)
+      // switches the whole file into snapshot mode below — see isSnapshotFile.
+      timestamp: ['timestamp', 'เวลาบันทึก', 'เวลา']
     };
     readRows(file).then(function (rows) {
       var headers = rows.length ? Object.keys(rows[0]) : [];
-      var added = 0, addedPenalty = 0, missed = 0, duplicate = 0, updatedOnly = 0;
       var orders = state.orders.map(function (o) { return Object.assign({}, o, { installments: o.installments.map(function (i) { return Object.assign({}, i); }) }); });
+
+      // ---- Status-history snapshot import (e.g. "แก้ไขรับชำระ" export from the old system) ----
+      // That export is an edit log, not a payment list: the same SO+งวด repeats many times as the
+      // old system's record got corrected over time (e.g. an amount edited 548→948→1,048 baht
+      // within minutes), so rows must be applied as an absolute SET using the latest "timestamp"
+      // per (SO, งวด) — never accumulated like a normal payment file. Confirmed with the user:
+      // งวดที่ codes ≥900 don't match any real installment on any order and are meant to be
+      // skipped (unknown meaning) — they simply fall through the installments.find() below.
+      var isSnapshotFile = headers.some(function (h) {
+        return ALIASES.timestamp.some(function (a) { return String(h).trim().toLowerCase() === a.toLowerCase(); });
+      });
+      if (isSnapshotFile) {
+        var PAYMENT_STATUSES = { 'ชำระแล้ว': true, 'ชำระบางส่วน': true };
+        var lastTs = {};
+        var setPaid = 0, statusOnly = 0, missedSnap = 0;
+        rows.forEach(function (r) {
+          var orderId = String(resolveField(r, ALIASES.orderId) || '').trim();
+          var no = Number(resolveField(r, ALIASES.installmentNo) || 0);
+          var order = orders.find(function (o) { return o.orderId === orderId; });
+          if (!order) { missedSnap++; return; }
+          var inst = order.installments.find(function (i) { return i.no === no; });
+          if (!inst) { missedSnap++; return; }
+
+          var key = orderId + '|' + no;
+          var ts = parseLogTimestamp(resolveField(r, ALIASES.timestamp));
+          if (lastTs[key] !== undefined && ts < lastTs[key]) return; // superseded by an already-applied later correction
+          lastTs[key] = ts;
+
+          var amountPaid = resolveField(r, ALIASES.amountPaid);
+          var paidDate = resolveField(r, ALIASES.paidDate);
+          var status = String(resolveField(r, ALIASES.status) || '');
+          var discount = resolveField(r, ALIASES.discount);
+          // Rows that only log a collections/device status (e.g. ล็อคเครื่อง, เกินกำหนดชำระ) carry
+          // amount 0 — must not zero out a real amountPaid recorded from an earlier row/file.
+          if (PAYMENT_STATUSES[status] || toNumber(amountPaid) > 0) {
+            inst.amountPaid = toNumber(amountPaid);
+            if (paidDate !== '') inst.paidDate = toDateString(paidDate);
+            setPaid++;
+          } else {
+            statusOnly++;
+          }
+          if (status !== '') { inst.status = status; inst.statusOverride = true; }
+          if (discount !== '') inst.discount = toNumber(discount);
+        });
+
+        if (setPaid === 0 && statusOnly === 0) {
+          state.uploadMsgPayment = '⚠️ อ่านไฟล์ประวัติสถานะได้ ' + rows.length + ' แถว แต่จับคู่กับข้อมูลลูกหนี้ไม่ได้ (ยังไม่บันทึก) — ตรวจว่า SO และงวดที่รับชำระ ตรงกับข้อมูลลูกหนี้ที่มีอยู่';
+          render();
+          return;
+        }
+        state.orders = orders;
+        state.isSampleData = false;
+        savePersisted();
+        state.uploadMsgPayment = 'อัปเดตประวัติสถานะสำเร็จ: ตั้งยอดชำระ ' + setPaid + ' งวด · อัปเดตสถานะอย่างเดียว ' + statusOnly + ' งวด'
+          + (missedSnap ? (' · ไม่พบ ' + missedSnap + ' แถว (SO หรืองวดที่ไม่ตรงกับข้อมูลลูกหนี้ เช่น รหัสงวด 900+ ที่ยังไม่ทราบความหมาย)') : '');
+        render();
+        return;
+      }
+
+      var added = 0, addedPenalty = 0, missed = 0, duplicate = 0, updatedOnly = 0;
       rows.forEach(function (r) {
         var orderId = String(resolveField(r, ALIASES.orderId) || '').trim();
         var noRaw = resolveField(r, ALIASES.installmentNo);
@@ -1517,7 +1588,7 @@
     return banner +
     '<div style="display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:28px;">' +
       card('📁 ข้อมูลลูกหนี้ / ตารางผ่อนชำระ', 'คอลัมน์: รหัสลูกค้า, ชื่อลูกค้า, คำสั่งซื้อ, วันที่ออกสัญญา, รายการสินค้า, ยอดวางดาวน์, ส่วนลด, ประเภทการซื้อ, งวดที่, วันครบกำหนดชำระ, ยอดผ่อนต่องวด<br><span style="color:#0b7a5b;">อัปซ้ำได้ — ยอดชำระที่บันทึกไว้จะไม่ถูกล้าง</span>', 'debt', 'debtFileInputTop', 'onDebtFile', state.uploadMsgDebt) +
-      card('💳 ข้อมูลยอดชำระเงิน', 'คอลัมน์: คำสั่งซื้อ, งวดที่, ยอดที่ชำระจริง, วันที่ชำระ, สถานะการชำระเงิน (ถ้ามี), ส่วนลด (ถ้ามี), หมายเหตุ (ถ้ามี)<br><span style="color:#0b7a5b;">โหมดบวกเพิ่ม — ควรใส่ “วันที่ชำระ” ทุกแถวเพื่อให้ระบบกันการบวกซ้ำได้แม่นยำ</span>', 'payment', 'paymentFileInputTop', 'onPaymentFile', state.uploadMsgPayment) +
+      card('💳 ข้อมูลยอดชำระเงิน', 'คอลัมน์: คำสั่งซื้อ, งวดที่, ยอดที่ชำระจริง, วันที่ชำระ, สถานะการชำระเงิน (ถ้ามี), ส่วนลด (ถ้ามี), หมายเหตุ (ถ้ามี)<br><span style="color:#0b7a5b;">โหมดบวกเพิ่ม — ควรใส่ “วันที่ชำระ” ทุกแถวเพื่อให้ระบบกันการบวกซ้ำได้แม่นยำ</span><br><span style="color:#6b6785;">รองรับไฟล์ประวัติสถานะจากระบบเก่า (มีคอลัมน์ “timestamp”) โดยอัตโนมัติ — จะตั้งค่าล่าสุดแทนการบวกสะสม</span>', 'payment', 'paymentFileInputTop', 'onPaymentFile', state.uploadMsgPayment) +
     '</div>';
   }
 
