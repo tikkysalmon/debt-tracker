@@ -193,10 +193,10 @@
   var CLOUD_ENABLED = SUPABASE_URL.indexOf('http') === 0 && SUPABASE_ANON_KEY.length > 20;
 
   var db = null;                 // supabase client
-  var sessionPw = null;          // shared password (kept in memory + sessionStorage this tab)
+  var cloudConnected = false;    // has get_state succeeded at least once this session
   var myClientId = 'c-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
   var lastServerTs = null;       // updated_at of the last state we know about
-  var cloudStatus = CLOUD_ENABLED ? 'connecting' : 'local'; // local|connecting|online|saving|offline|locked
+  var cloudStatus = CLOUD_ENABLED ? 'connecting' : 'local'; // local|connecting|online|saving|offline
   var cloudSaveTimer = null;
   var cloudPollTimer = null;
   var applyingRemote = false;    // guard: don't re-save while applying a remote snapshot
@@ -219,12 +219,11 @@
     (data.appliedPaymentKeys || []).forEach(function (k) { appliedPaymentKeys[k] = true; });
     applyingRemote = false;
   }
-  // Load shared state with the password. Resolves true on success, throws 'unauthorized' on wrong pw.
-  function cloudLogin(pw) {
-    return db.rpc('get_state', { pw: pw }).then(function (res) {
-      if (res.error) { var m = (res.error.message || '') + (res.error.details || ''); if (/unauth/i.test(m)) throw new Error('unauthorized'); throw res.error; }
-      sessionPw = pw;
-      try { window.sessionStorage.setItem('debtTracker.pw', pw); } catch (e) {}
+  // Connect to the shared cloud state — open access, no password prompt.
+  function cloudConnect() {
+    return db.rpc('get_state', { pw: '' }).then(function (res) {
+      if (res.error) throw res.error;
+      cloudConnected = true;
       var row = Array.isArray(res.data) ? res.data[0] : res.data;
       if (row && row.data && (row.data.orders || row.data.customerNotes)) { applySnapshot(row.data); lastServerTs = row.updated_at; }
       else { lastServerTs = row ? row.updated_at : null; cloudSaveNow(); } // first-ever: seed with local data
@@ -233,22 +232,22 @@
     });
   }
   function scheduleCloudSave() {
-    if (!CLOUD_ENABLED || !db || !sessionPw || applyingRemote) return;
+    if (!CLOUD_ENABLED || !db || !cloudConnected || applyingRemote) return;
     if (cloudSaveTimer) clearTimeout(cloudSaveTimer);
     cloudSaveTimer = setTimeout(cloudSaveNow, 600);
   }
   function cloudSaveNow() {
-    if (!CLOUD_ENABLED || !db || !sessionPw) return;
+    if (!CLOUD_ENABLED || !db || !cloudConnected) return;
     cloudStatus = 'saving'; updateCloudStatus();
-    db.rpc('save_state', { pw: sessionPw, payload: currentPayload(), client_id: myClientId }).then(function (res) {
+    db.rpc('save_state', { pw: '', payload: currentPayload(), client_id: myClientId }).then(function (res) {
       if (res.error) { cloudStatus = 'offline'; }
       else { lastServerTs = Array.isArray(res.data) ? res.data[0] : res.data; cloudStatus = 'online'; }
       updateCloudStatus();
     }).catch(function () { cloudStatus = 'offline'; updateCloudStatus(); });
   }
   function cloudPoll() {
-    if (!CLOUD_ENABLED || !db || !sessionPw) return;
-    db.rpc('get_state', { pw: sessionPw }).then(function (res) {
+    if (!CLOUD_ENABLED || !db || !cloudConnected) return;
+    db.rpc('get_state', { pw: '' }).then(function (res) {
       if (res.error) { cloudStatus = 'offline'; updateCloudStatus(); return; }
       var row = Array.isArray(res.data) ? res.data[0] : res.data;
       if (!row) return;
@@ -1688,8 +1687,7 @@
       connecting: { c: '#8a86a3', bg: 'rgba(138,134,163,0.10)', t: 'กำลังเชื่อมต่อ…', pulse: false },
       online:     { c: '#12b886', bg: 'rgba(18,184,134,0.08)', t: 'ซิงก์ข้อมูลร่วม (ออนไลน์)', pulse: true },
       saving:     { c: '#c2650a', bg: 'rgba(240,140,0,0.10)', t: 'กำลังบันทึก…', pulse: false },
-      offline:    { c: '#e03131', bg: 'rgba(224,49,49,0.08)', t: 'ออฟไลน์ — จะบันทึกเมื่อกลับมา', pulse: false },
-      locked:     { c: '#8a86a3', bg: 'rgba(138,134,163,0.10)', t: 'ยังไม่ได้เข้าสู่ระบบ', pulse: false }
+      offline:    { c: '#e03131', bg: 'rgba(224,49,49,0.08)', t: 'ออฟไลน์ — จะบันทึกเมื่อกลับมา', pulse: false }
     };
     var m = map[cloudStatus] || map.local;
     return '<div style="display:flex; gap:8px; align-items:center; font-size:12px; color:#6b6785; background:' + m.bg + '; padding:10px 14px; border-radius:12px;">' +
@@ -1700,60 +1698,14 @@
     if (el) el.innerHTML = cloudStatusPillInner();
   }
 
-  // ---------- Password gate ----------
-  function showGate(errMsg) {
-    var overlay = document.getElementById('gateOverlay');
-    var inner = '<div style="max-width:400px; width:100%; background:#fff; border-radius:22px; padding:34px 32px; box-shadow:0 24px 60px rgba(43,37,64,0.28); text-align:center;">' +
-      '<div style="width:56px; height:56px; margin:0 auto 16px; border-radius:16px; background:linear-gradient(135deg,#7c5cff,#6647e0); display:flex; align-items:center; justify-content:center; font-size:26px; box-shadow:0 10px 24px rgba(124,92,255,0.4);">🔒</div>' +
-      '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:19px; color:#2b2540; margin-bottom:4px;">ระบบติดตามหนี้และผ่อนชำระ</div>' +
-      '<div style="font-size:13px; color:#6b6785; margin-bottom:22px;">กรอกรหัสผ่านร่วมของทีมเพื่อเข้าใช้งาน</div>' +
-      '<input id="gatePw" type="password" placeholder="รหัสผ่าน" style="width:100%; box-sizing:border-box; padding:13px 16px; border-radius:12px; border:1px solid rgba(124,92,255,0.3); background:#fbfaff; font-size:15px; color:#2b2540; outline:none; text-align:center; margin-bottom:12px;" />' +
-      (errMsg ? '<div style="font-size:13px; color:#e03131; margin-bottom:12px;">' + esc(errMsg) + '</div>' : '') +
-      '<button id="gateBtn" style="width:100%; background:linear-gradient(135deg,#7c5cff,#6647e0); color:#fff; border:none; padding:13px; border-radius:12px; font-size:15px; font-weight:600; cursor:pointer; box-shadow:0 8px 20px rgba(124,92,255,0.35);">เข้าสู่ระบบ</button>' +
-      '<div id="gateSpin" style="font-size:12.5px; color:#8a86a3; margin-top:12px; min-height:16px;"></div>' +
-    '</div>';
-    if (!overlay) {
-      overlay = document.createElement('div');
-      overlay.id = 'gateOverlay';
-      overlay.setAttribute('style', 'position:fixed; inset:0; z-index:9999; background:linear-gradient(160deg,#f3f1fb,#eef2fb); display:flex; align-items:center; justify-content:center; padding:20px;');
-      document.body.appendChild(overlay);
-    }
-    overlay.innerHTML = inner;
-    var pw = document.getElementById('gatePw');
-    var btn = document.getElementById('gateBtn');
-    var spin = document.getElementById('gateSpin');
-    function submit() {
-      var val = pw.value;
-      if (!val) { pw.focus(); return; }
-      btn.disabled = true; spin.textContent = 'กำลังตรวจสอบ…';
-      cloudLogin(val).then(function () {
-        overlay.parentNode && overlay.parentNode.removeChild(overlay);
-        render(); updateCloudStatus(); startCloudPolling();
-      }).catch(function (e) {
-        btn.disabled = false;
-        showGate(/unauth/i.test(e && e.message || '') ? 'รหัสผ่านไม่ถูกต้อง ลองใหม่อีกครั้ง' : 'เชื่อมต่อไม่ได้ ตรวจสอบอินเทอร์เน็ต/การตั้งค่า');
-      });
-    }
-    btn.addEventListener('click', submit);
-    pw.addEventListener('keydown', function (e) { if (e.key === 'Enter') submit(); });
-    pw.focus();
-  }
-
   // ---------- Boot ----------
   buildShell();
   initEvents();
+  render();
   if (CLOUD_ENABLED && initCloud()) {
-    render();                    // render shell content behind the gate
-    var savedPw = null;
-    try { savedPw = window.sessionStorage.getItem('debtTracker.pw'); } catch (e) {}
-    if (savedPw) {
-      cloudLogin(savedPw).then(function () { updateCloudStatus(); startCloudPolling(); })
-        .catch(function () { showGate(''); });
-    } else {
-      showGate('');
-    }
-  } else {
-    render();                    // local-only mode (no shared cloud configured)
+    // Open access — connects straight to the shared cloud state, no login step.
+    cloudConnect().then(function () { render(); updateCloudStatus(); startCloudPolling(); })
+      .catch(function () { cloudStatus = 'offline'; updateCloudStatus(); });
   }
 })();
 </script>
