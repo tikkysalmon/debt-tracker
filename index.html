@@ -69,7 +69,6 @@
     'ค้างชำระ ล็อคเครื่องไม่ได้': { color: '#9a4b1f', order: 11 }
   };
   var STATUS_OPTIONS = Object.keys(STATUS_META).sort(function (a, b) { return STATUS_META[a].order - STATUS_META[b].order; });
-  var ROW_RENDER_CAP = 500;   // keep the results table snappy on large datasets (export still full)
   var GRADE_COLORS = { A: '#12b886', B: '#f59f00', 'หนี้สงสัยจะสูญ': '#e03131' };
   var GRADE_LABELS = { A: 'เกรด A — ไม่เคยค้างชำระ', B: 'เกรด B — ค้างชำระ 1 งวด', 'หนี้สงสัยจะสูญ': 'หนี้สงสัยจะสูญ — ค้าง ≥2 งวด' };
   // Purchase types come straight from whatever the debtor file actually has (e.g. "ผ่อนชำระ 0%")
@@ -141,6 +140,29 @@
     if (diffDays >= cfg.screenDays) return 'เปลี่ยนภาพพักหน้าจอ';
     if (diffDays === 1) return 'ค้างชำระ';
     return 'เกินกำหนดชำระ';
+  }
+  // One-time self-heal for data already corrupted by an earlier bug: regular payment-file imports
+  // used to write the transaction status ("สำเร็จ") straight into inst.status with statusOverride
+  // = true, permanently hiding the real auto-computed status (ชำระแล้ว/ค้างชำระ/etc). Clears any
+  // override whose status isn't a real STATUS_META entry so it recomputes correctly. Runs on every
+  // load (local + cloud) — cheap no-op once the bad data is gone.
+  var _lastRepairChanged = false;
+  function repairInvalidStatusOverrides(orders) {
+    var changed = false;
+    var fixed = orders.map(function (o) {
+      var touched = false;
+      var insts = o.installments.map(function (i) {
+        if (i.statusOverride && i.status && !STATUS_META[i.status]) {
+          touched = true;
+          return Object.assign({}, i, { status: '', statusOverride: false });
+        }
+        return i;
+      });
+      if (touched) { changed = true; return Object.assign({}, o, { installments: insts }); }
+      return o;
+    });
+    if (changed) _lastRepairChanged = true;
+    return changed ? fixed : orders;
   }
 
   // ---------- Mock data ----------
@@ -237,7 +259,7 @@
   function applySnapshot(data) {
     if (!data) return;
     applyingRemote = true;
-    if (Array.isArray(data.orders)) { state.orders = data.orders; state.isSampleData = data.orders.length === 0 ? state.isSampleData : false; }
+    if (Array.isArray(data.orders)) { state.orders = repairInvalidStatusOverrides(data.orders); state.isSampleData = data.orders.length === 0 ? state.isSampleData : false; }
     state.customerNotes = data.customerNotes || {};
     appliedPaymentKeys = {};
     (data.appliedPaymentKeys || []).forEach(function (k) { appliedPaymentKeys[k] = true; });
@@ -334,7 +356,7 @@
 
   // ---------- State ----------
   var state = {
-    orders: (persisted && persisted.orders && persisted.orders.length) ? persisted.orders : generateMock(),
+    orders: repairInvalidStatusOverrides((persisted && persisted.orders && persisted.orders.length) ? persisted.orders : generateMock()),
     query: '',
     selectedCustomerId: null,
     uploadMsgDebt: '',
@@ -345,6 +367,8 @@
     showCancelledDetail: false,
     showSoldDetail: false,
     showFilters: true,
+    page: 1,
+    pageSize: 50,
     filterAccountStatus: 'all',
     filterDueStatus: 'all',
     filterPaymentStatus: 'all',
@@ -710,6 +734,7 @@
   // ---------- Actions ----------
   function performSearch() {
     state.searched = true;
+    state.page = 1;
     state.appliedQuery = state.query;
     state.appliedAccountStatus = state.filterAccountStatus;
     state.appliedDueStatus = state.filterDueStatus;
@@ -732,6 +757,7 @@
   function clearAllFilters() {
     Object.assign(state, {
       searched: false,
+      page: 1,
       selectedCustomerId: null,
       query: '', filterAccountStatus: 'all', filterDueStatus: 'all', filterPaymentStatus: 'all',
       filterCrmStatus: 'all', filterGrade: 'all', filterPurchaseTypes: [], dueFrom: '', dueTo: '', paidFrom: '', paidTo: '',
@@ -1430,7 +1456,7 @@
           } else {
             statusOnly++;
           }
-          if (status !== '') { inst.status = status; inst.statusOverride = true; }
+          if (status !== '' && STATUS_META[status]) { inst.status = status; inst.statusOverride = true; }
           if (discount !== '') inst.discount = toNumber(discount);
         });
 
@@ -1520,7 +1546,11 @@
         if (paidDate !== '') inst.paidDate = toDateString(paidDate); // latest payment date wins
         if (discount !== '') inst.discount = toNumber(discount);
         if (note !== '') inst.note = String(note);
-        if (status !== '') { inst.status = String(status); inst.statusOverride = true; }
+        // Regular payment exports tag every row's "สถานะการชำระ" as "สำเร็จ" (the bank/QR
+        // transaction succeeded) — that's not a debt-collection status and must NOT override the
+        // auto-computed one, or every paid installment gets stuck showing "สำเร็จ" forever instead
+        // of "ชำระแล้ว"/"ค้างชำระ"/etc. Only accept values that are real STATUS_META entries.
+        if (status !== '' && STATUS_META[String(status)]) { inst.status = String(status); inst.statusOverride = true; }
       });
       // Nothing matched at all (not even duplicates) → likely wrong columns OR debtor not imported yet.
       if (added === 0 && addedPenalty === 0 && updatedOnly === 0 && duplicate === 0) {
@@ -1926,7 +1956,12 @@
         '<div data-action="performSearch" style="background:linear-gradient(135deg,#7c5cff,#6647e0); color:#fff; padding:11px 22px; border-radius:12px; font-size:14px; font-weight:600; display:flex; align-items:center; gap:6px; box-shadow:0 6px 16px rgba(124,92,255,0.3); cursor:pointer;">🔍 ค้นหา</div>' +
         '<div data-action="clearAllFilters" style="background:#fff; border:1px solid rgba(124,92,255,0.25); color:#6b6785; padding:11px 18px; border-radius:12px; font-size:13.5px; font-weight:600; cursor:pointer; display:flex; align-items:center; gap:6px;">✕ ล้างข้อมูลทั้งหมด</div>' +
         '<div data-action="exportCsv" style="background:#fff; border:1px solid rgba(124,92,255,0.25); color:#6b6785; padding:11px 18px; border-radius:12px; font-size:13.5px; font-weight:600; cursor:pointer; display:flex; align-items:center; gap:6px;">⬇ โหลดข้อมูลเป็น CSV</div>' +
-        '<div style="margin-left:auto; font-size:13px; color:#6b6785;">พบ ' + CV.resultCount + ' รายการ</div>' +
+        '<div style="margin-left:auto; display:flex; align-items:center; gap:14px; font-size:13px; color:#6b6785;">' +
+          '<span>พบ ' + CV.resultCount + ' รายการ</span>' +
+          '<span style="display:flex; align-items:center; gap:6px;">แสดง <select data-action="setPageSize" style="padding:6px 10px; border-radius:8px; border:1px solid rgba(124,92,255,0.25); background:#fff; font-size:13px; color:#2b2540;">' +
+            [50, 100, 200].map(function (n) { return '<option value="' + n + '"' + (state.pageSize === n ? ' selected' : '') + '>' + n + '</option>'; }).join('') +
+          '</select> รายการ/หน้า</span>' +
+        '</div>' +
       '</div>';
     if (CV.hasPendingChanges) {
       html += '<div style="margin-top:10px; font-size:12.5px; color:#c2650a; background:rgba(240,140,0,0.08); padding:8px 12px; border-radius:10px; display:inline-block;">มีตัวกรองที่ยังไม่ได้กดค้นหา — กด "ค้นหา" เพื่อแสดงผลล่าสุด</div>';
@@ -1936,11 +1971,18 @@
     // Results / empty
     if (CV.hasSearched) {
       html += renderDueBuckets(CV.filteredOrders);
+      var totalResults = CV.filteredOrders.length;
+      var pageSize = state.pageSize || 50;
+      var totalPages = Math.max(1, Math.ceil(totalResults / pageSize));
+      var page = Math.min(Math.max(1, state.page || 1), totalPages);
+      state.page = page;
+      var pageStart = (page - 1) * pageSize;
+      var pageRows = CV.filteredOrders.slice(pageStart, pageStart + pageSize);
       html += '<div style="background:rgba(255,255,255,0.55); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.8); border-radius:20px; padding:6px; margin-bottom:28px; box-shadow:0 8px 30px rgba(124,92,255,0.08); overflow-x:auto;">' +
         '<table style="width:100%; border-collapse:collapse; min-width:820px;"><thead><tr style="text-align:left; font-size:12px; color:#6b6785;">' +
           ['รหัสลูกค้า','ชื่อลูกค้า','คำสั่งซื้อ','สินค้า','วันที่ทำสัญญา','ยอดค้างชำระ','งวดค้าง'].map(function (h) { return '<th style="padding:14px 16px; font-weight:600;">' + h + '</th>'; }).join('') +
         '</tr></thead><tbody>' +
-          CV.filteredOrders.slice(0, ROW_RENDER_CAP).map(function (order) {
+          pageRows.map(function (order) {
             return '<tr data-action="selectCustomer" data-cid="' + esc(order.customerId) + '" style="cursor:pointer; font-size:14px; color:#2b2540; border-top:1px solid rgba(124,92,255,0.10);">' +
               '<td style="padding:14px 16px; font-weight:600;">' + esc(order.customerId) + '</td>' +
               '<td style="padding:14px 16px;">' + esc(order.customerName) + '</td>' +
@@ -1953,8 +1995,12 @@
           }).join('') +
         '</tbody></table>' +
         (CV.noResults ? '<div style="padding:30px; text-align:center; color:#6b6785; font-size:14px;">ไม่พบข้อมูลที่ค้นหา</div>' : '') +
-        (CV.filteredOrders.length > ROW_RENDER_CAP
-          ? '<div style="padding:14px 18px; text-align:center; color:#c2650a; background:rgba(240,140,0,0.08); border-radius:14px; margin:6px; font-size:13px;">แสดง ' + ROW_RENDER_CAP + ' รายการแรก จากทั้งหมด ' + CV.filteredOrders.length + ' รายการ — ใช้ช่องค้นหา/ตัวกรองเพื่อจำกัดผลลัพธ์ (ปุ่ม “โหลดข้อมูลเป็น CSV” ยังได้ครบทุกรายการ)</div>'
+        (totalResults > 0
+          ? '<div style="display:flex; align-items:center; justify-content:center; gap:16px; padding:16px 18px;">' +
+              '<button data-action="prevPage"' + (page <= 1 ? ' disabled' : '') + ' style="padding:8px 16px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fff; color:' + (page <= 1 ? '#c3c0d6' : '#7c5cff') + '; font-size:13px; font-weight:600; cursor:' + (page <= 1 ? 'default' : 'pointer') + ';">‹ ก่อนหน้า</button>' +
+              '<span style="font-size:13px; color:#6b6785;">หน้า ' + page + ' / ' + totalPages + ' (แสดง ' + (pageStart + 1) + '–' + Math.min(pageStart + pageSize, totalResults) + ' จาก ' + totalResults + ' รายการ)</span>' +
+              '<button data-action="nextPage"' + (page >= totalPages ? ' disabled' : '') + ' style="padding:8px 16px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fff; color:' + (page >= totalPages ? '#c3c0d6' : '#7c5cff') + '; font-size:13px; font-weight:600; cursor:' + (page >= totalPages ? 'default' : 'pointer') + ';">ถัดไป ›</button>' +
+            '</div>'
           : '') +
       '</div>';
     } else {
@@ -2260,6 +2306,8 @@
         case 'saveNoteModal': saveNoteModal(); break;
         case 'togglePurchaseType': togglePurchaseType(t.getAttribute('data-type')); break;
         case 'toggleAllPurchaseTypes': toggleAllPurchaseTypes(); break;
+        case 'prevPage': state.page = Math.max(1, (state.page || 1) - 1); render(); break;
+        case 'nextPage': state.page = (state.page || 1) + 1; render(); break;
       }
     });
 
@@ -2309,6 +2357,7 @@
         case 'setPaidTotal': setPaidTotal(t.getAttribute('data-order'), toNumber(t.value)); break;
         case 'setInstallmentAmount': setInstallmentAmount(t.getAttribute('data-order'), toNumber(t.value)); break;
         case 'filter': state[t.getAttribute('data-key')] = t.value; render(); break;
+        case 'setPageSize': state.pageSize = Number(t.value) || 50; state.page = 1; render(); break;
         case 'dueMonth': state.dueMonth = Number(t.value); render(); break;
         case 'dueYear': state.dueYear = Number(t.value); render(); break;
         case 'onDebtFile': onDebtFileChange(t.files[0]); t.value = ''; break;
@@ -2343,8 +2392,13 @@
   render();
   if (CLOUD_ENABLED && initCloud()) {
     // Open access — connects straight to the shared cloud state, no login step.
-    cloudConnect().then(function () { render(); updateCloudStatus(); startCloudPolling(); })
-      .catch(function () { cloudStatus = 'offline'; updateCloudStatus(); });
+    cloudConnect().then(function () {
+      render(); updateCloudStatus(); startCloudPolling();
+      // Push the self-healed statuses back to the shared file so every other client sees the fix too.
+      if (_lastRepairChanged) { _lastRepairChanged = false; savePersisted(); }
+    }).catch(function () { cloudStatus = 'offline'; updateCloudStatus(); });
+  } else if (_lastRepairChanged) {
+    _lastRepairChanged = false; savePersisted();
   }
 })();
 </script>
