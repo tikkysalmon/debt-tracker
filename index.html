@@ -298,7 +298,17 @@
   };
 
   // ---------- Derivations ----------
+  // Deriving every installment is expensive on large datasets (100k+ rows) and render() runs on
+  // every tab switch / filter change. Cache on the identity of state.orders — all mutations
+  // replace the array, so a stale hit is impossible.
+  var _ordersCache = { ref: null, val: null };
   function computeOrders() {
+    if (_ordersCache.ref === state.orders) return _ordersCache.val;
+    var out = computeOrdersUncached();
+    _ordersCache = { ref: state.orders, val: out };
+    return out;
+  }
+  function computeOrdersUncached() {
     return state.orders.map(function (o) {
       var installments = o.installments.map(function (i) {
         var status = ((i.statusOverride || !AUTO_STATUS_ENABLED) && i.status) ? i.status : computeStatus(i, CFG);
@@ -594,7 +604,9 @@
       else if (activeSel.some(function (o) { return o.lateCount === 1; })) selectedCustomerGrade = 'B';
     }
 
-    var dashboard = computeDashboard(computedOrders);
+    // Only the dashboard view needs these aggregates — computing them for every render costs
+    // hundreds of ms once there are 100k+ installments.
+    var dashboard = state.view === 'dashboard' ? computeDashboard(computedOrders) : null;
 
     return {
       computedOrders: computedOrders,
@@ -736,6 +748,41 @@
     }
     return '';
   }
+  // "5,900.00" / " " / "฿1,200" → number. Plain Number() yields NaN on thousands separators.
+  function toNumber(v) {
+    if (typeof v === 'number') return isFinite(v) ? v : 0;
+    var s = String(v == null ? '' : v).replace(/[,\s฿]/g, '');
+    if (!s) return 0;
+    var n = Number(s);
+    return isFinite(n) ? n : 0;
+  }
+  // First alias that yields a value > 0 (columns like "ระยะเวลาผ่อน (ผ่อน)" hold " " when unused).
+  function resolveNumber(row, aliases) {
+    var keys = Object.keys(row);
+    for (var i = 0; i < aliases.length; i++) {
+      var a = aliases[i];
+      var k = keys.find(function (kk) { return kk.trim().toLowerCase() === a.toLowerCase(); });
+      if (k !== undefined) { var n = toNumber(row[k]); if (n > 0) return n; }
+    }
+    return 0;
+  }
+  // Concatenate every matching text column (product may be split across ผ่อน/ดาวน์/อุปกรณ์เสริม)
+  function joinText(row, aliases) {
+    var keys = Object.keys(row), out = [];
+    aliases.forEach(function (a) {
+      var k = keys.find(function (kk) { return kk.trim().toLowerCase() === a.toLowerCase(); });
+      if (k !== undefined) { var v = String(row[k] == null ? '' : row[k]).trim(); if (v && out.indexOf(v) === -1) out.push(v); }
+    });
+    return out.join(' + ');
+  }
+  // Shift an ISO date by k months, landing on `day` (clamped to the month's last day).
+  function addMonthsClamped(isoStr, k, day) {
+    var p = isoStr.split('-').map(Number);
+    var t = new Date(p[0], p[1] - 1 + k, 1);
+    var lastDay = new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate();
+    var dd = Math.min(day > 0 ? day : p[2], lastDay);
+    return t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(dd).padStart(2, '0');
+  }
   // Which header a field actually matched (for import diagnostics)
   function resolveKey(row, aliases) {
     var keys = Object.keys(row);
@@ -806,17 +853,23 @@
     if (!file) return;
     if (!window.XLSX) { state.uploadMsgDebt = 'ไม่พบไลบรารีอ่านไฟล์ กรุณาลองใหม่'; render(); return; }
     var ALIASES = {
-      customerId: ['รหัสลูกค้า', 'customerid', 'customer id', 'รหัสลูกค้า', 'รหัส', 'รหัสสมาชิก'],
-      customerName: ['ชื่อลูกค้า', 'customername', 'customer name', 'ชื่อ-สกุล', 'ชื่อ - สกุล', 'ชื่อลูกค้า', 'ชื่อ', 'ชื่อผู้ทำสัญญา'],
+      customerId: ['รหัสลูกค้า', 'customerid', 'customer id', 'รหัส', 'รหัสสมาชิก'],
+      customerName: ['ชื่อ-นามสกุลลูกค้า', 'ชื่อลูกค้า', 'customername', 'customer name', 'ชื่อ-สกุล', 'ชื่อ - สกุล', 'ชื่อ', 'ชื่อผู้ทำสัญญา'],
       orderId: ['คำสั่งซื้อ', 'orderid', 'order id', 'order no', 'orderno', 'เลขที่คำสั่งซื้อ', 'หมายเลขคำสั่งซื้อ', 'เลขคำสั่งซื้อ', 'so', 'so number', 'sonumber', 'เลขที่ so', 'เลขที่เอกสาร', 'เลขที่ใบสั่งขาย', 'เลขที่สัญญา', 'เลขสัญญา', 'เลขที่บิล'],
-      contractDate: ['วันที่ออกสัญญา', 'contractdate', 'contract date', 'วันที่ทำสัญญา', 'วันที่สัญญา', 'วันทำสัญญา', 'วันที่'],
-      productList: ['รายการสินค้า', 'productlist', 'product', 'product name', 'สินค้า', 'รายการ', 'ชื่อสินค้า'],
+      contractDate: ['วันที่ทำสัญญา', 'วันที่ที่ออกสัญญา', 'วันที่ออกสัญญา', 'contractdate', 'contract date', 'วันที่สัญญา', 'วันทำสัญญา', 'วันที่'],
+      productList: ['รายการสินค้า (ผ่อน)', 'รายการสินค้า (ดาวน์)', 'รายการสินค้าอุปกรณ์เสริม', 'รายการสินค้า', 'productlist', 'product', 'product name', 'สินค้า', 'รายการ', 'ชื่อสินค้า'],
       downPayment: ['ยอดวางดาวน์', 'downpayment', 'down payment', 'เงินดาวน์', 'ดาวน์', 'ยอดดาวน์'],
       discount: ['ส่วนลด', 'discount'],
       purchaseType: ['ประเภทการซื้อ', 'purchasetype', 'purchase type', 'ประเภท', 'ประเภทสัญญา'],
       installmentNo: ['งวดที่', 'installmentno', 'installment', 'installment no', 'งวด', 'งวดที่ชำระ', 'เลขงวด'],
       dueDate: ['วันครบกำหนดชำระ', 'duedate', 'due date', 'วันครบกำหนด', 'กำหนดชำระ', 'วันนัดชำระ', 'วันที่ครบกำหนด'],
-      amountDue: ['ยอดผ่อนต่องวด', 'amountdue', 'amount due', 'ยอดผ่อน', 'ค่างวด', 'จำนวนเงินต่องวด', 'ยอดชำระต่องวด']
+      amountDue: ['ยอดผ่อนต่องวด', 'ราคาผ่อนต่องวด (ดาวน์)', 'amountdue', 'amount due', 'ยอดผ่อน', 'ค่างวด', 'จำนวนเงินต่องวด', 'ยอดชำระต่องวด'],
+      age: ['อายุลูกค้า', 'อายุ', 'age'],
+      // Schedule-style workbook: remaining term + first unpaid due date + monthly payment day
+      term: ['ระยะเวลาผ่อน (ผ่อน)', 'ระยะเวลาผ่อน (ดาวน์)', 'ระยะเวลาผ่อน', 'จำนวนงวดคงเหลือ', 'จำนวนงวด', 'งวดทั้งหมด'],
+      paidCount: ['จำนวนงวดที่ชำระแล้ว', 'งวดที่ชำระแล้ว', 'จำนวนงวดที่รับชำระ'],
+      firstDue: ['วันครบกำหนดชำระงวดแรก', 'วันครบกำหนดงวดแรก', 'กำหนดชำระงวดแรก'],
+      payDay: ['ชำระทุกวันที่', 'วันที่ชำระทุกเดือน', 'ชำระทุกวัน']
     };
     function sheetInfo(s) {
       var h = Object.keys(s.rows[0]);
@@ -824,8 +877,11 @@
         name: s.name, rows: s.rows, headers: h,
         orderKey: headerKey(h, ALIASES.orderId), dueKey: headerKey(h, ALIASES.dueDate),
         instKey: headerKey(h, ALIASES.installmentNo), custNameKey: headerKey(h, ALIASES.customerName),
+        custIdKey: headerKey(h, ALIASES.customerId),
         productKey: headerKey(h, ALIASES.productList), downKey: headerKey(h, ALIASES.downPayment),
-        typeKey: headerKey(h, ALIASES.purchaseType), amountKey: headerKey(h, ALIASES.amountDue)
+        typeKey: headerKey(h, ALIASES.purchaseType), amountKey: headerKey(h, ALIASES.amountDue),
+        termKey: headerKey(h, ALIASES.term), firstDueKey: headerKey(h, ALIASES.firstDue),
+        payDayKey: headerKey(h, ALIASES.payDay)
       };
     }
     // Prefer a sheet that carries งวดที่ and is named like a due-date sheet.
@@ -844,9 +900,13 @@
       var instCands = info.filter(function (s) { return s.orderKey && s.dueKey; })
                           .sort(function (a, b) { return instScore(b) - instScore(a); });
       var instSheet = instCands[0] || null;
-      var orderCands = info.filter(function (s) { return s.orderKey && (s.custNameKey || s.productKey || s.downKey || s.typeKey); });
+      var orderCands = info.filter(function (s) { return s.orderKey && (s.custNameKey || s.productKey || s.downKey || s.typeKey || s.termKey); });
       var orderSheet = orderCands.filter(function (s) { return s !== instSheet; })[0] || orderCands[0]
                     || info.filter(function (s) { return s.orderKey; })[0] || null;
+      // Schedule sheet: no per-row installments, just "first unpaid due date" + "pay on day N"
+      var schedSheet = info.filter(function (s) {
+        return s !== orderSheet && s !== instSheet && s.firstDueKey && (s.orderKey || s.custIdKey);
+      })[0] || null;
 
       if (!orderSheet) {
         state.uploadMsgDebt = '⚠️ จับคู่คอลัมน์ "คำสั่งซื้อ" ไม่ได้ในชีทใดเลย (ยังไม่นำเข้าข้อมูล)\nชีทที่พบ: ' + sheetList +
@@ -854,6 +914,21 @@
         render(); return;
       }
       var separate = instSheet && instSheet !== orderSheet;
+
+      // Build schedule lookups (join on คำสั่งซื้อ first, then รหัสลูกค้า)
+      var schedBySO = {}, schedByCust = {}, joinSO = 0, joinCust = 0, noSched = 0;
+      if (schedSheet && !separate) {
+        schedSheet.rows.forEach(function (r) {
+          var first = toDateString(resolveField(r, ALIASES.firstDue));
+          if (!first) return;
+          var rec = { first: first, payDay: resolveNumber(r, ALIASES.payDay) };
+          var so = String(resolveField(r, ALIASES.orderId) || '').trim();
+          var cu = String(resolveField(r, ALIASES.customerId) || '').trim();
+          if (so && !schedBySO[so]) schedBySO[so] = rec;
+          if (cu && !schedByCust[cu]) schedByCust[cu] = rec;
+        });
+      }
+      var useSchedule = schedSheet && !separate && (Object.keys(schedBySO).length || Object.keys(schedByCust).length);
 
       var badDates = 0, badSamples = [], instCount = 0, unmatched = 0, unmatchedSamples = [];
       var byOrder = {};
@@ -863,12 +938,14 @@
           customerName: String(resolveField(r, ALIASES.customerName) || ''),
           orderId: orderId,
           contractDate: toDateString(resolveField(r, ALIASES.contractDate)),
-          productList: String(resolveField(r, ALIASES.productList) || ''),
-          downPayment: Number(resolveField(r, ALIASES.downPayment) || 0),
-          discount: Number(resolveField(r, ALIASES.discount) || 0),
+          productList: joinText(r, ALIASES.productList),
+          downPayment: resolveNumber(r, ALIASES.downPayment),
+          discount: resolveNumber(r, ALIASES.discount),
           purchaseType: String(resolveField(r, ALIASES.purchaseType) || ''),
-          age: Number(resolveField(r, ['อายุ', 'age']) || 0),
-          _perInst: Number(resolveField(r, ALIASES.amountDue) || 0),
+          age: Math.round(resolveNumber(r, ALIASES.age)),
+          _perInst: resolveNumber(r, ALIASES.amountDue),
+          _term: Math.round(resolveNumber(r, ALIASES.term)),
+          _paidCount: Math.round(resolveNumber(r, ALIASES.paidCount)),
           installments: []
         };
       }
@@ -880,22 +957,43 @@
           var sm = String(rawDue);
           if (badSamples.length < 3 && badSamples.indexOf(sm) === -1) badSamples.push(sm);
         }
-        var amt = resolveField(r, ALIASES.amountDue);
+        var amt = resolveNumber(r, ALIASES.amountDue);
         o.installments.push({
-          no: Number(resolveField(r, ALIASES.installmentNo) || o.installments.length + 1),
+          no: Math.round(resolveNumber(r, ALIASES.installmentNo)) || (o.installments.length + 1),
           dueDate: dueDate,
-          amountDue: Number(amt !== '' ? amt : (o._perInst || 0)),
+          amountDue: amt || (o._perInst || 0),
           amountPaid: 0, paidDate: '', status: '', statusOverride: false, discount: 0, note: ''
         });
         instCount++;
+      }
+      // Reconstruct the full schedule: `_paidCount` already-paid installments before the first
+      // unpaid one (`rec.first`), then `_term` remaining ones, all on `rec.payDay` each month.
+      function generateSchedule(o) {
+        var rec = schedBySO[o.orderId] || (o.customerId ? schedByCust[o.customerId] : null);
+        if (rec) { if (schedBySO[o.orderId]) joinSO++; else joinCust++; } else noSched++;
+        var amt = o._perInst || 0;
+        var paidN = Math.max(0, Math.min(240, o._paidCount || 0));
+        var N = Math.max(0, Math.min(240, paidN + Math.max(0, o._term || 0)));
+        for (var k = 1; k <= N; k++) {
+          o.installments.push({
+            no: k,
+            dueDate: rec ? addMonthsClamped(rec.first, k - 1 - paidN, rec.payDay) : '',
+            amountDue: amt,
+            amountPaid: k <= paidN ? amt : 0,
+            paidDate: '', status: '', statusOverride: false, discount: 0, note: ''
+          });
+          instCount++;
+        }
       }
 
       // Order headers (one row per คำสั่งซื้อ; first row wins)
       orderSheet.rows.forEach(function (r) {
         var orderId = String(resolveField(r, ALIASES.orderId) || '').trim();
         if (!orderId) return;
-        if (!byOrder[orderId]) byOrder[orderId] = makeOrder(r, orderId);
-        if (!separate) addInstallment(byOrder[orderId], r);   // legacy single-sheet: row = installment
+        var isNew = !byOrder[orderId];
+        if (isNew) byOrder[orderId] = makeOrder(r, orderId);
+        if (useSchedule) { if (isNew) generateSchedule(byOrder[orderId]); }
+        else if (!separate) addInstallment(byOrder[orderId], r);   // legacy single-sheet: row = installment
       });
       // Installments from the dedicated sheet, joined on คำสั่งซื้อ
       if (separate) {
@@ -914,7 +1012,7 @@
       var noInstOrders = 0;
       Object.keys(byOrder).forEach(function (k) {
         var o = byOrder[k];
-        delete o._perInst;
+        delete o._perInst; delete o._term; delete o._paidCount;
         if (!o.installments.length) { noInstOrders++; return; }
         var anyNo = o.installments.some(function (i) { return isFinite(i.no) && i.no > 0; });
         if (anyNo) o.installments.sort(function (a, b) { return (a.no || 0) - (b.no || 0); });
@@ -956,12 +1054,19 @@
       savePersisted();
 
       var msg = 'นำเข้าสำเร็จ ' + newOrders.length + ' คำสั่งซื้อ · ' + instCount + ' งวด\n'
-        + 'ชีทลูกหนี้: "' + orderSheet.name + '"' + (separate ? (' · ชีทงวด/วันครบกำหนด: "' + instSheet.name + '"') : ' (ชีทเดียว)')
+        + 'ชีทลูกหนี้: "' + orderSheet.name + '"'
+        + (separate ? (' · ชีทงวด: "' + instSheet.name + '"')
+          : useSchedule ? (' · ชีทวันครบกำหนด: "' + schedSheet.name + '" (สร้างตารางงวดอัตโนมัติ)') : ' (ชีทเดียว)')
         + ' — ยอดชำระเดิมถูกเก็บไว้';
+      if (useSchedule) {
+        msg += '\nจับคู่ด้วยคำสั่งซื้อ ' + joinSO + ' · ด้วยรหัสลูกค้า ' + joinCust + (noSched ? (' · ไม่พบวันครบกำหนด ' + noSched) : '');
+      }
       var warn = [];
-      if (!instSheet) {
+      if (!instSheet && !useSchedule) {
         warn.push('ไม่พบคอลัมน์ "วันครบกำหนดชำระ" ในชีทใดเลย — ทุกงวดจะถูกนับเป็น "ยังไม่ถึงกำหนด" (ชีทที่พบ: ' + sheetList + ')');
-      } else if (badDates > 0) {
+      } else if (useSchedule && noSched > 0) {
+        warn.push('มี ' + noSched + ' คำสั่งซื้อ ที่หาวันครบกำหนดไม่เจอ (งวดจะไม่มีวันที่)');
+      } else if (instSheet && badDates > 0) {
         warn.push('อ่านวันที่ไม่ได้ ' + badDates + ' งวด จากคอลัมน์ "' + instSheet.dueKey + '" (ตัวอย่างค่า: ' + badSamples.map(function (x) { return '“' + x + '”'; }).join(', ') + ')');
       }
       if (unmatched > 0) {
@@ -1004,16 +1109,16 @@
 
         // ACCUMULATE the paid amount onto the running total, with duplicate-row protection.
         if (amountPaid !== '') {
-          var payKey = orderId + '|' + no + '|' + toDateString(paidDate) + '|' + Number(amountPaid);
+          var payKey = orderId + '|' + no + '|' + toDateString(paidDate) + '|' + toNumber(amountPaid);
           if (appliedPaymentKeys[payKey]) { duplicate++; return; } // same row already added before → skip
           appliedPaymentKeys[payKey] = true;
-          inst.amountPaid = Number(inst.amountPaid || 0) + Number(amountPaid);
+          inst.amountPaid = toNumber(inst.amountPaid) + toNumber(amountPaid);
           added++;
         } else {
           updatedOnly++;
         }
         if (paidDate !== '') inst.paidDate = toDateString(paidDate); // latest payment date wins
-        if (discount !== '') inst.discount = Number(discount);
+        if (discount !== '') inst.discount = toNumber(discount);
         if (note !== '') inst.note = String(note);
         if (status !== '') { inst.status = String(status); inst.statusOverride = true; }
       });
