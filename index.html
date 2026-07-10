@@ -674,6 +674,35 @@
     savePersisted();
     render();
   }
+  function updateOrderField(orderId, field, value) {
+    state.orders = state.orders.map(function (o) {
+      if (o.orderId !== orderId) return o;
+      var patch = {}; patch[field] = value;
+      return Object.assign({}, o, patch);
+    });
+    var order = state.orders.find(function (o) { return o.orderId === orderId; });
+    if (order && order.firstDueDate && order.payDay) applySchedule(orderId);
+    savePersisted();
+    render();
+  }
+  // Recomputes due dates for every not-yet-paid installment from firstDueDate + payDay
+  // (reuses the same scheduleDueDate() logic the debtor-file import uses). Installments with
+  // amountPaid already recorded keep their existing due date untouched.
+  function applySchedule(orderId) {
+    state.orders = state.orders.map(function (o) {
+      if (o.orderId !== orderId || !o.firstDueDate || !o.payDay) return o;
+      var payDayNum = Number(o.payDay);
+      var sorted = o.installments.slice().sort(function (a, b) { return (a.no || 0) - (b.no || 0); });
+      var paidN = 0;
+      for (var i = 0; i < sorted.length; i++) { if (Number(sorted[i].amountPaid || 0) > 0) paidN++; else break; }
+      var updated = o.installments.map(function (inst) {
+        var idx = sorted.findIndex(function (s) { return s.no === inst.no; });
+        if (idx < paidN) return inst;
+        return Object.assign({}, inst, { dueDate: scheduleDueDate(o.firstDueDate, idx - paidN, payDayNum) });
+      });
+      return Object.assign({}, o, { installments: updated });
+    });
+  }
   // Lets staff fill in orders the source file left with zero installment rows (e.g. missing
   // "ระยะเวลาผ่อน" in the debtor export) — appends one blank editable งวด to the order.
   function addInstallment(orderId) {
@@ -958,6 +987,8 @@
           discount: resolveNumber(r, ALIASES.discount),
           purchaseType: String(resolveField(r, ALIASES.purchaseType) || ''),
           age: Math.round(resolveNumber(r, ALIASES.age)),
+          firstDueDate: toDateString(resolveField(r, ALIASES.firstDue)),
+          payDay: Math.round(resolveNumber(r, ALIASES.payDay)) || null,
           _perInst: resolveNumber(r, ALIASES.amountDue),
           _term: Math.round(resolveNumber(r, ALIASES.term)),
           _paidCount: Math.round(resolveNumber(r, ALIASES.paidCount)),
@@ -985,7 +1016,11 @@
       // unpaid one (`rec.first`), then `_term` remaining ones, all on `rec.payDay` each month.
       function generateSchedule(o) {
         var rec = schedBySO[o.orderId] || (o.customerId ? schedByCust[o.customerId] : null);
-        if (rec) { if (schedBySO[o.orderId]) joinSO++; else joinCust++; } else noSched++;
+        if (rec) {
+          if (schedBySO[o.orderId]) joinSO++; else joinCust++;
+          if (!o.firstDueDate) o.firstDueDate = rec.first;
+          if (!o.payDay) o.payDay = rec.payDay || null;
+        } else noSched++;
         var amt = o._perInst || 0;
         var paidN = Math.max(0, Math.min(240, o._paidCount || 0));
         var N = Math.max(0, Math.min(240, paidN + Math.max(0, o._term || 0)));
@@ -1596,6 +1631,16 @@
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดรับชำระ</div><div style="font-size:15px; font-weight:700; color:#12b886;">฿' + ord.totalPaidDisp + '</div></div>' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดคงเหลือ</div><div style="font-size:15px; font-weight:700; color:#e03131;">฿' + ord.totalOutstandingDisp + '</div></div>' +
         '</div>' +
+        '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; margin-bottom:14px; padding:14px 16px; background:rgba(124,92,255,0.05); border-radius:14px;">' +
+          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">🗓 วันครบกำหนดชำระงวดแรก</div><div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">' +
+            '<input type="date" value="' + esc(ord.firstDueDate || '') + '" data-order-field="firstDueDate" data-order="' + esc(ord.orderId) + '" style="border:1px solid rgba(124,92,255,0.25); border-radius:8px; padding:7px 10px; font-size:13px; color:#2b2540; background:#fff; outline:none;" />' +
+            (ord.firstDueDate ? '<span style="font-size:12px; color:#6b6785;">(' + esc(fmtDate(ord.firstDueDate)) + ')</span>' : '') +
+          '</div></div>' +
+          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">🔁 ชำระทุกวันที่</div>' +
+            '<input type="number" min="1" max="31" value="' + esc(ord.payDay || '') + '" data-order-field="payDay" data-order="' + esc(ord.orderId) + '" placeholder="เช่น 5" style="width:100px; border:1px solid rgba(124,92,255,0.25); border-radius:8px; padding:7px 10px; font-size:13px; color:#2b2540; background:#fff; outline:none;" />' +
+          '</div>' +
+        '</div>' +
+        (ord.firstDueDate && ord.payDay ? '<div style="font-size:11.5px; color:#0b7a5b; margin-bottom:10px;">✓ กรอกครบแล้ว — ตารางงวดด้านล่างคำนวณวันครบกำหนดอัตโนมัติจาก 2 ช่องนี้ (งวดที่จ่ายแล้วจะไม่ถูกแก้)</div>' : '') +
         '<div style="font-size:12.5px; color:#6b6785; margin-bottom:18px;">จำนวนงวดที่ผ่อน: <span style="font-weight:600; color:#2b2540;">' + ord.installmentCount + ' งวด</span></div>' +
         '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:14px;">' +
           '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540; display:flex; align-items:center; gap:8px;">🗓️ รายละเอียดงวดชำระ' + (ord.installments.length === 0 ? ' <span style="font-size:12px; font-weight:500; color:#e03131;">(ไฟล์ต้นฉบับไม่มีงวด — เพิ่มเองได้)</span>' : '') + '</div>' +
@@ -1753,6 +1798,11 @@
       var field = t.getAttribute('data-field');
       if (field) {
         updateInstallment(t.getAttribute('data-order'), Number(t.getAttribute('data-no')), field, t.value);
+        return;
+      }
+      var orderField = t.getAttribute('data-order-field');
+      if (orderField) {
+        updateOrderField(t.getAttribute('data-order'), orderField, orderField === 'payDay' ? Number(t.value) : t.value);
         return;
       }
       var a = t.getAttribute('data-action');
