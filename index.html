@@ -785,6 +785,23 @@
       return window.XLSX.utils.sheet_to_json(sheet, { defval: '' });
     });
   }
+  // The debtor workbook may split order headers and installment rows across separate sheets.
+  function readAllSheets(file) {
+    return file.arrayBuffer().then(function (buf) {
+      var wb = window.XLSX.read(buf, { type: 'array', cellDates: true });
+      return wb.SheetNames.map(function (n) {
+        return { name: n, rows: window.XLSX.utils.sheet_to_json(wb.Sheets[n], { defval: '' }) };
+      }).filter(function (s) { return s.rows.length > 0; });
+    });
+  }
+  function headerKey(headers, aliases) {
+    for (var i = 0; i < aliases.length; i++) {
+      var a = aliases[i];
+      var k = headers.find(function (h) { return String(h).trim().toLowerCase() === a.toLowerCase(); });
+      if (k !== undefined) return k;
+    }
+    return '';
+  }
   function onDebtFileChange(file) {
     if (!file) return;
     if (!window.XLSX) { state.uploadMsgDebt = 'ไม่พบไลบรารีอ่านไฟล์ กรุณาลองใหม่'; render(); return; }
@@ -801,48 +818,115 @@
       dueDate: ['วันครบกำหนดชำระ', 'duedate', 'due date', 'วันครบกำหนด', 'กำหนดชำระ', 'วันนัดชำระ', 'วันที่ครบกำหนด'],
       amountDue: ['ยอดผ่อนต่องวด', 'amountdue', 'amount due', 'ยอดผ่อน', 'ค่างวด', 'จำนวนเงินต่องวด', 'ยอดชำระต่องวด']
     };
-    readRows(file).then(function (rows) {
-      var headers = rows.length ? Object.keys(rows[0]) : [];
-      var matchedDueKey = rows.length ? resolveKey(rows[0], ALIASES.dueDate) : '';
-      var matchedOrderKey = rows.length ? resolveKey(rows[0], ALIASES.orderId) : '';
-      var badDates = 0, badSamples = [], instCount = 0;
+    function sheetInfo(s) {
+      var h = Object.keys(s.rows[0]);
+      return {
+        name: s.name, rows: s.rows, headers: h,
+        orderKey: headerKey(h, ALIASES.orderId), dueKey: headerKey(h, ALIASES.dueDate),
+        instKey: headerKey(h, ALIASES.installmentNo), custNameKey: headerKey(h, ALIASES.customerName),
+        productKey: headerKey(h, ALIASES.productList), downKey: headerKey(h, ALIASES.downPayment),
+        typeKey: headerKey(h, ALIASES.purchaseType), amountKey: headerKey(h, ALIASES.amountDue)
+      };
+    }
+    // Prefer a sheet that carries งวดที่ and is named like a due-date sheet.
+    function instScore(s) {
+      var sc = 0;
+      if (s.instKey) sc += 2;
+      if (/ครบกำหนด|งวด|due/i.test(s.name)) sc += 3;
+      if (!s.custNameKey) sc += 1;
+      return sc;
+    }
+    readAllSheets(file).then(function (sheets) {
+      if (!sheets.length) { state.uploadMsgDebt = '⚠️ ไม่พบข้อมูลในไฟล์'; render(); return; }
+      var info = sheets.map(sheetInfo);
+      var sheetList = info.map(function (s) { return '"' + s.name + '"'; }).join(', ');
+
+      var instCands = info.filter(function (s) { return s.orderKey && s.dueKey; })
+                          .sort(function (a, b) { return instScore(b) - instScore(a); });
+      var instSheet = instCands[0] || null;
+      var orderCands = info.filter(function (s) { return s.orderKey && (s.custNameKey || s.productKey || s.downKey || s.typeKey); });
+      var orderSheet = orderCands.filter(function (s) { return s !== instSheet; })[0] || orderCands[0]
+                    || info.filter(function (s) { return s.orderKey; })[0] || null;
+
+      if (!orderSheet) {
+        state.uploadMsgDebt = '⚠️ จับคู่คอลัมน์ "คำสั่งซื้อ" ไม่ได้ในชีทใดเลย (ยังไม่นำเข้าข้อมูล)\nชีทที่พบ: ' + sheetList +
+          '\nหัวคอลัมน์: ' + info.map(function (s) { return '[' + s.name + '] ' + s.headers.join(' | '); }).join('\n');
+        render(); return;
+      }
+      var separate = instSheet && instSheet !== orderSheet;
+
+      var badDates = 0, badSamples = [], instCount = 0, unmatched = 0, unmatchedSamples = [];
       var byOrder = {};
-      rows.forEach(function (r) {
-        var orderId = String(resolveField(r, ALIASES.orderId) || '').trim();
-        if (!orderId) return;
-        if (!byOrder[orderId]) {
-          byOrder[orderId] = {
-            customerId: String(resolveField(r, ALIASES.customerId) || ''),
-            customerName: String(resolveField(r, ALIASES.customerName) || ''),
-            orderId: orderId,
-            contractDate: toDateString(resolveField(r, ALIASES.contractDate)),
-            productList: String(resolveField(r, ALIASES.productList) || ''),
-            downPayment: Number(resolveField(r, ALIASES.downPayment) || 0),
-            discount: Number(resolveField(r, ALIASES.discount) || 0),
-            purchaseType: String(resolveField(r, ALIASES.purchaseType) || ''),
-            age: Number(resolveField(r, ['อายุ', 'age']) || 0),
-            installments: []
-          };
-        }
+      function makeOrder(r, orderId) {
+        return {
+          customerId: String(resolveField(r, ALIASES.customerId) || ''),
+          customerName: String(resolveField(r, ALIASES.customerName) || ''),
+          orderId: orderId,
+          contractDate: toDateString(resolveField(r, ALIASES.contractDate)),
+          productList: String(resolveField(r, ALIASES.productList) || ''),
+          downPayment: Number(resolveField(r, ALIASES.downPayment) || 0),
+          discount: Number(resolveField(r, ALIASES.discount) || 0),
+          purchaseType: String(resolveField(r, ALIASES.purchaseType) || ''),
+          age: Number(resolveField(r, ['อายุ', 'age']) || 0),
+          _perInst: Number(resolveField(r, ALIASES.amountDue) || 0),
+          installments: []
+        };
+      }
+      function addInstallment(o, r) {
         var rawDue = resolveField(r, ALIASES.dueDate);
         var dueDate = toDateString(rawDue);
         if (rawDue !== '' && !dueDate) {
           badDates++;
-          var sample = String(rawDue);
-          if (badSamples.length < 3 && badSamples.indexOf(sample) === -1) badSamples.push(sample);
+          var sm = String(rawDue);
+          if (badSamples.length < 3 && badSamples.indexOf(sm) === -1) badSamples.push(sm);
         }
-        instCount++;
-        byOrder[orderId].installments.push({
-          no: Number(resolveField(r, ALIASES.installmentNo) || byOrder[orderId].installments.length + 1),
+        var amt = resolveField(r, ALIASES.amountDue);
+        o.installments.push({
+          no: Number(resolveField(r, ALIASES.installmentNo) || o.installments.length + 1),
           dueDate: dueDate,
-          amountDue: Number(resolveField(r, ALIASES.amountDue) || 0),
+          amountDue: Number(amt !== '' ? amt : (o._perInst || 0)),
           amountPaid: 0, paidDate: '', status: '', statusOverride: false, discount: 0, note: ''
         });
+        instCount++;
+      }
+
+      // Order headers (one row per คำสั่งซื้อ; first row wins)
+      orderSheet.rows.forEach(function (r) {
+        var orderId = String(resolveField(r, ALIASES.orderId) || '').trim();
+        if (!orderId) return;
+        if (!byOrder[orderId]) byOrder[orderId] = makeOrder(r, orderId);
+        if (!separate) addInstallment(byOrder[orderId], r);   // legacy single-sheet: row = installment
       });
+      // Installments from the dedicated sheet, joined on คำสั่งซื้อ
+      if (separate) {
+        instSheet.rows.forEach(function (r) {
+          var orderId = String(resolveField(r, ALIASES.orderId) || '').trim();
+          var o = byOrder[orderId];
+          if (!o) {
+            unmatched++;
+            if (orderId && unmatchedSamples.length < 3 && unmatchedSamples.indexOf(orderId) === -1) unmatchedSamples.push(orderId);
+            return;
+          }
+          addInstallment(o, r);
+        });
+      }
+      // Normalize ordering / numbering, drop scratch field
+      var noInstOrders = 0;
+      Object.keys(byOrder).forEach(function (k) {
+        var o = byOrder[k];
+        delete o._perInst;
+        if (!o.installments.length) { noInstOrders++; return; }
+        var anyNo = o.installments.some(function (i) { return isFinite(i.no) && i.no > 0; });
+        if (anyNo) o.installments.sort(function (a, b) { return (a.no || 0) - (b.no || 0); });
+        else {
+          o.installments.sort(function (a, b) { return String(a.dueDate).localeCompare(String(b.dueDate)); });
+          o.installments.forEach(function (i, idx) { i.no = idx + 1; });
+        }
+      });
+
       var newOrders = Object.keys(byOrder).map(function (k) { return byOrder[k]; });
-      // Nothing recognized → tell the user exactly which columns were found so they can fix headers.
       if (newOrders.length === 0) {
-        state.uploadMsgDebt = '⚠️ อ่านไฟล์ได้ ' + rows.length + ' แถว แต่จับคู่คอลัมน์ "คำสั่งซื้อ" ไม่ได้ (ยังไม่นำเข้าข้อมูล) — หัวคอลัมน์ในไฟล์ของคุณคือ: ' + (headers.length ? headers.join(' | ') : '(ไม่พบหัวคอลัมน์)') + ' — โปรดเปลี่ยนชื่อคอลัมน์ให้ตรงกับเทมเพลต หรือแจ้งชื่อคอลัมน์เหล่านี้';
+        state.uploadMsgDebt = '⚠️ ไม่พบคำสั่งซื้อในชีท "' + orderSheet.name + '" (ยังไม่นำเข้าข้อมูล)\nหัวคอลัมน์: ' + orderSheet.headers.join(' | ');
         render();
         return;
       }
@@ -871,15 +955,20 @@
       pickDefaultDueMonth();
       savePersisted();
 
-      var msg = 'นำเข้าสำเร็จ ' + newOrders.length + ' คำสั่งซื้อ · ' + instCount + ' งวด (จาก ' + rows.length + ' แถว) — ยอดชำระเดิมถูกเก็บไว้';
+      var msg = 'นำเข้าสำเร็จ ' + newOrders.length + ' คำสั่งซื้อ · ' + instCount + ' งวด\n'
+        + 'ชีทลูกหนี้: "' + orderSheet.name + '"' + (separate ? (' · ชีทงวด/วันครบกำหนด: "' + instSheet.name + '"') : ' (ชีทเดียว)')
+        + ' — ยอดชำระเดิมถูกเก็บไว้';
       var warn = [];
-      if (!matchedDueKey) {
-        warn.push('ไม่พบคอลัมน์ "วันครบกำหนดชำระ" — ทุกงวดจะถูกนับเป็น "ยังไม่ถึงกำหนด" และกราฟ/สถานะจะว่าง');
+      if (!instSheet) {
+        warn.push('ไม่พบคอลัมน์ "วันครบกำหนดชำระ" ในชีทใดเลย — ทุกงวดจะถูกนับเป็น "ยังไม่ถึงกำหนด" (ชีทที่พบ: ' + sheetList + ')');
       } else if (badDates > 0) {
-        warn.push('อ่านวันที่ไม่ได้ ' + badDates + ' งวด จากคอลัมน์ "' + matchedDueKey + '" (ตัวอย่างค่า: ' + badSamples.map(function (x) { return '“' + x + '”'; }).join(', ') + ')');
+        warn.push('อ่านวันที่ไม่ได้ ' + badDates + ' งวด จากคอลัมน์ "' + instSheet.dueKey + '" (ตัวอย่างค่า: ' + badSamples.map(function (x) { return '“' + x + '”'; }).join(', ') + ')');
       }
-      if (newOrders.length > 0 && instCount / newOrders.length < 1.2 && instCount > 50) {
-        warn.push('คอลัมน์ "' + (matchedOrderKey || 'คำสั่งซื้อ') + '" มีค่าไม่ซ้ำเกือบทุกแถว (' + newOrders.length + ' สัญญา ต่อ ' + instCount + ' งวด) — ปกติ 1 สัญญาควรมีหลายงวด โปรดตรวจว่าเลือกคอลัมน์คำสั่งซื้อถูกต้อง');
+      if (unmatched > 0) {
+        warn.push('มี ' + unmatched + ' แถวในชีทงวด ที่จับคู่ "คำสั่งซื้อ" กับชีทลูกหนี้ไม่ได้' + (unmatchedSamples.length ? (' (ตัวอย่าง: ' + unmatchedSamples.join(', ') + ')') : ''));
+      }
+      if (noInstOrders > 0) {
+        warn.push('มี ' + noInstOrders + ' คำสั่งซื้อ ที่ไม่มีงวดชำระเลย');
       }
       state.uploadMsgDebt = msg + (warn.length ? ('\n⚠️ ' + warn.join('\n⚠️ ')) : '');
       render();
