@@ -72,13 +72,13 @@
   // Grouping for the dashboard's "แยกสถานะการชำระ" widget only — every other place in the app
   // (filters, tables, exports) still uses the raw STATUS_META statuses untouched.
   var STATUS_GROUP_META = [
-    { label: 'ยังไม่ถึงกำหนดชำระ', color: '#748199', statuses: ['ยังไม่ถึงกำหนดชำระ'] },
-    { label: 'ถึงกำหนดชำระ', color: '#4f7cff', statuses: ['ถึงกำหนดชำระ'] },
-    { label: 'ชำระแล้ว', color: '#12b886', statuses: ['ชำระแล้ว', 'ชำระบางส่วน'] },
-    { label: 'ค้างชำระ', color: '#e03131', statuses: ['ค้างชำระ', 'เกินกำหนดชำระ', 'ล็อคเครื่อง', 'เปลี่ยนภาพพักหน้าจอ', 'ค้างชำระ ล็อคเครื่องไม่ได้'] },
-    { label: 'หนี้สงสัยจะสูญ', color: '#9c1f4a', statuses: ['หนี้สงสัยจะสูญ'] },
-    { label: 'จำหน่ายชื่อให้บริษัทติดตามหนี้', color: '#7c5cff', statuses: ['จำหน่ายชื่อให้บริษัทติดตามหนี้'] },
-    { label: 'ยกเลิกสัญญา คืนเครื่อง', color: '#4b5563', statuses: ['ยกเลิกสัญญา คืนเครื่อง'] }
+    { label: 'ยังไม่ถึงกำหนดชำระ', color: '#748199', icon: '⏳', statuses: ['ยังไม่ถึงกำหนดชำระ'] },
+    { label: 'ถึงกำหนดชำระ', color: '#4f7cff', icon: '📅', statuses: ['ถึงกำหนดชำระ'] },
+    { label: 'ชำระแล้ว', color: '#12b886', icon: '✅', statuses: ['ชำระแล้ว', 'ชำระบางส่วน'] },
+    { label: 'ค้างชำระ', color: '#e03131', icon: '⚠️', statuses: ['ค้างชำระ', 'เกินกำหนดชำระ', 'ล็อคเครื่อง', 'เปลี่ยนภาพพักหน้าจอ', 'ค้างชำระ ล็อคเครื่องไม่ได้'] },
+    { label: 'หนี้สงสัยจะสูญ', color: '#9c1f4a', icon: '🚫', statuses: ['หนี้สงสัยจะสูญ'] },
+    { label: 'จำหน่ายชื่อให้บริษัทติดตามหนี้', color: '#7c5cff', icon: '📤', statuses: ['จำหน่ายชื่อให้บริษัทติดตามหนี้'] },
+    { label: 'ยกเลิกสัญญา คืนเครื่อง', color: '#4b5563', icon: '↩️', statuses: ['ยกเลิกสัญญา คืนเครื่อง'] }
   ];
   var STATUS_TO_GROUP = {};
   STATUS_GROUP_META.forEach(function (g) { g.statuses.forEach(function (s) { STATUS_TO_GROUP[s] = g.label; }); });
@@ -564,7 +564,7 @@
               return { label: s, count: Object.keys(grp.subOrderSets[s]).length, amountDisp: fmtMoney(grp.subAmounts[s] || 0) };
             })
           : [];
-        return { label: g.label, count: Object.keys(grp.orderSet).length, amountDisp: fmtMoney(grp.amount), color: g.color, children: children };
+        return { label: g.label, count: Object.keys(grp.orderSet).length, amountDisp: fmtMoney(grp.amount), color: g.color, icon: g.icon, children: children };
       });
     var dueDateHasData = dueDateBreakdown.length > 0;
 
@@ -1714,14 +1714,17 @@
     html += '<div style="background:rgba(255,255,255,0.6); backdrop-filter:blur(18px); border:1px solid rgba(255,255,255,0.85); border-radius:20px; padding:22px 24px; margin-bottom:24px; box-shadow:0 8px 26px rgba(124,92,255,0.08);">' +
       '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540; margin-bottom:16px;">แยกสถานะการชำระ</div>';
     if (d.dueDateHasData) {
-      html += '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px;">' +
+      html += '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:14px;">' +
         d.dueDateBreakdown.map(function (g) {
-          return '<div style="background:rgba(255,255,255,0.5); border:1px solid rgba(255,255,255,0.8); border-radius:14px; padding:14px 16px;">' +
-            '<div style="display:flex; align-items:center; gap:7px; margin-bottom:6px;"><div style="width:8px;height:8px;border-radius:50%;background:' + g.color + ';"></div><div style="font-size:12px; color:#6b6785;">' + esc(g.label) + '</div></div>' +
-            '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:17px; color:#2b2540;">' + g.count + ' ราย</div>' +
-            '<div style="font-size:12px; color:#6b6785;">฿' + g.amountDisp + '</div>' +
+          return '<div style="background:linear-gradient(135deg,' + hexToRgba(g.color, 0.16) + ',' + hexToRgba(g.color, 0.05) + '); border:1px solid ' + hexToRgba(g.color, 0.18) + '; border-radius:16px; padding:16px 18px;">' +
+            '<div style="display:flex; align-items:center; gap:10px; margin-bottom:14px;">' +
+              '<div style="width:36px; height:36px; border-radius:11px; background:' + g.color + '; display:flex; align-items:center; justify-content:center; font-size:16px; box-shadow:0 6px 14px ' + hexToRgba(g.color, 0.35) + '; flex-shrink:0;">' + g.icon + '</div>' +
+              '<div style="font-size:12.5px; font-weight:600; color:#2b2540; line-height:1.3;">' + esc(g.label) + '</div>' +
+            '</div>' +
+            '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:22px; color:#2b2540;">' + g.count + ' <span style="font-size:13px; font-weight:600; color:#6b6785;">ราย</span></div>' +
+            '<div style="font-size:12px; color:#6b6785; margin-top:2px;">฿' + g.amountDisp + '</div>' +
             (g.children.length
-              ? '<div style="margin-top:10px; padding-top:10px; border-top:1px solid rgba(124,92,255,0.12); display:flex; flex-direction:column; gap:5px;">' +
+              ? '<div style="margin-top:12px; padding-top:12px; border-top:1px solid ' + hexToRgba(g.color, 0.18) + '; display:flex; flex-direction:column; gap:5px;">' +
                   g.children.map(function (c) {
                     return '<div style="display:flex; align-items:baseline; justify-content:space-between; gap:8px; font-size:11px; color:#6b6785;">' +
                       '<span style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + esc(c.label) + '</span>' +
