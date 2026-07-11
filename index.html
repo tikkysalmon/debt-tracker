@@ -69,6 +69,19 @@
     'ค้างชำระ ล็อคเครื่องไม่ได้': { color: '#9a4b1f', order: 11 }
   };
   var STATUS_OPTIONS = Object.keys(STATUS_META).sort(function (a, b) { return STATUS_META[a].order - STATUS_META[b].order; });
+  // Grouping for the dashboard's "แยกสถานะการชำระ" widget only — every other place in the app
+  // (filters, tables, exports) still uses the raw STATUS_META statuses untouched.
+  var STATUS_GROUP_META = [
+    { label: 'ยังไม่ถึงกำหนดชำระ', color: '#748199', statuses: ['ยังไม่ถึงกำหนดชำระ'] },
+    { label: 'ถึงกำหนดชำระ', color: '#4f7cff', statuses: ['ถึงกำหนดชำระ'] },
+    { label: 'ชำระแล้ว', color: '#12b886', statuses: ['ชำระแล้ว', 'ชำระบางส่วน'] },
+    { label: 'ค้างชำระ', color: '#e03131', statuses: ['ค้างชำระ', 'เกินกำหนดชำระ', 'ล็อคเครื่อง', 'เปลี่ยนภาพพักหน้าจอ', 'ค้างชำระ ล็อคเครื่องไม่ได้'] },
+    { label: 'หนี้สงสัยจะสูญ', color: '#9c1f4a', statuses: ['หนี้สงสัยจะสูญ'] },
+    { label: 'จำหน่ายชื่อให้บริษัทติดตามหนี้', color: '#7c5cff', statuses: ['จำหน่ายชื่อให้บริษัทติดตามหนี้'] },
+    { label: 'ยกเลิกสัญญา คืนเครื่อง', color: '#4b5563', statuses: ['ยกเลิกสัญญา คืนเครื่อง'] }
+  ];
+  var STATUS_TO_GROUP = {};
+  STATUS_GROUP_META.forEach(function (g) { g.statuses.forEach(function (s) { STATUS_TO_GROUP[s] = g.label; }); });
   var GRADE_COLORS = { A: '#12b886', B: '#f59f00', 'หนี้สงสัยจะสูญ': '#e03131' };
   var GRADE_LABELS = { A: 'เกรด A — ไม่เคยค้างชำระ', B: 'เกรด B — ค้างชำระ 1 งวด', 'หนี้สงสัยจะสูญ': 'หนี้สงสัยจะสูญ — ค้าง ≥2 งวด' };
   // Purchase types come straight from whatever the debtor file actually has (e.g. "ผ่อนชำระ 0%")
@@ -503,28 +516,30 @@
     });
 
     // Payment-status breakdown by ORDER (ราย), across every customer combined — no month/year
-    // scoping. Per the user's own example: an order with 4 installments (2 paid, 1 ค้างชำระ, 1
+    // scoping, and grouped into the 7 buckets in STATUS_GROUP_META (ชำระแล้ว+ชำระบางส่วน merged;
+    // ค้างชำระ+เกินกำหนดชำระ+ล็อคเครื่อง+เปลี่ยนภาพพักหน้าจอ+ค้างชำระล็อคเครื่องไม่ได้ merged).
+    // Per the user's own example: an order with 4 installments (2 paid, 1 ค้างชำระ, 1
     // ยังไม่ถึงกำหนดชำระ) counts as 1 ราย under ค้างชำระ AND 1 ราย under ยังไม่ถึงกำหนดชำระ (an
     // order can land in more than one bucket) — but "ชำระแล้ว" only counts orders that are
-    // ENTIRELY paid off, since a couple of paid installments on an otherwise-open order isn't
-    // really "paid" from a collections standpoint.
+    // ENTIRELY in the paid group, since a couple of paid installments on an otherwise-open order
+    // isn't really "paid" from a collections standpoint.
     var dueGroups = {};
-    function ensureDueGroup(s) { if (!dueGroups[s]) dueGroups[s] = { orderSet: {}, amount: 0 }; return dueGroups[s]; }
+    function ensureDueGroup(g) { if (!dueGroups[g]) dueGroups[g] = { orderSet: {}, amount: 0 }; return dueGroups[g]; }
     orders.forEach(function (o) {
-      var statuses = o.installments.map(function (i) { return i.effectiveStatus; });
-      var allPaid = statuses.length > 0 && statuses.every(function (s) { return s === 'ชำระแล้ว'; });
-      var bucketStatuses = allPaid ? ['ชำระแล้ว'] : statuses.filter(function (s) { return s !== 'ชำระแล้ว'; });
+      var groupsPerInst = o.installments.map(function (i) { return STATUS_TO_GROUP[i.effectiveStatus] || i.effectiveStatus; });
+      var allPaid = groupsPerInst.length > 0 && groupsPerInst.every(function (g) { return g === 'ชำระแล้ว'; });
+      var bucketGroups = allPaid ? ['ชำระแล้ว'] : groupsPerInst.filter(function (g) { return g !== 'ชำระแล้ว'; });
       var seen = {};
-      bucketStatuses.forEach(function (s) { if (!seen[s]) { seen[s] = true; ensureDueGroup(s).orderSet[o.orderId] = true; } });
+      bucketGroups.forEach(function (g) { if (!seen[g]) { seen[g] = true; ensureDueGroup(g).orderSet[o.orderId] = true; } });
       o.installments.forEach(function (i) {
         var outstanding = Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0));
-        ensureDueGroup(i.effectiveStatus).amount += outstanding;
+        var g = STATUS_TO_GROUP[i.effectiveStatus] || i.effectiveStatus;
+        ensureDueGroup(g).amount += outstanding;
       });
     });
-    var dueDateBreakdown = Object.keys(STATUS_META)
-      .filter(function (s) { return dueGroups[s]; })
-      .sort(function (a, b) { return STATUS_META[a].order - STATUS_META[b].order; })
-      .map(function (s) { return { label: s, count: Object.keys(dueGroups[s].orderSet).length, amountDisp: fmtMoney(dueGroups[s].amount), color: STATUS_META[s].color }; });
+    var dueDateBreakdown = STATUS_GROUP_META
+      .filter(function (g) { return dueGroups[g.label]; })
+      .map(function (g) { return { label: g.label, count: Object.keys(dueGroups[g.label].orderSet).length, amountDisp: fmtMoney(dueGroups[g.label].amount), color: g.color }; });
     var dueDateHasData = dueDateBreakdown.length > 0;
 
     var gradeBuckets = { A: { count: 0, paid: 0, overdue: 0 }, B: { count: 0, paid: 0, overdue: 0 }, 'หนี้สงสัยจะสูญ': { count: 0, paid: 0, overdue: 0 } };
