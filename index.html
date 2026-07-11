@@ -524,22 +524,48 @@
     // ENTIRELY in the paid group, since a couple of paid installments on an otherwise-open order
     // isn't really "paid" from a collections standpoint.
     var dueGroups = {};
-    function ensureDueGroup(g) { if (!dueGroups[g]) dueGroups[g] = { orderSet: {}, amount: 0 }; return dueGroups[g]; }
+    function ensureDueGroup(g) {
+      if (!dueGroups[g]) dueGroups[g] = { orderSet: {}, amount: 0, subOrderSets: {}, subAmounts: {} };
+      return dueGroups[g];
+    }
     orders.forEach(function (o) {
       var groupsPerInst = o.installments.map(function (i) { return STATUS_TO_GROUP[i.effectiveStatus] || i.effectiveStatus; });
       var allPaid = groupsPerInst.length > 0 && groupsPerInst.every(function (g) { return g === 'ชำระแล้ว'; });
-      var bucketGroups = allPaid ? ['ชำระแล้ว'] : groupsPerInst.filter(function (g) { return g !== 'ชำระแล้ว'; });
-      var seen = {};
-      bucketGroups.forEach(function (g) { if (!seen[g]) { seen[g] = true; ensureDueGroup(g).orderSet[o.orderId] = true; } });
+      // Which installments actually count toward a bucket for this order — same exclusion as
+      // before: paid/partial installments aren't a "current issue" unless the whole order is paid.
+      var inScope = allPaid ? o.installments : o.installments.filter(function (i) { return (STATUS_TO_GROUP[i.effectiveStatus] || i.effectiveStatus) !== 'ชำระแล้ว'; });
+      var seenGroup = {}, seenStatus = {};
+      inScope.forEach(function (i) {
+        var g = STATUS_TO_GROUP[i.effectiveStatus] || i.effectiveStatus;
+        var s = i.effectiveStatus;
+        if (!seenGroup[g]) { seenGroup[g] = true; ensureDueGroup(g).orderSet[o.orderId] = true; }
+        var subKey = g + '|' + s;
+        if (!seenStatus[subKey]) {
+          seenStatus[subKey] = true;
+          var grp = ensureDueGroup(g);
+          if (!grp.subOrderSets[s]) grp.subOrderSets[s] = {};
+          grp.subOrderSets[s][o.orderId] = true;
+        }
+      });
       o.installments.forEach(function (i) {
         var outstanding = Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0));
         var g = STATUS_TO_GROUP[i.effectiveStatus] || i.effectiveStatus;
-        ensureDueGroup(g).amount += outstanding;
+        var grp = ensureDueGroup(g);
+        grp.amount += outstanding;
+        grp.subAmounts[i.effectiveStatus] = (grp.subAmounts[i.effectiveStatus] || 0) + outstanding;
       });
     });
     var dueDateBreakdown = STATUS_GROUP_META
       .filter(function (g) { return dueGroups[g.label]; })
-      .map(function (g) { return { label: g.label, count: Object.keys(dueGroups[g.label].orderSet).length, amountDisp: fmtMoney(dueGroups[g.label].amount), color: g.color }; });
+      .map(function (g) {
+        var grp = dueGroups[g.label];
+        var children = g.statuses.length > 1
+          ? g.statuses.filter(function (s) { return grp.subOrderSets[s]; }).map(function (s) {
+              return { label: s, count: Object.keys(grp.subOrderSets[s]).length, amountDisp: fmtMoney(grp.subAmounts[s] || 0) };
+            })
+          : [];
+        return { label: g.label, count: Object.keys(grp.orderSet).length, amountDisp: fmtMoney(grp.amount), color: g.color, children: children };
+      });
     var dueDateHasData = dueDateBreakdown.length > 0;
 
     var gradeBuckets = { A: { count: 0, paid: 0, overdue: 0 }, B: { count: 0, paid: 0, overdue: 0 }, 'หนี้สงสัยจะสูญ': { count: 0, paid: 0, overdue: 0 } };
@@ -1688,12 +1714,22 @@
     html += '<div style="background:rgba(255,255,255,0.6); backdrop-filter:blur(18px); border:1px solid rgba(255,255,255,0.85); border-radius:20px; padding:22px 24px; margin-bottom:24px; box-shadow:0 8px 26px rgba(124,92,255,0.08);">' +
       '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540; margin-bottom:16px;">แยกสถานะการชำระ</div>';
     if (d.dueDateHasData) {
-      html += '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px;">' +
+      html += '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px;">' +
         d.dueDateBreakdown.map(function (g) {
           return '<div style="background:rgba(255,255,255,0.5); border:1px solid rgba(255,255,255,0.8); border-radius:14px; padding:14px 16px;">' +
             '<div style="display:flex; align-items:center; gap:7px; margin-bottom:6px;"><div style="width:8px;height:8px;border-radius:50%;background:' + g.color + ';"></div><div style="font-size:12px; color:#6b6785;">' + esc(g.label) + '</div></div>' +
             '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:17px; color:#2b2540;">' + g.count + ' ราย</div>' +
             '<div style="font-size:12px; color:#6b6785;">฿' + g.amountDisp + '</div>' +
+            (g.children.length
+              ? '<div style="margin-top:10px; padding-top:10px; border-top:1px solid rgba(124,92,255,0.12); display:flex; flex-direction:column; gap:5px;">' +
+                  g.children.map(function (c) {
+                    return '<div style="display:flex; align-items:baseline; justify-content:space-between; gap:8px; font-size:11px; color:#6b6785;">' +
+                      '<span style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + esc(c.label) + '</span>' +
+                      '<span style="white-space:nowrap; font-weight:600; color:#2b2540;">' + c.count + ' ราย · ฿' + c.amountDisp + '</span>' +
+                    '</div>';
+                  }).join('') +
+                '</div>'
+              : '') +
           '</div>';
         }).join('') +
       '</div>';
