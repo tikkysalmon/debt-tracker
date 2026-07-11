@@ -362,8 +362,6 @@
     uploadMsgDebt: '',
     uploadMsgPayment: '',
     view: 'dashboard',
-    dueMonth: 7,
-    dueYear: 2026,
     showCancelledDetail: false,
     showSoldDetail: false,
     showFilters: true,
@@ -504,29 +502,29 @@
       return { key: k, label: MONTH_LABELS[Number(m) - 1] + ' ' + y.slice(2), amountRaw: trendMap[k], amountDisp: fmtMoney(trendMap[k]), heightPct: Math.max(4, trendMap[k] / trendMax * 100) };
     });
 
-    var yearsSet = {};
-    orders.forEach(function (o) { o.installments.forEach(function (i) {
-      var y = i.dueDate ? Number(i.dueDate.slice(0, 4)) : NaN;
-      if (isFinite(y)) yearsSet[y] = true;
-    }); });
-    var availableYears = Object.keys(yearsSet).map(Number).sort(function (a, b) { return a - b; });
-    var monthOptions = MONTH_LABELS.map(function (label, idx) { return { value: idx + 1, label: label }; });
-
-    var dueMonth = state.dueMonth, dueYear = state.dueYear;
+    // Payment-status breakdown by ORDER (ราย), across every customer combined — no month/year
+    // scoping. Per the user's own example: an order with 4 installments (2 paid, 1 ค้างชำระ, 1
+    // ยังไม่ถึงกำหนดชำระ) counts as 1 ราย under ค้างชำระ AND 1 ราย under ยังไม่ถึงกำหนดชำระ (an
+    // order can land in more than one bucket) — but "ชำระแล้ว" only counts orders that are
+    // ENTIRELY paid off, since a couple of paid installments on an otherwise-open order isn't
+    // really "paid" from a collections standpoint.
     var dueGroups = {};
-    orders.forEach(function (o) { o.installments.forEach(function (i) {
-      if (!i.dueDate) return;
-      var d = new Date(i.dueDate);
-      if (d.getFullYear() !== dueYear || (d.getMonth() + 1) !== dueMonth) return;
-      var outstanding = Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0));
-      if (!dueGroups[i.effectiveStatus]) dueGroups[i.effectiveStatus] = { count: 0, amount: 0 };
-      dueGroups[i.effectiveStatus].count++;
-      dueGroups[i.effectiveStatus].amount += outstanding;
-    }); });
+    function ensureDueGroup(s) { if (!dueGroups[s]) dueGroups[s] = { orderSet: {}, amount: 0 }; return dueGroups[s]; }
+    orders.forEach(function (o) {
+      var statuses = o.installments.map(function (i) { return i.effectiveStatus; });
+      var allPaid = statuses.length > 0 && statuses.every(function (s) { return s === 'ชำระแล้ว'; });
+      var bucketStatuses = allPaid ? ['ชำระแล้ว'] : statuses.filter(function (s) { return s !== 'ชำระแล้ว'; });
+      var seen = {};
+      bucketStatuses.forEach(function (s) { if (!seen[s]) { seen[s] = true; ensureDueGroup(s).orderSet[o.orderId] = true; } });
+      o.installments.forEach(function (i) {
+        var outstanding = Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0));
+        ensureDueGroup(i.effectiveStatus).amount += outstanding;
+      });
+    });
     var dueDateBreakdown = Object.keys(STATUS_META)
       .filter(function (s) { return dueGroups[s]; })
       .sort(function (a, b) { return STATUS_META[a].order - STATUS_META[b].order; })
-      .map(function (s) { return { label: s, count: dueGroups[s].count, amountDisp: fmtMoney(dueGroups[s].amount), color: STATUS_META[s].color }; });
+      .map(function (s) { return { label: s, count: Object.keys(dueGroups[s].orderSet).length, amountDisp: fmtMoney(dueGroups[s].amount), color: STATUS_META[s].color }; });
     var dueDateHasData = dueDateBreakdown.length > 0;
 
     var gradeBuckets = { A: { count: 0, paid: 0, overdue: 0 }, B: { count: 0, paid: 0, overdue: 0 }, 'หนี้สงสัยจะสูญ': { count: 0, paid: 0, overdue: 0 } };
@@ -615,7 +613,6 @@
 
     return {
       kpi: kpi, paymentDonut: paymentDonut, monthlyTrend: monthlyTrend, hasTrendData: monthlyTrend.length > 0,
-      monthOptions: monthOptions, availableYears: availableYears, dueMonth: dueMonth, dueYear: dueYear,
       dueDateBreakdown: dueDateBreakdown, dueDateHasData: dueDateHasData,
       gradeCards: gradeCards, gradeDonut: gradeDonut, gradeTotal: gradeTotal,
       ageOverdueSummary: ageOverdueSummary, ageBadDebtSummary: ageBadDebtSummary,
@@ -965,17 +962,6 @@
     });
     savePersisted();
     render();
-  }
-  // After an import, point the due-date breakdown at the month that actually has the most
-  // installments, otherwise it sits on a hard-coded month and looks empty.
-  function pickDefaultDueMonth() {
-    var counts = {};
-    state.orders.forEach(function (o) { o.installments.forEach(function (i) {
-      if (i.dueDate) { var k = i.dueDate.slice(0, 7); counts[k] = (counts[k] || 0) + 1; }
-    }); });
-    var best = null, bestN = 0;
-    Object.keys(counts).forEach(function (k) { if (counts[k] > bestN) { bestN = counts[k]; best = k; } });
-    if (best) { state.dueYear = Number(best.slice(0, 4)); state.dueMonth = Number(best.slice(5, 7)); }
   }
   function resetAllData(toSample) {
     clearPersisted();
@@ -1364,7 +1350,6 @@
       });
       state.orders = Object.keys(map).map(function (k) { return map[k]; });
       state.isSampleData = false;
-      pickDefaultDueMonth();
       savePersisted();
 
       var msg = 'นำเข้าสำเร็จ ' + newOrders.length + ' คำสั่งซื้อ · ' + instCount + ' งวด\n'
@@ -1684,31 +1669,21 @@
     '</div>';
     html += '</div>';
 
-    // Due-date breakdown
+    // Payment-status breakdown (all installments of all customers combined)
     html += '<div style="background:rgba(255,255,255,0.6); backdrop-filter:blur(18px); border:1px solid rgba(255,255,255,0.85); border-radius:20px; padding:22px 24px; margin-bottom:24px; box-shadow:0 8px 26px rgba(124,92,255,0.08);">' +
-      '<div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:16px;">' +
-        '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540;">แยกสถานะการชำระตามวันครบกำหนด</div>' +
-        '<div style="display:flex; gap:8px;">' +
-          '<select data-action="dueMonth" style="padding:8px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fff; font-size:13px; color:#2b2540;">' +
-            d.monthOptions.map(function (mo) { return '<option value="' + mo.value + '"' + (mo.value === d.dueMonth ? ' selected' : '') + '>' + esc(mo.label) + '</option>'; }).join('') +
-          '</select>' +
-          '<select data-action="dueYear" style="padding:8px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fff; font-size:13px; color:#2b2540;">' +
-            d.availableYears.map(function (yr) { return '<option value="' + yr + '"' + (yr === d.dueYear ? ' selected' : '') + '>' + yr + '</option>'; }).join('') +
-          '</select>' +
-        '</div>' +
-      '</div>';
+      '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540; margin-bottom:16px;">แยกสถานะการชำระ</div>';
     if (d.dueDateHasData) {
       html += '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px;">' +
         d.dueDateBreakdown.map(function (g) {
           return '<div style="background:rgba(255,255,255,0.5); border:1px solid rgba(255,255,255,0.8); border-radius:14px; padding:14px 16px;">' +
             '<div style="display:flex; align-items:center; gap:7px; margin-bottom:6px;"><div style="width:8px;height:8px;border-radius:50%;background:' + g.color + ';"></div><div style="font-size:12px; color:#6b6785;">' + esc(g.label) + '</div></div>' +
-            '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:17px; color:#2b2540;">' + g.count + ' งวด</div>' +
+            '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:17px; color:#2b2540;">' + g.count + ' ราย</div>' +
             '<div style="font-size:12px; color:#6b6785;">฿' + g.amountDisp + '</div>' +
           '</div>';
         }).join('') +
       '</div>';
     } else {
-      html += '<div style="padding:20px; text-align:center; color:#8a86a3; font-size:13px;">ไม่มีข้อมูลในเดือนที่เลือก</div>';
+      html += '<div style="padding:20px; text-align:center; color:#8a86a3; font-size:13px;">ไม่มีข้อมูล</div>';
     }
     html += '</div>';
 
@@ -2358,8 +2333,6 @@
         case 'setInstallmentAmount': setInstallmentAmount(t.getAttribute('data-order'), toNumber(t.value)); break;
         case 'filter': state[t.getAttribute('data-key')] = t.value; render(); break;
         case 'setPageSize': state.pageSize = Number(t.value) || 50; state.page = 1; render(); break;
-        case 'dueMonth': state.dueMonth = Number(t.value); render(); break;
-        case 'dueYear': state.dueYear = Number(t.value); render(); break;
         case 'onDebtFile': onDebtFileChange(t.files[0]); t.value = ''; break;
         case 'onPaymentFile': onPaymentFileChange(t.files[0]); t.value = ''; break;
       }
