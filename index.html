@@ -333,8 +333,13 @@
       });
     });
   }
+  // True from the moment a local edit schedules a save until that save is confirmed to have
+  // landed on the server — cloudPoll() checks this before applying an incoming snapshot (see
+  // below) so a poll can never silently discard an edit that hasn't been persisted yet.
+  var cloudDirty = false;
   function scheduleCloudSave() {
     if (!CLOUD_ENABLED || !db || !cloudConnected || applyingRemote) return;
+    cloudDirty = true;
     if (cloudSaveTimer) clearTimeout(cloudSaveTimer);
     cloudSaveTimer = setTimeout(cloudSaveNow, 600);
   }
@@ -355,9 +360,13 @@
     cloudStatus = 'saving'; updateCloudStatus();
     var text = JSON.stringify(currentPayload());
     var blob = new Blob([text], { type: 'application/json' });
-    function finishSave() {
+    // Only clear cloudDirty once this was the LAST queued save (nothing newer waiting behind it)
+    // and it actually succeeded — on failure or when another save is already queued, local state
+    // still isn't confirmed saved, so cloudPoll() must keep refusing incoming snapshots.
+    function finishSave(success) {
       cloudSaveInFlight = false;
       if (cloudSavePending) { cloudSavePending = false; cloudSaveNow(); }
+      else if (success) { cloudDirty = false; }
     }
     db.storage.from(CLOUD_BUCKET).upload(CLOUD_FILE, blob, { upsert: true, contentType: 'application/json' }).then(function (res) {
       if (res.error) {
@@ -365,7 +374,7 @@
         cloudErrorDetail = (res.error.message || JSON.stringify(res.error)) + ' (payload ~' + Math.round(text.length / 1024) + ' KB)';
         console.error('[cloudSaveNow] upload failed:', res.error, 'payload size:', text.length, 'bytes');
         updateCloudStatus();
-        finishSave();
+        finishSave(false);
         return;
       }
       cloudErrorDetail = '';
@@ -375,20 +384,29 @@
         lastServerTs = item ? item.updated_at : lastServerTs;
         cloudStatus = 'online';
         updateCloudStatus();
-        finishSave();
-      }).catch(function () { cloudStatus = 'online'; updateCloudStatus(); finishSave(); });
+        finishSave(true);
+      }).catch(function () { cloudStatus = 'online'; updateCloudStatus(); finishSave(true); });
     }).catch(function (err) {
       cloudStatus = 'offline';
       cloudErrorDetail = (err && err.message ? err.message : String(err)) + ' (payload ~' + Math.round(text.length / 1024) + ' KB)';
       console.error('[cloudSaveNow] upload threw:', err, 'payload size:', text.length, 'bytes');
       updateCloudStatus();
-      finishSave();
+      finishSave(false);
     });
   }
   function cloudPoll() {
     if (!CLOUD_ENABLED || !db || !cloudConnected) return;
     findCloudFileMeta().then(function (item) {
       if (!item || item.updated_at === lastServerTs) {
+        if (cloudStatus === 'offline') cloudStatus = 'online';
+        updateCloudStatus();
+        return;
+      }
+      // A local edit is still queued/uploading — never overwrite it with whatever's on the server
+      // right now. Our own pending save will supersede it shortly; applying an older/unrelated
+      // snapshot here would silently discard the in-progress edit (e.g. a status change quietly
+      // reverting once this poll's applySnapshot() replaced state.orders wholesale).
+      if (cloudDirty) {
         if (cloudStatus === 'offline') cloudStatus = 'online';
         updateCloudStatus();
         return;
