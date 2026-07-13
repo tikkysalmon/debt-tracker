@@ -427,7 +427,7 @@
     pageSize: 50,
     filterAccountStatus: 'all',
     filterDueStatus: 'all',
-    filterPaymentStatus: 'all',
+    filterPaymentStatuses: [], // statuses EXCLUDED from results; empty = show every status
     filterCrmStatus: 'all',
     filterGrade: 'all',
     filterPurchaseTypes: [],
@@ -443,7 +443,7 @@
     appliedQuery: '',
     appliedAccountStatus: 'all',
     appliedDueStatus: 'all',
-    appliedPaymentStatus: 'all',
+    appliedPaymentStatuses: [],
     appliedGrade: 'all',
     appliedPurchaseTypes: [], // types EXCLUDED from results; empty = show every purchase type
     appliedDueFrom: '', appliedDueTo: '', appliedPaidFrom: '', appliedPaidTo: ''
@@ -732,7 +732,7 @@
     var f = {
       filterAccountStatus: state.appliedAccountStatus,
       filterDueStatus: state.appliedDueStatus,
-      filterPaymentStatus: state.appliedPaymentStatus,
+      paymentStatusesExcluded: state.appliedPaymentStatuses,
       filterGrade: state.appliedGrade,
       purchaseTypes: state.appliedPurchaseTypes,
       dueFrom: state.appliedDueFrom, dueTo: state.appliedDueTo,
@@ -770,8 +770,8 @@
         return true;
       }); });
     }
-    if (f.filterPaymentStatus !== 'all') {
-      filteredOrders = filteredOrders.filter(function (o) { return allInstsOf(o).some(function (i) { return i.effectiveStatus === f.filterPaymentStatus; }); });
+    if (f.paymentStatusesExcluded.length) {
+      filteredOrders = filteredOrders.filter(function (o) { return allInstsOf(o).some(function (i) { return f.paymentStatusesExcluded.indexOf(i.effectiveStatus) === -1; }); });
     }
     if (f.filterGrade !== 'all') {
       filteredOrders = filteredOrders.filter(function (o) {
@@ -796,7 +796,7 @@
     var hasPendingChanges = state.query !== state.appliedQuery ||
       state.filterAccountStatus !== state.appliedAccountStatus ||
       state.filterDueStatus !== state.appliedDueStatus ||
-      state.filterPaymentStatus !== state.appliedPaymentStatus ||
+      state.filterPaymentStatuses.join(',') !== state.appliedPaymentStatuses.join(',') ||
       state.filterGrade !== state.appliedGrade ||
       state.filterPurchaseTypes.join(',') !== state.appliedPurchaseTypes.join(',') ||
       state.dueFrom !== state.appliedDueFrom || state.dueTo !== state.appliedDueTo ||
@@ -844,7 +844,7 @@
     state.appliedQuery = state.query;
     state.appliedAccountStatus = state.filterAccountStatus;
     state.appliedDueStatus = state.filterDueStatus;
-    state.appliedPaymentStatus = state.filterPaymentStatus;
+    state.appliedPaymentStatuses = state.filterPaymentStatuses.slice();
     state.appliedGrade = state.filterGrade;
     state.appliedPurchaseTypes = state.filterPurchaseTypes.slice();
     state.appliedDueFrom = state.dueFrom; state.appliedDueTo = state.dueTo;
@@ -860,14 +860,23 @@
     state.filterPurchaseTypes = state.filterPurchaseTypes.length === 0 ? getPurchaseTypeOptions() : [];
     render();
   }
+  function togglePaymentStatusFilter(status) {
+    var i = state.filterPaymentStatuses.indexOf(status);
+    if (i === -1) state.filterPaymentStatuses.push(status); else state.filterPaymentStatuses.splice(i, 1);
+    render();
+  }
+  function toggleAllPaymentStatusFilter() {
+    state.filterPaymentStatuses = state.filterPaymentStatuses.length === 0 ? STATUS_OPTIONS.slice() : [];
+    render();
+  }
   function clearAllFilters() {
     Object.assign(state, {
       searched: false,
       page: 1,
       selectedCustomerId: null,
-      query: '', filterAccountStatus: 'all', filterDueStatus: 'all', filterPaymentStatus: 'all',
+      query: '', filterAccountStatus: 'all', filterDueStatus: 'all', filterPaymentStatuses: [],
       filterCrmStatus: 'all', filterGrade: 'all', filterPurchaseTypes: [], dueFrom: '', dueTo: '', paidFrom: '', paidTo: '',
-      appliedQuery: '', appliedAccountStatus: 'all', appliedDueStatus: 'all', appliedPaymentStatus: 'all',
+      appliedQuery: '', appliedAccountStatus: 'all', appliedDueStatus: 'all', appliedPaymentStatuses: [],
       appliedGrade: 'all', appliedPurchaseTypes: [], appliedDueFrom: '', appliedDueTo: '', appliedPaidFrom: '', appliedPaidTo: ''
     });
     render();
@@ -1181,7 +1190,7 @@
     state.lastSavedAt = '';
     state.isSampleData = !!toSample;
     state.appliedQuery = ''; state.appliedAccountStatus = 'all'; state.appliedDueStatus = 'all';
-    state.appliedPaymentStatus = 'all'; state.appliedGrade = 'all';
+    state.appliedPaymentStatuses = []; state.appliedGrade = 'all';
     state.appliedDueFrom = ''; state.appliedDueTo = ''; state.appliedPaidFrom = ''; state.appliedPaidTo = '';
     state.uploadMsgDebt = '';
     state.uploadMsgPayment = toSample ? 'ล้างข้อมูลแล้ว — กลับไปเป็นข้อมูลตัวอย่าง' : 'ล้างข้อมูลแล้ว — พร้อมอัปโหลดข้อมูลจริง (เริ่มจากว่างเปล่า)';
@@ -2128,21 +2137,29 @@
   function selOpt(value, label, selected) {
     return '<option value="' + esc(value) + '"' + (selected ? ' selected' : '') + '>' + esc(label) + '</option>';
   }
-  function renderPurchaseTypeFilter() {
-    var options = getPurchaseTypeOptions();
-    var allChecked = state.filterPurchaseTypes.length === 0;
+  // Shared checkbox-list multi-select filter box — excludedList holds items UNCHECKED (excluded
+  // from results); empty list = everything checked/included. Used for both ประเภทการซื้อ and
+  // สถานะการชำระ so every multi-value filter in the search panel looks and behaves the same way.
+  function renderChecklistFilter(options, excludedList, toggleAction, toggleAllAction) {
+    var allChecked = excludedList.length === 0;
     var chk = function (checked) {
       return '<div style="width:16px; height:16px; border-radius:4px; border:1.5px solid ' + (checked ? '#7c5cff' : 'rgba(124,92,255,0.35)') + '; background:' + (checked ? '#7c5cff' : '#fff') + '; display:flex; align-items:center; justify-content:center; flex-shrink:0;">' + (checked ? '<span style="color:#fff; font-size:11px; line-height:1;">✓</span>' : '') + '</div>';
     };
     if (!options.length) return '<div style="font-size:12.5px; color:#a39dc2; padding:9px 12px;">ยังไม่มีข้อมูล</div>';
-    var box = 'width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff;';
+    var box = 'width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; max-height:180px; overflow-y:auto;';
     return '<div style="' + box + '">' +
-      '<label data-action="toggleAllPurchaseTypes" style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; color:#2b2540; font-weight:600; padding-bottom:6px; margin-bottom:6px; border-bottom:1px solid rgba(124,92,255,0.12);">' + chk(allChecked) + '(เลือกทั้งหมด)</label>' +
+      '<label data-action="' + toggleAllAction + '" style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; color:#2b2540; font-weight:600; padding-bottom:6px; margin-bottom:6px; border-bottom:1px solid rgba(124,92,255,0.12);">' + chk(allChecked) + '(เลือกทั้งหมด)</label>' +
       options.map(function (t) {
-        var checked = state.filterPurchaseTypes.indexOf(t) === -1;
-        return '<label data-action="togglePurchaseType" data-type="' + esc(t) + '" style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; color:#2b2540; padding:3px 0;">' + chk(checked) + esc(t) + '</label>';
+        var checked = excludedList.indexOf(t) === -1;
+        return '<label data-action="' + toggleAction + '" data-type="' + esc(t) + '" style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; color:#2b2540; padding:3px 0;">' + chk(checked) + esc(t) + '</label>';
       }).join('') +
     '</div>';
+  }
+  function renderPurchaseTypeFilter() {
+    return renderChecklistFilter(getPurchaseTypeOptions(), state.filterPurchaseTypes, 'togglePurchaseType', 'toggleAllPurchaseTypes');
+  }
+  function renderPaymentStatusFilter() {
+    return renderChecklistFilter(STATUS_OPTIONS, state.filterPaymentStatuses, 'togglePaymentStatusFilter', 'toggleAllPaymentStatusFilter');
   }
   // Days between an installment's due date and today: >0 overdue, 0 = due today, <0 = days until due.
   function dueDiffDays(inst) {
@@ -2223,10 +2240,7 @@
             '<select data-action="filter" data-key="filterDueStatus" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13.5px; color:#2b2540;">' +
               selOpt('all', 'ทุกสถานะ', state.filterDueStatus === 'all') + selOpt('notdue', 'ยังไม่ถึงกำหนด', state.filterDueStatus === 'notdue') + selOpt('due_today', 'ถึงกำหนดวันนี้', state.filterDueStatus === 'due_today') + selOpt('overdue', 'เกินกำหนด', state.filterDueStatus === 'overdue') +
             '</select></div>' +
-          '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">💳 สถานะการชำระ</div>' +
-            '<select data-action="filter" data-key="filterPaymentStatus" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13.5px; color:#2b2540;">' +
-              selOpt('all', 'ทุกสถานะ', state.filterPaymentStatus === 'all') + STATUS_OPTIONS.map(function (opt) { return selOpt(opt, opt, state.filterPaymentStatus === opt); }).join('') +
-            '</select></div>' +
+          '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">💳 สถานะการชำระ</div>' + renderPaymentStatusFilter() + '</div>' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">📋 สถานะบน CRM</div>' +
             '<select data-action="filter" data-key="filterCrmStatus" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13.5px; color:#2b2540;">' + selOpt('all', 'ทุกสถานะ', true) + '</select></div>' +
         '</div>' +
@@ -2660,6 +2674,8 @@
         case 'saveNoteModal': saveNoteModal(); break;
         case 'togglePurchaseType': togglePurchaseType(t.getAttribute('data-type')); break;
         case 'toggleAllPurchaseTypes': toggleAllPurchaseTypes(); break;
+        case 'togglePaymentStatusFilter': togglePaymentStatusFilter(t.getAttribute('data-type')); break;
+        case 'toggleAllPaymentStatusFilter': toggleAllPaymentStatusFilter(); break;
         case 'prevPage': state.page = Math.max(1, (state.page || 1) - 1); render(); break;
         case 'nextPage': state.page = (state.page || 1) + 1; render(); break;
       }
