@@ -888,6 +888,13 @@
           return Object.assign({}, inst, { amountDue: perInstallment });
         });
       }
+      // Same recalc, same rules, for the separately-billed อุปกรณ์เสริม track.
+      if ((field === 'accessoryProductPrice' || field === 'accessoryDownPayment') && toNumber(updated.accessoryProductPrice) > 0 && updated.accessoryInstallments.length) {
+        var perAccessoryInstallment = Math.max(0, toNumber(updated.accessoryProductPrice) - toNumber(updated.accessoryDownPayment)) / updated.accessoryInstallments.length;
+        updated.accessoryInstallments = updated.accessoryInstallments.map(function (inst) {
+          return Object.assign({}, inst, { amountDue: perAccessoryInstallment });
+        });
+      }
       return updated;
     });
     var order = state.orders.find(function (o) { return o.orderId === orderId; });
@@ -1358,6 +1365,7 @@
           accessoryOrderId: '',
           accessoryProductList: String(resolveField(r, ALIASES.accessoryProductList) || ''),
           accessoryProductPrice: 0,
+          accessoryDownPayment: 0,
           accessoryInstallments: [],
           _accessoryPerInst: resolveNumber(r, ALIASES.accessoryAmountDue),
           _accessoryTerm: Math.round(resolveNumber(r, ALIASES.accessoryTerm))
@@ -1495,6 +1503,7 @@
           // accessoryOrderId is staff-entered, never in the debtor file — always carry it forward.
           if (old.accessoryOrderId) o.accessoryOrderId = old.accessoryOrderId;
           if (old.accessoryProductPrice) o.accessoryProductPrice = old.accessoryProductPrice;
+          if (old.accessoryDownPayment) o.accessoryDownPayment = old.accessoryDownPayment;
           if (old.accessoryInstallments && old.accessoryInstallments.length) {
             if (o.accessoryInstallments.length) {
               o.accessoryInstallments.forEach(function (ni) {
@@ -2340,6 +2349,7 @@
               '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">🔗 SO (อุปกรณ์เสริม)</div><input type="text" value="' + esc(ord.accessoryOrderId || '') + '" data-order-field="accessoryOrderId" data-order="' + esc(ord.orderId) + '" placeholder="เลข SO บิลอุปกรณ์เสริม" title="เมื่อกรอกแล้ว ไฟล์รับชำระที่มี SO นี้จะจับคู่มาลงตารางอุปกรณ์เสริมด้านล่างอัตโนมัติ" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#2b2540; background:#fff; outline:none;" /></div>' +
             '</div>' +
             '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:16px; margin-bottom:14px;">' +
+              '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดวางดาวน์</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.accessoryDownPayment)) + '" data-order-field="accessoryDownPayment" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>' +
               '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดผ่อนต่องวด</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.accessoryInstallments[0] ? ord.accessoryInstallments[0].amountDue : 0)) + '" data-action="setInstallmentAmount" data-order="' + esc(ord.orderId) + '" data-track="accessory" title="แก้ยอดนี้จะปรับยอดผ่อนของทุกงวดที่ยังไม่ชำระให้เท่ากันหมด" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>' +
               countField(ord, 'accessory', ord.accessoryInstallmentCount) +
               '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดรับชำระ</div><div style="font-size:15px; font-weight:700; color:#12b886;">฿' + accessoryTotals.paidDisp + '</div></div>' +
@@ -2557,7 +2567,7 @@
       }
       var orderField = t.getAttribute('data-order-field');
       if (orderField) {
-        var numericOrderFields = ['payDay', 'downPayment', 'discount', 'productPrice', 'accessoryProductPrice'];
+        var numericOrderFields = ['payDay', 'downPayment', 'discount', 'productPrice', 'accessoryProductPrice', 'accessoryDownPayment'];
         updateOrderField(t.getAttribute('data-order'), orderField, numericOrderFields.indexOf(orderField) !== -1 ? toNumber(t.value) : t.value);
         return;
       }
