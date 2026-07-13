@@ -430,8 +430,11 @@
       var totalDue = installments.reduce(function (s, i) { return s + Number(i.amountDue || 0); }, 0);
       var totalPaid = installments.reduce(function (s, i) { return s + Number(i.amountPaid || 0); }, 0);
       var totalOutstanding = Math.max(0, totalDue - totalPaid - Number(o.discount || 0));
-      var isCancelled = installments.some(function (i) { return i.effectiveStatus === 'ยกเลิกสัญญา คืนเครื่อง'; });
-      var isSold = installments.some(function (i) { return i.effectiveStatus === 'จำหน่ายชื่อให้บริษัทติดตามหนี้'; });
+      // OR in the sticky wasSold/wasCancelled flags (set the moment a status is ever assigned, in
+      // updateInstallment/onPaymentFileChange) so a later ชำระแล้ว on some งวด doesn't make the
+      // account-status badge disappear — see stickyAccountStatusPatch for why.
+      var isCancelled = !!o.wasCancelled || installments.some(function (i) { return i.effectiveStatus === 'ยกเลิกสัญญา คืนเครื่อง'; });
+      var isSold = !!o.wasSold || installments.some(function (i) { return i.effectiveStatus === 'จำหน่ายชื่อให้บริษัทติดตามหนี้'; });
       var overdueCount = installments.filter(function (i) { return ['ชำระแล้ว', 'ยังไม่ถึงกำหนดชำระ', 'ถึงกำหนดชำระ'].indexOf(i.effectiveStatus) === -1; }).length;
       var lateInsts = installments.filter(function (i) { return LATE_STATUSES.indexOf(i.effectiveStatus) !== -1; });
       var lateOutstandingRaw = lateInsts.reduce(function (s, i) { return s + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0);
@@ -812,10 +815,21 @@
     savePersisted();
     render();
   }
+  // Once an order has ever been flagged จำหน่ายชื่อให้บริษัทติดตามหนี้/ยกเลิกสัญญา คืนเครื่อง, the
+  // account-status badge must stay tagged even if a later payment brings some installment back to
+  // ชำระแล้ว — the whole point is tracking how much a sold-to-collections customer has since paid,
+  // not losing that history the moment one งวด looks current again. See isSold/isCancelled below,
+  // which OR this sticky flag in with the live installment check.
+  function stickyAccountStatusPatch(status) {
+    if (status === 'จำหน่ายชื่อให้บริษัทติดตามหนี้') return { wasSold: true };
+    if (status === 'ยกเลิกสัญญา คืนเครื่อง') return { wasCancelled: true };
+    return null;
+  }
   function updateInstallment(orderId, no, field, value) {
     state.orders = state.orders.map(function (o) {
       if (o.orderId !== orderId) return o;
-      return Object.assign({}, o, {
+      var orderPatch = field === 'status' ? (stickyAccountStatusPatch(value) || {}) : {};
+      return Object.assign({}, o, orderPatch, {
         installments: o.installments.map(function (i) {
           if (i.no !== no) return i;
           var patch = {}; patch[field] = value;
@@ -1449,6 +1463,13 @@
           var inst = order.installments.find(function (i) { return i.no === no; });
           if (!inst) { missedSnap++; return; }
 
+          // Sticky account-status flag must see EVERY historical row, not just the one that wins
+          // the latest-timestamp dedup below — a customer sold-to-collections in an earlier row and
+          // ชำระแล้ว in a later one must still show as "was sold" so staff can track what they've
+          // paid since being referred, per the user's explicit requirement.
+          var rowStatus = String(resolveField(r, ALIASES.status) || '');
+          Object.assign(order, stickyAccountStatusPatch(rowStatus));
+
           var key = orderId + '|' + no;
           var ts = parseLogTimestamp(resolveField(r, ALIASES.timestamp));
           if (lastTs[key] !== undefined && ts < lastTs[key]) return; // superseded by an already-applied later correction
@@ -1456,7 +1477,7 @@
 
           var amountPaid = resolveField(r, ALIASES.amountPaid);
           var paidDate = resolveField(r, ALIASES.paidDate);
-          var status = String(resolveField(r, ALIASES.status) || '');
+          var status = rowStatus;
           var discount = resolveField(r, ALIASES.discount);
           // Rows that only log a collections/device status (e.g. ล็อคเครื่อง, เกินกำหนดชำระ) carry
           // amount 0 — must not zero out a real amountPaid recorded from an earlier row/file.
@@ -1561,7 +1582,10 @@
         // transaction succeeded) — that's not a debt-collection status and must NOT override the
         // auto-computed one, or every paid installment gets stuck showing "สำเร็จ" forever instead
         // of "ชำระแล้ว"/"ค้างชำระ"/etc. Only accept values that are real STATUS_META entries.
-        if (status !== '' && STATUS_META[String(status)]) { inst.status = String(status); inst.statusOverride = true; }
+        if (status !== '' && STATUS_META[String(status)]) {
+          inst.status = String(status); inst.statusOverride = true;
+          Object.assign(order, stickyAccountStatusPatch(String(status)));
+        }
       });
       // Nothing matched at all (not even duplicates) → likely wrong columns OR debtor not imported yet.
       if (added === 0 && addedPenalty === 0 && updatedOnly === 0 && duplicate === 0) {
