@@ -921,20 +921,39 @@
   function trackKey(track) { return track === 'accessory' ? 'accessoryInstallments' : 'installments'; }
   function updateInstallment(orderId, no, field, value, track) {
     var key = trackKey(track);
+    var matched = false;
     state.orders = state.orders.map(function (o) {
       if (o.orderId !== orderId) return o;
       var orderPatch = field === 'status' ? (stickyAccountStatusPatch(value) || {}) : {};
       var patch2 = {};
       patch2[key] = (o[key] || []).map(function (i) {
         if (i.no !== no) return i;
+        matched = true;
         var patch = {}; patch[field] = value;
         if (field === 'status') patch.statusOverride = true;
         return Object.assign({}, i, patch);
       });
       return Object.assign({}, o, orderPatch, patch2);
     });
+    // TEMPORARY diagnostic — remove once the "สถานะดีดกลับ" report is root-caused. Logs exactly
+    // what updateInstallment saw and wrote, so the next repro tells us whether the lookup even
+    // matched the right งวด, what got stored, and what a fresh computeOrders() derives from it.
+    if (field === 'status') {
+      var afterOrder = state.orders.find(function (o) { return o.orderId === orderId; });
+      var afterInst = afterOrder && (afterOrder[key] || []).find(function (i) { return i.no === no; });
+      console.log('[updateInstallment status]', {
+        orderId: orderId, no: no, track: track, key: key, valuePicked: value,
+        matchedRow: matched,
+        storedAfterWrite: afterInst ? { status: afterInst.status, statusOverride: afterInst.statusOverride } : null
+      });
+    }
     savePersisted();
     render();
+    if (field === 'status') {
+      var recomputed = computeOrders().find(function (o) { return o.orderId === orderId; });
+      var recomputedInst = recomputed && (recomputed[key] || []).find(function (i) { return i.no === no; });
+      console.log('[updateInstallment status] after render, effectiveStatus =', recomputedInst && recomputedInst.effectiveStatus);
+    }
   }
   function updateOrderField(orderId, field, value) {
     state.orders = state.orders.map(function (o) {
