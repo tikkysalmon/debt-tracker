@@ -897,11 +897,20 @@
       }
       return updated;
     });
-    var order = state.orders.find(function (o) { return o.orderId === orderId; });
-    if (order && order.firstDueDate && order.payDay) applySchedule(orderId, 'main');
-    if (order && order.accessoryFirstDueDate && order.accessoryPayDay) applySchedule(orderId, 'accessory');
+    maybeApplySchedule(orderId, 'main');
+    maybeApplySchedule(orderId, 'accessory');
     savePersisted();
     render();
+  }
+  // Recomputes due dates for a track only if its วันครบกำหนดชำระงวดแรก + ชำระทุกวันที่ are both set —
+  // called after anything that can introduce fresh blank-date งวด (field edits, +เพิ่มงวด, and
+  // typing a new "จำนวนงวด") so newly added rows always pick up the schedule instead of sitting
+  // blank until someone happens to re-touch the date fields themselves.
+  function maybeApplySchedule(orderId, track) {
+    var order = state.orders.find(function (o) { return o.orderId === orderId; });
+    var firstKey = track === 'accessory' ? 'accessoryFirstDueDate' : 'firstDueDate';
+    var payKey = track === 'accessory' ? 'accessoryPayDay' : 'payDay';
+    if (order && order[firstKey] && order[payKey]) applySchedule(orderId, track);
   }
   // Every recalculated due date lands on `payDay` of its month (unlike scheduleDueDate(), used
   // by file import, which returns the first unpaid installment's date verbatim) — "ชำระทุกวันที่"
@@ -1042,6 +1051,7 @@
       var patch = {}; patch[targetKey] = list;
       return Object.assign({}, o, patch);
     });
+    maybeApplySchedule(orderId, track);
     savePersisted();
     render();
   }
@@ -1057,6 +1067,7 @@
       var patch = {}; patch[key] = list.concat([newInst]);
       return Object.assign({}, o, patch);
     });
+    maybeApplySchedule(orderId, track);
     savePersisted();
     render();
   }
