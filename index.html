@@ -1357,6 +1357,7 @@
           // by hand once they know the accessory's own SO) — the rest come straight from the file.
           accessoryOrderId: '',
           accessoryProductList: String(resolveField(r, ALIASES.accessoryProductList) || ''),
+          accessoryProductPrice: 0,
           accessoryInstallments: [],
           _accessoryPerInst: resolveNumber(r, ALIASES.accessoryAmountDue),
           _accessoryTerm: Math.round(resolveNumber(r, ALIASES.accessoryTerm))
@@ -1493,6 +1494,7 @@
           });
           // accessoryOrderId is staff-entered, never in the debtor file — always carry it forward.
           if (old.accessoryOrderId) o.accessoryOrderId = old.accessoryOrderId;
+          if (old.accessoryProductPrice) o.accessoryProductPrice = old.accessoryProductPrice;
           if (old.accessoryInstallments && old.accessoryInstallments.length) {
             if (o.accessoryInstallments.length) {
               o.accessoryInstallments.forEach(function (ni) {
@@ -2299,7 +2301,6 @@
           '<div style="background:rgba(240,140,0,0.12); color:#c2650a; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">' + esc(ord.purchaseType) + '</div>' +
           (ord.isSold ? '<div style="background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">📤 จำหน่ายชื่อให้บริษัทติดตามหนี้</div>' : '') +
           (ord.isCancelled ? '<div style="background:' + hexToRgba('#4b5563', 0.14) + '; color:#4b5563; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">↩️ ยกเลิกสัญญา คืนเครื่อง</div>' : '') +
-          '<div style="margin-left:auto; font-size:12.5px; color:#6b6785;">ยอดคงเหลือรวมทั้งบิล: <span style="font-weight:700; color:#e03131;">฿' + ord.totalOutstandingDisp + '</span></div>' +
         '</div>' +
         '<div style="display:grid; grid-template-columns:2fr 1fr; gap:16px; margin-bottom:16px;">' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">📦 รายการสินค้า' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:600; color:#2b2540;">' + esc(ord.productList) + '</div></div>' +
@@ -2310,9 +2311,9 @@
             ? '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดผ่อนสะสม</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.downPayment)) + '" data-order-field="downPayment" data-order="' + esc(ord.orderId) + '" title="ยอดที่ผ่อนมาก่อนทำสัญญานี้ — ใช้หักฐานคำนวณยอดผ่อนต่องวด (ราคาสินค้า−ยอดนี้)/จำนวนงวด เท่านั้น ไม่ไปตั้งค่าชำระแล้วในตารางงวดด้านล่าง" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>'
             : '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดวางดาวน์</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.downPayment)) + '" data-order-field="downPayment" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>') +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดผ่อนต่องวด</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.installments[0] ? ord.installments[0].amountDue : 0)) + '" data-action="setInstallmentAmount" data-order="' + esc(ord.orderId) + '" data-track="main" title="แก้ยอดนี้จะปรับยอดผ่อนของทุกงวดที่ยังไม่ชำระให้เท่ากันหมด" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>' +
-          countField(ord, 'main', ord.installmentCount) +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ส่วนลด</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.discount)) + '" data-order-field="discount" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#2b2540; background:#fff; outline:none;" /></div>' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดรับชำระ' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:700; color:#12b886;">฿' + (ord.hasAccessory ? trackTotals(ord.installments).paidDisp : ord.totalPaidDisp) + '</div></div>' +
+          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดคงเหลือ' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:700; color:#e03131;">฿' + (ord.hasAccessory ? trackTotals(ord.installments).outstandingDisp : ord.totalOutstandingDisp) + '</div></div>' +
         '</div>' +
         '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; margin-bottom:14px; padding:14px 16px; background:rgba(124,92,255,0.05); border-radius:14px;">' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">🗓 วันครบกำหนดชำระงวดแรก</div><div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">' +
@@ -2322,6 +2323,7 @@
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">🔁 ชำระทุกวันที่</div>' +
             '<input type="number" min="1" max="31" value="' + esc(ord.payDay || '') + '" data-order-field="payDay" data-order="' + esc(ord.orderId) + '" placeholder="เช่น 5" style="width:100px; border:1px solid rgba(124,92,255,0.25); border-radius:8px; padding:7px 10px; font-size:13px; color:#2b2540; background:#fff; outline:none;" />' +
           '</div>' +
+          countField(ord, 'main', ord.installmentCount) +
         '</div>' +
         (ord.firstDueDate && ord.payDay ? '<div style="font-size:11.5px; color:#0b7a5b; margin-bottom:10px;">✓ กรอกครบแล้ว — ตารางงวดด้านล่างคำนวณวันครบกำหนดอัตโนมัติจาก 2 ช่องนี้ (งวดที่จ่ายแล้วจะไม่ถูกแก้)</div>' : '') +
         '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:14px;">' +
@@ -2332,8 +2334,9 @@
         (ord.hasAccessory ? (
           '<div style="border-top:1px dashed rgba(124,92,255,0.25); margin:26px 0 20px; padding-top:20px;">' +
             '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540; margin-bottom:14px; display:flex; align-items:center; gap:8px;">🎧 อุปกรณ์เสริม <span style="font-size:12px; font-weight:500; color:#6b6785;">(บิลแยกต่างหากใน CRM — คนละ SO กับเครื่องหลัก)</span></div>' +
-            '<div style="display:grid; grid-template-columns:2fr 1fr; gap:16px; margin-bottom:16px;">' +
+            '<div style="display:grid; grid-template-columns:2fr 1fr 1fr; gap:16px; margin-bottom:16px;">' +
               '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">📦 รายการสินค้า (อุปกรณ์เสริม)</div><input type="text" value="' + esc(ord.accessoryProductList || '') + '" data-order-field="accessoryProductList" data-order="' + esc(ord.orderId) + '" placeholder="เช่น Apple Pencil (USB-C)" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
+              '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">🏷 ราคาสินค้า</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.accessoryProductPrice)) + '" data-order-field="accessoryProductPrice" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#2b2540; background:#fff; outline:none;" /></div>' +
               '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">🔗 SO (อุปกรณ์เสริม)</div><input type="text" value="' + esc(ord.accessoryOrderId || '') + '" data-order-field="accessoryOrderId" data-order="' + esc(ord.orderId) + '" placeholder="เลข SO บิลอุปกรณ์เสริม" title="เมื่อกรอกแล้ว ไฟล์รับชำระที่มี SO นี้จะจับคู่มาลงตารางอุปกรณ์เสริมด้านล่างอัตโนมัติ" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#2b2540; background:#fff; outline:none;" /></div>' +
             '</div>' +
             '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:16px; margin-bottom:14px;">' +
@@ -2554,7 +2557,7 @@
       }
       var orderField = t.getAttribute('data-order-field');
       if (orderField) {
-        var numericOrderFields = ['payDay', 'downPayment', 'discount', 'productPrice'];
+        var numericOrderFields = ['payDay', 'downPayment', 'discount', 'productPrice', 'accessoryProductPrice'];
         updateOrderField(t.getAttribute('data-order'), orderField, numericOrderFields.indexOf(orderField) !== -1 ? toNumber(t.value) : t.value);
         return;
       }
