@@ -184,6 +184,26 @@
     if (changed) _lastRepairChanged = true;
     return changed ? fixed : orders;
   }
+  // One-time self-heal for ดาวน์+อุปกรณ์เสริม orders imported before the accessory track existed:
+  // their productList is a single "เครื่อง / อุปกรณ์เสริม" string (the old joinText behavior) with
+  // accessoryProductList still blank. Splits on the first "/" — main device keeps the part before,
+  // the accessory name (never overwriting one staff already typed in) gets the part after.
+  function repairAccessoryProductNames(orders) {
+    var changed = false;
+    var fixed = orders.map(function (o) {
+      if (!isAccessoryBundlePurchaseType(o.purchaseType) || o.accessoryProductList) return o;
+      var pl = String(o.productList || '');
+      var slashIdx = pl.indexOf('/');
+      if (slashIdx === -1) return o;
+      var mainPart = pl.slice(0, slashIdx).trim();
+      var accPart = pl.slice(slashIdx + 1).trim();
+      if (!accPart) return o;
+      changed = true;
+      return Object.assign({}, o, { productList: mainPart, accessoryProductList: accPart });
+    });
+    if (changed) _lastRepairChanged = true;
+    return changed ? fixed : orders;
+  }
 
   // ---------- Mock data ----------
   function mk(no, dueDate, amountDue, amountPaid, paidDate, status, override) {
@@ -279,7 +299,7 @@
   function applySnapshot(data) {
     if (!data) return;
     applyingRemote = true;
-    if (Array.isArray(data.orders)) { state.orders = repairDueDateSchedules(repairInvalidStatusOverrides(data.orders)); state.isSampleData = data.orders.length === 0 ? state.isSampleData : false; }
+    if (Array.isArray(data.orders)) { state.orders = repairAccessoryProductNames(repairDueDateSchedules(repairInvalidStatusOverrides(data.orders))); state.isSampleData = data.orders.length === 0 ? state.isSampleData : false; }
     state.customerNotes = data.customerNotes || {};
     appliedPaymentKeys = {};
     (data.appliedPaymentKeys || []).forEach(function (k) { appliedPaymentKeys[k] = true; });
@@ -376,7 +396,7 @@
 
   // ---------- State ----------
   var state = {
-    orders: repairDueDateSchedules(repairInvalidStatusOverrides((persisted && persisted.orders && persisted.orders.length) ? persisted.orders : generateMock())),
+    orders: repairAccessoryProductNames(repairDueDateSchedules(repairInvalidStatusOverrides((persisted && persisted.orders && persisted.orders.length) ? persisted.orders : generateMock()))),
     query: '',
     selectedCustomerId: null,
     uploadMsgDebt: '',
