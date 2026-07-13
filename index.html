@@ -2135,6 +2135,8 @@
           '<div style="font-size:13px; color:#6b6785;">🔗 SO: <span style="color:#2b2540; font-weight:600;">' + esc(ord.orderId) + '</span></div>' +
           '<div style="font-size:13px; color:#6b6785;">🗓 วันที่ออกสัญญา: <span style="color:#2b2540; font-weight:600;">' + esc(ord.contractDateDisp) + '</span></div>' +
           '<div style="background:rgba(240,140,0,0.12); color:#c2650a; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">' + esc(ord.purchaseType) + '</div>' +
+          (ord.isSold ? '<div style="background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">📤 จำหน่ายชื่อให้บริษัทติดตามหนี้</div>' : '') +
+          (ord.isCancelled ? '<div style="background:' + hexToRgba('#4b5563', 0.14) + '; color:#4b5563; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">↩️ ยกเลิกสัญญา คืนเครื่อง</div>' : '') +
           '<div style="margin-left:auto; font-size:12.5px; color:#6b6785;">⏱ ' + ord.installmentCount + ' งวด</div>' +
         '</div>' +
         '<div style="display:grid; grid-template-columns:2fr 1fr; gap:16px; margin-bottom:16px;">' +
