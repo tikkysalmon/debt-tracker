@@ -279,7 +279,7 @@
   function applySnapshot(data) {
     if (!data) return;
     applyingRemote = true;
-    if (Array.isArray(data.orders)) { state.orders = repairInvalidStatusOverrides(data.orders); state.isSampleData = data.orders.length === 0 ? state.isSampleData : false; }
+    if (Array.isArray(data.orders)) { state.orders = repairDueDateSchedules(repairInvalidStatusOverrides(data.orders)); state.isSampleData = data.orders.length === 0 ? state.isSampleData : false; }
     state.customerNotes = data.customerNotes || {};
     appliedPaymentKeys = {};
     (data.appliedPaymentKeys || []).forEach(function (k) { appliedPaymentKeys[k] = true; });
@@ -376,7 +376,7 @@
 
   // ---------- State ----------
   var state = {
-    orders: repairInvalidStatusOverrides((persisted && persisted.orders && persisted.orders.length) ? persisted.orders : generateMock()),
+    orders: repairDueDateSchedules(repairInvalidStatusOverrides((persisted && persisted.orders && persisted.orders.length) ? persisted.orders : generateMock())),
     query: '',
     selectedCustomerId: null,
     uploadMsgDebt: '',
@@ -949,6 +949,43 @@
       var patch = {}; patch[listKey] = updated;
       return Object.assign({}, o, patch);
     });
+  }
+  // One-time self-heal for data already corrupted by the offset bug above: any order/track with
+  // both schedule fields set gets its unpaid งวด dates recomputed with the corrected formula —
+  // idempotent (a no-op once dates already match) and never touches paid งวด, so safe to run on
+  // every load the same way repairInvalidStatusOverrides does.
+  function repairDueDateSchedules(orders) {
+    var changed = false;
+    function fixTrack(o, firstKey, payKey, listKey) {
+      var list = o[listKey];
+      if (!o[firstKey] || !o[payKey] || !list || !list.length) return null;
+      var payDayNum = Number(o[payKey]);
+      var sorted = list.slice().sort(function (a, b) { return (a.no || 0) - (b.no || 0); });
+      var paidN = 0;
+      for (var i = 0; i < sorted.length; i++) { if (Number(sorted[i].amountPaid || 0) > 0) paidN++; else break; }
+      var touched = false;
+      var updated = list.map(function (inst) {
+        var idx = sorted.findIndex(function (s) { return s.no === inst.no; });
+        if (idx < paidN) return inst;
+        var correctDate = recalcDueDate(o[firstKey], idx, payDayNum);
+        if (inst.dueDate === correctDate) return inst;
+        touched = true;
+        return Object.assign({}, inst, { dueDate: correctDate });
+      });
+      return touched ? updated : null;
+    }
+    var fixed = orders.map(function (o) {
+      var mainFix = fixTrack(o, 'firstDueDate', 'payDay', 'installments');
+      var accFix = fixTrack(o, 'accessoryFirstDueDate', 'accessoryPayDay', 'accessoryInstallments');
+      if (!mainFix && !accFix) return o;
+      changed = true;
+      var patch = {};
+      if (mainFix) patch.installments = mainFix;
+      if (accFix) patch.accessoryInstallments = accFix;
+      return Object.assign({}, o, patch);
+    });
+    if (changed) _lastRepairChanged = true;
+    return changed ? fixed : orders;
   }
   // Editing "ยอดผ่อนสะสม" directly re-distributes that total across installments in order
   // (same approach as the debtor-file paidTotal import) rather than editing a single stored field.
