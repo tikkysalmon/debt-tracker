@@ -879,23 +879,6 @@
   }
   // Editing "ยอดผ่อนสะสม" directly re-distributes that total across installments in order
   // (same approach as the debtor-file paidTotal import) rather than editing a single stored field.
-  function setPaidTotal(orderId, total) {
-    state.orders = state.orders.map(function (o) {
-      if (o.orderId !== orderId) return o;
-      var sorted = o.installments.slice().sort(function (a, b) { return (a.no || 0) - (b.no || 0); });
-      var remaining = Math.max(0, toNumber(total));
-      var paidByNo = {};
-      sorted.forEach(function (inst) {
-        var due = Math.max(0, toNumber(inst.amountDue) - toNumber(inst.discount));
-        var paidHere = Math.min(remaining, due);
-        paidByNo[inst.no] = paidHere;
-        remaining -= paidHere;
-      });
-      return Object.assign({}, o, { installments: o.installments.map(function (inst) { return Object.assign({}, inst, { amountPaid: paidByNo[inst.no] }); }) });
-    });
-    savePersisted();
-    render();
-  }
   // Editing "ยอดผ่อนต่องวด" at the order level applies to every not-yet-paid installment
   // uniformly — paid ones keep their original amount (history shouldn't change retroactively).
   function setInstallmentAmount(orderId, amount) {
@@ -2145,7 +2128,7 @@
         '</div>' +
         '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:16px; margin-bottom:10px;">' +
           (isInstallmentPurchaseType(ord.purchaseType)
-            ? '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดผ่อนสะสม</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.totalPaidRaw)) + '" data-action="setPaidTotal" data-order="' + esc(ord.orderId) + '" title="แก้ยอดนี้จะกระจายยอดชำระไปยังงวดต่างๆ ให้ใหม่ทั้งหมด" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>'
+            ? '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดผ่อนสะสม</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.downPayment)) + '" data-order-field="downPayment" data-order="' + esc(ord.orderId) + '" title="ยอดที่ผ่อนมาก่อนทำสัญญานี้ — ใช้หักฐานคำนวณยอดผ่อนต่องวด (ราคาสินค้า−ยอดนี้)/จำนวนงวด เท่านั้น ไม่ไปตั้งค่าชำระแล้วในตารางงวดด้านล่าง" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>'
             : '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดวางดาวน์</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.downPayment)) + '" data-order-field="downPayment" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>') +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดผ่อนต่องวด</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.installments[0] ? ord.installments[0].amountDue : 0)) + '" data-action="setInstallmentAmount" data-order="' + esc(ord.orderId) + '" title="แก้ยอดนี้จะปรับยอดผ่อนของทุกงวดที่ยังไม่ชำระให้เท่ากันหมด" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ส่วนลด</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.discount)) + '" data-order-field="discount" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#2b2540; background:#fff; outline:none;" /></div>' +
@@ -2386,7 +2369,6 @@
         case 'postponeLateFee': state.postponeLateFee = toNumber(t.value); break;
         case 'postponeUnlockFee': state.postponeUnlockFee = toNumber(t.value); break;
         case 'noteModalDraft': state.noteModalDraft = t.value; break;
-        case 'setPaidTotal': setPaidTotal(t.getAttribute('data-order'), toNumber(t.value)); break;
         case 'setInstallmentAmount': setInstallmentAmount(t.getAttribute('data-order'), toNumber(t.value)); break;
         case 'filter': state[t.getAttribute('data-key')] = t.value; render(); break;
         case 'setPageSize': state.pageSize = Number(t.value) || 50; state.page = 1; render(); break;
