@@ -136,6 +136,13 @@
     var s = String(purchaseType || '');
     return /ผ่อน/.test(s) && !/ดาวน์/.test(s);
   }
+  // "ดาวน์+อุปกรณ์เสริม"-style orders bundle two separate CRM bills into one record: the main
+  // device (its own SO) and an accessory (its own SO, different bill, different installment
+  // amount/term) — o.accessoryInstallments/accessoryOrderId/accessoryProductList track that
+  // second bill so it gets its own table instead of being merged into the device's schedule.
+  function isAccessoryBundlePurchaseType(purchaseType) {
+    return /อุปกรณ์เสริม/.test(String(purchaseType || ''));
+  }
   function computeStatus(inst, cfg) {
     var due = new Date(inst.dueDate);
     var amountDue = Number(inst.amountDue || 0);
@@ -415,31 +422,42 @@
     _ordersCache = { ref: state.orders, val: out };
     return out;
   }
+  function withEffectiveStatus(list) {
+    return list.map(function (i) {
+      var status = ((i.statusOverride || !AUTO_STATUS_ENABLED) && i.status) ? i.status : computeStatus(i, CFG);
+      var m = STATUS_META[status] || { color: '#94a3b8' };
+      return Object.assign({}, i, {
+        effectiveStatus: status,
+        statusColor: m.color,
+        statusSoft: hexToRgba(m.color, 0.13),
+        statusBorder: hexToRgba(m.color, 0.4)
+      });
+    });
+  }
   function computeOrdersUncached() {
     return state.orders.map(function (o) {
-      var installments = o.installments.map(function (i) {
-        var status = ((i.statusOverride || !AUTO_STATUS_ENABLED) && i.status) ? i.status : computeStatus(i, CFG);
-        var m = STATUS_META[status] || { color: '#94a3b8' };
-        return Object.assign({}, i, {
-          effectiveStatus: status,
-          statusColor: m.color,
-          statusSoft: hexToRgba(m.color, 0.13),
-          statusBorder: hexToRgba(m.color, 0.4)
-        });
-      });
-      var totalDue = installments.reduce(function (s, i) { return s + Number(i.amountDue || 0); }, 0);
-      var totalPaid = installments.reduce(function (s, i) { return s + Number(i.amountPaid || 0); }, 0);
+      var installments = withEffectiveStatus(o.installments);
+      // "ดาวน์+อุปกรณ์เสริม" orders carry a second, separately-billed schedule (its own SO, its own
+      // per-installment amount) — folded into the SAME totals/grade/overdue math as the main
+      // device since it's still money the same customer owes, but kept as its own array for the
+      // customer-detail view's second table.
+      var accessoryInstallments = withEffectiveStatus(o.accessoryInstallments || []);
+      var allInstallments = installments.concat(accessoryInstallments);
+      var totalDue = allInstallments.reduce(function (s, i) { return s + Number(i.amountDue || 0); }, 0);
+      var totalPaid = allInstallments.reduce(function (s, i) { return s + Number(i.amountPaid || 0); }, 0);
       var totalOutstanding = Math.max(0, totalDue - totalPaid - Number(o.discount || 0));
       // OR in the sticky wasSold/wasCancelled flags (set the moment a status is ever assigned, in
       // updateInstallment/onPaymentFileChange) so a later ชำระแล้ว on some งวด doesn't make the
       // account-status badge disappear — see stickyAccountStatusPatch for why.
-      var isCancelled = !!o.wasCancelled || installments.some(function (i) { return i.effectiveStatus === 'ยกเลิกสัญญา คืนเครื่อง'; });
-      var isSold = !!o.wasSold || installments.some(function (i) { return i.effectiveStatus === 'จำหน่ายชื่อให้บริษัทติดตามหนี้'; });
-      var overdueCount = installments.filter(function (i) { return ['ชำระแล้ว', 'ยังไม่ถึงกำหนดชำระ', 'ถึงกำหนดชำระ'].indexOf(i.effectiveStatus) === -1; }).length;
-      var lateInsts = installments.filter(function (i) { return LATE_STATUSES.indexOf(i.effectiveStatus) !== -1; });
+      var isCancelled = !!o.wasCancelled || allInstallments.some(function (i) { return i.effectiveStatus === 'ยกเลิกสัญญา คืนเครื่อง'; });
+      var isSold = !!o.wasSold || allInstallments.some(function (i) { return i.effectiveStatus === 'จำหน่ายชื่อให้บริษัทติดตามหนี้'; });
+      var overdueCount = allInstallments.filter(function (i) { return ['ชำระแล้ว', 'ยังไม่ถึงกำหนดชำระ', 'ถึงกำหนดชำระ'].indexOf(i.effectiveStatus) === -1; }).length;
+      var lateInsts = allInstallments.filter(function (i) { return LATE_STATUSES.indexOf(i.effectiveStatus) !== -1; });
       var lateOutstandingRaw = lateInsts.reduce(function (s, i) { return s + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0);
       return Object.assign({}, o, {
         installments: installments,
+        accessoryInstallments: accessoryInstallments,
+        hasAccessory: isAccessoryBundlePurchaseType(o.purchaseType),
         totalDueRaw: totalDue,
         totalPaidRaw: totalPaid,
         totalOutstandingRaw: totalOutstanding,
@@ -457,7 +475,8 @@
         isSold: isSold,
         lateCount: lateInsts.length,
         lateOutstandingRaw: lateOutstandingRaw,
-        installmentCount: installments.length
+        installmentCount: installments.length,
+        accessoryInstallmentCount: accessoryInstallments.length
       });
     });
   }
@@ -470,7 +489,7 @@
     var paidSum = 0, overdueSum = 0, notDueSum = 0, paidInstCount = 0, overdueInstCount = 0, notDueInstCount = 0;
     activeOrders.forEach(function (o) {
       paidSum += o.totalPaidFullRaw;
-      o.installments.forEach(function (i) {
+      o.installments.concat(o.accessoryInstallments || []).forEach(function (i) {
         var outstanding = Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0));
         if (i.effectiveStatus === 'ชำระแล้ว') paidInstCount++;
         else if (LATE_STATUSES.indexOf(i.effectiveStatus) !== -1) { overdueSum += outstanding; overdueInstCount++; }
@@ -505,7 +524,7 @@
     var paymentDonut = { conic: buildConicGradient(rawSegs), segments: rawSegs.map(function (s) { return Object.assign({}, s, { pctDisp: s.pct.toFixed(1) }); }), totalDisp: fmtMoney(donutTotal) };
 
     var trendMap = {};
-    activeOrders.forEach(function (o) { o.installments.forEach(function (i) {
+    activeOrders.forEach(function (o) { o.installments.concat(o.accessoryInstallments || []).forEach(function (i) {
       if (LATE_STATUSES.indexOf(i.effectiveStatus) === -1 || !i.dueDate) return;
       var key = i.dueDate.slice(0, 7);
       var outstanding = Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0));
@@ -532,11 +551,14 @@
       return dueGroups[g];
     }
     orders.forEach(function (o) {
-      var groupsPerInst = o.installments.map(function (i) { return STATUS_TO_GROUP[i.effectiveStatus] || i.effectiveStatus; });
+      // Combine main + accessory (ดาวน์+อุปกรณ์เสริม) installments — a fully-paid device with an
+      // overdue accessory bill must NOT show up as "ชำระแล้ว", it's still a real open balance.
+      var allInsts = o.installments.concat(o.accessoryInstallments || []);
+      var groupsPerInst = allInsts.map(function (i) { return STATUS_TO_GROUP[i.effectiveStatus] || i.effectiveStatus; });
       var allPaid = groupsPerInst.length > 0 && groupsPerInst.every(function (g) { return g === 'ชำระแล้ว'; });
       // Which installments actually count toward a bucket for this order — same exclusion as
       // before: paid/partial installments aren't a "current issue" unless the whole order is paid.
-      var inScope = allPaid ? o.installments : o.installments.filter(function (i) { return (STATUS_TO_GROUP[i.effectiveStatus] || i.effectiveStatus) !== 'ชำระแล้ว'; });
+      var inScope = allPaid ? allInsts : allInsts.filter(function (i) { return (STATUS_TO_GROUP[i.effectiveStatus] || i.effectiveStatus) !== 'ชำระแล้ว'; });
       var seenGroup = {}, seenStatus = {};
       inScope.forEach(function (i) {
         var g = STATUS_TO_GROUP[i.effectiveStatus] || i.effectiveStatus;
@@ -550,7 +572,7 @@
           grp.subOrderSets[s][o.orderId] = true;
         }
       });
-      o.installments.forEach(function (i) {
+      allInsts.forEach(function (i) {
         var outstanding = Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0));
         var g = STATUS_TO_GROUP[i.effectiveStatus] || i.effectiveStatus;
         var grp = ensureDueGroup(g);
@@ -621,7 +643,7 @@
       var contractRaw = list.reduce(function (s, o) { return s + o.totalContractRaw; }, 0);
       var paidRaw = activeList.reduce(function (s, o) { return s + o.totalPaidFullRaw; }, 0);
       var overdueRaw = activeList.reduce(function (s, o) { return s + o.lateOutstandingRaw; }, 0);
-      var notDueRaw = activeList.reduce(function (s, o) { return s + o.installments.filter(function (i) { return NOTDUE_STATUSES.indexOf(i.effectiveStatus) !== -1; }).reduce(function (s2, i) { return s2 + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0); }, 0);
+      var notDueRaw = activeList.reduce(function (s, o) { return s + o.installments.concat(o.accessoryInstallments || []).filter(function (i) { return NOTDUE_STATUSES.indexOf(i.effectiveStatus) !== -1; }).reduce(function (s2, i) { return s2 + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0); }, 0);
       var cancelledRaw = cancelledList.reduce(function (s, o) { return s + o.totalContractRaw; }, 0);
       var soldRaw = soldList.reduce(function (s, o) { return s + o.totalContractRaw; }, 0);
       var gCounts = { A: 0, B: 0, 'หนี้สงสัยจะสูญ': 0 };
@@ -687,7 +709,8 @@
     var filteredOrders = q ? computedOrders.filter(function (o) {
       return o.customerId.toLowerCase().indexOf(q) !== -1 ||
         o.customerName.toLowerCase().indexOf(q) !== -1 ||
-        o.orderId.toLowerCase().indexOf(q) !== -1;
+        o.orderId.toLowerCase().indexOf(q) !== -1 ||
+        (o.accessoryOrderId && o.accessoryOrderId.toLowerCase().indexOf(q) !== -1);
     }) : computedOrders;
 
     if (f.filterAccountStatus !== 'all') {
@@ -697,8 +720,12 @@
         return !o.isCancelled && !o.isSold;
       });
     }
+    // Combine main + accessory (ดาวน์+อุปกรณ์เสริม) installments for every per-installment filter
+    // below — an overdue/due-date/status match on the accessory schedule must surface the order
+    // too, not just matches on the main device's schedule.
+    function allInstsOf(o) { return o.installments.concat(o.accessoryInstallments || []); }
     if (f.filterDueStatus !== 'all') {
-      filteredOrders = filteredOrders.filter(function (o) { return o.installments.some(function (i) {
+      filteredOrders = filteredOrders.filter(function (o) { return allInstsOf(o).some(function (i) {
         if (f.filterDueStatus === 'notdue') return i.effectiveStatus === 'ยังไม่ถึงกำหนดชำระ';
         if (f.filterDueStatus === 'due_today') return i.effectiveStatus === 'ถึงกำหนดชำระ';
         if (f.filterDueStatus === 'overdue') return LATE_STATUSES.indexOf(i.effectiveStatus) !== -1;
@@ -706,7 +733,7 @@
       }); });
     }
     if (f.filterPaymentStatus !== 'all') {
-      filteredOrders = filteredOrders.filter(function (o) { return o.installments.some(function (i) { return i.effectiveStatus === f.filterPaymentStatus; }); });
+      filteredOrders = filteredOrders.filter(function (o) { return allInstsOf(o).some(function (i) { return i.effectiveStatus === f.filterPaymentStatus; }); });
     }
     if (f.filterGrade !== 'all') {
       filteredOrders = filteredOrders.filter(function (o) {
@@ -719,10 +746,10 @@
       filteredOrders = filteredOrders.filter(function (o) { return f.purchaseTypes.indexOf(o.purchaseType) === -1; });
     }
     if (f.dueFrom || f.dueTo) {
-      filteredOrders = filteredOrders.filter(function (o) { return o.installments.some(function (i) { return inRange(i.dueDate, f.dueFrom, f.dueTo); }); });
+      filteredOrders = filteredOrders.filter(function (o) { return allInstsOf(o).some(function (i) { return inRange(i.dueDate, f.dueFrom, f.dueTo); }); });
     }
     if (f.paidFrom || f.paidTo) {
-      filteredOrders = filteredOrders.filter(function (o) { return o.installments.some(function (i) { return inRange(i.paidDate, f.paidFrom, f.paidTo); }); });
+      filteredOrders = filteredOrders.filter(function (o) { return allInstsOf(o).some(function (i) { return inRange(i.paidDate, f.paidFrom, f.paidTo); }); });
     }
     // Once the user presses ค้นหา we always show the result table — even with no criteria,
     // where it simply lists every order.
@@ -825,18 +852,20 @@
     if (status === 'ยกเลิกสัญญา คืนเครื่อง') return { wasCancelled: true };
     return null;
   }
-  function updateInstallment(orderId, no, field, value) {
+  function trackKey(track) { return track === 'accessory' ? 'accessoryInstallments' : 'installments'; }
+  function updateInstallment(orderId, no, field, value, track) {
+    var key = trackKey(track);
     state.orders = state.orders.map(function (o) {
       if (o.orderId !== orderId) return o;
       var orderPatch = field === 'status' ? (stickyAccountStatusPatch(value) || {}) : {};
-      return Object.assign({}, o, orderPatch, {
-        installments: o.installments.map(function (i) {
-          if (i.no !== no) return i;
-          var patch = {}; patch[field] = value;
-          if (field === 'status') patch.statusOverride = true;
-          return Object.assign({}, i, patch);
-        })
+      var patch2 = {};
+      patch2[key] = (o[key] || []).map(function (i) {
+        if (i.no !== no) return i;
+        var patch = {}; patch[field] = value;
+        if (field === 'status') patch.statusOverride = true;
+        return Object.assign({}, i, patch);
       });
+      return Object.assign({}, o, orderPatch, patch2);
     });
     savePersisted();
     render();
@@ -897,25 +926,25 @@
   // (same approach as the debtor-file paidTotal import) rather than editing a single stored field.
   // Editing "ยอดผ่อนต่องวด" at the order level applies to every not-yet-paid installment
   // uniformly — paid ones keep their original amount (history shouldn't change retroactively).
-  function setInstallmentAmount(orderId, amount) {
+  function setInstallmentAmount(orderId, amount, track) {
     var amt = Math.max(0, toNumber(amount));
+    var key = trackKey(track);
     state.orders = state.orders.map(function (o) {
       if (o.orderId !== orderId) return o;
-      return Object.assign({}, o, {
-        installments: o.installments.map(function (inst) {
-          if (toNumber(inst.amountPaid) > 0) return inst;
-          return Object.assign({}, inst, { amountDue: amt });
-        })
+      var patch = {}; patch[key] = (o[key] || []).map(function (inst) {
+        if (toNumber(inst.amountPaid) > 0) return inst;
+        return Object.assign({}, inst, { amountDue: amt });
       });
+      return Object.assign({}, o, patch);
     });
     savePersisted();
     render();
   }
   // ---------- Postpone (เลื่อนวันที่ชำระ) ----------
-  function openPostpone(orderId, no) {
+  function openPostpone(orderId, no, track) {
     var order = state.orders.find(function (o) { return o.orderId === orderId; });
-    var inst = order && order.installments.find(function (i) { return i.no === no; });
-    state.postponeTarget = { orderId: orderId, no: no };
+    var inst = order && (order[trackKey(track)] || []).find(function (i) { return i.no === no; });
+    state.postponeTarget = { orderId: orderId, no: no, track: track };
     state.postponeDate = inst ? inst.dueDate : '';
     state.postponeReason = '';
     state.postponeLateFee = 0;
@@ -928,34 +957,34 @@
   }
   function confirmPostpone() {
     if (!state.postponeTarget || !state.postponeDate) return;
-    var orderId = state.postponeTarget.orderId, no = state.postponeTarget.no;
+    var orderId = state.postponeTarget.orderId, no = state.postponeTarget.no, track = state.postponeTarget.track;
+    var key = trackKey(track);
     var reason = state.postponeReason.trim();
     var lateFee = toNumber(state.postponeLateFee);
     var unlockFee = toNumber(state.postponeUnlockFee);
     state.orders = state.orders.map(function (o) {
       if (o.orderId !== orderId) return o;
-      return Object.assign({}, o, {
-        installments: o.installments.map(function (i) {
-          if (i.no !== no) return i;
-          var entry = { from: i.dueDate, to: state.postponeDate, reason: reason, lateFee: lateFee, unlockFee: unlockFee, at: toDateString(new Date()) };
-          return Object.assign({}, i, {
-            dueDate: state.postponeDate,
-            postponeHistory: (i.postponeHistory || []).concat([entry]),
-            lateFee: toNumber(i.lateFee || 0) + lateFee,
-            unlockFee: toNumber(i.unlockFee || 0) + unlockFee
-          });
-        })
+      var patch = {}; patch[key] = (o[key] || []).map(function (i) {
+        if (i.no !== no) return i;
+        var entry = { from: i.dueDate, to: state.postponeDate, reason: reason, lateFee: lateFee, unlockFee: unlockFee, at: toDateString(new Date()) };
+        return Object.assign({}, i, {
+          dueDate: state.postponeDate,
+          postponeHistory: (i.postponeHistory || []).concat([entry]),
+          lateFee: toNumber(i.lateFee || 0) + lateFee,
+          unlockFee: toNumber(i.unlockFee || 0) + unlockFee
+        });
       });
+      return Object.assign({}, o, patch);
     });
     state.postponeTarget = null;
     savePersisted();
     render();
   }
   // ---------- Note popup (the table cell is too narrow to read a long note in place) ----------
-  function openNoteModal(orderId, no) {
+  function openNoteModal(orderId, no, track) {
     var order = state.orders.find(function (o) { return o.orderId === orderId; });
-    var inst = order && order.installments.find(function (i) { return i.no === no; });
-    state.noteModalTarget = { orderId: orderId, no: no };
+    var inst = order && (order[trackKey(track)] || []).find(function (i) { return i.no === no; });
+    state.noteModalTarget = { orderId: orderId, no: no, track: track };
     state.noteModalDraft = inst ? inst.note : '';
     render();
   }
@@ -965,40 +994,76 @@
   }
   function saveNoteModal() {
     if (!state.noteModalTarget) return;
-    var orderId = state.noteModalTarget.orderId, no = state.noteModalTarget.no;
+    var orderId = state.noteModalTarget.orderId, no = state.noteModalTarget.no, track = state.noteModalTarget.track;
     state.noteModalTarget = null;
-    updateInstallment(orderId, no, 'note', state.noteModalDraft);
+    updateInstallment(orderId, no, 'note', state.noteModalDraft, track);
+  }
+  // Grows/shrinks a track's (main งวด or the separately-billed อุปกรณ์เสริม งวด) installment count
+  // to match a typed "จำนวนงวด" number — growing appends blank งวด at the last-known per-installment
+  // amount; shrinking removes trailing UNPAID installments only, stopping (never deleting) once it
+  // would have to touch one that already has a payment recorded.
+  function setInstallmentCount(orderId, track, count) {
+    var targetKey = trackKey(track);
+    var n = Math.max(0, Math.round(toNumber(count)));
+    state.orders = state.orders.map(function (o) {
+      if (o.orderId !== orderId) return o;
+      var list = (o[targetKey] || []).slice().sort(function (a, b) { return (a.no || 0) - (b.no || 0); });
+      if (n > list.length) {
+        var amt = list.length ? toNumber(list[list.length - 1].amountDue) : 0;
+        var nextNo = list.reduce(function (m, i) { return Math.max(m, i.no || 0); }, 0);
+        while (list.length < n) {
+          nextNo++;
+          list.push({ no: nextNo, dueDate: '', amountDue: amt, amountPaid: 0, paidDate: '', status: '', statusOverride: false, discount: 0, note: '' });
+        }
+      } else if (n < list.length) {
+        while (list.length > n) {
+          // Strictly the LAST งวด in order — never skip over it to delete an earlier unpaid one,
+          // or a later paid งวด could end up dangling right after a gap in the numbering.
+          if (toNumber(list[list.length - 1].amountPaid) > 0) break; // last one is already paid — stop rather than delete history
+          list.splice(list.length - 1, 1);
+        }
+      }
+      var patch = {}; patch[targetKey] = list;
+      return Object.assign({}, o, patch);
+    });
+    savePersisted();
+    render();
   }
   // Lets staff fill in orders the source file left with zero installment rows (e.g. missing
   // "ระยะเวลาผ่อน" in the debtor export) — appends one blank editable งวด to the order.
-  function addInstallment(orderId) {
+  function addInstallment(orderId, track) {
+    var key = trackKey(track);
     state.orders = state.orders.map(function (o) {
       if (o.orderId !== orderId) return o;
-      var nextNo = o.installments.reduce(function (m, i) { return Math.max(m, i.no || 0); }, 0) + 1;
+      var list = o[key] || [];
+      var nextNo = list.reduce(function (m, i) { return Math.max(m, i.no || 0); }, 0) + 1;
       var newInst = { no: nextNo, dueDate: '', amountDue: 0, amountPaid: 0, paidDate: '', status: '', statusOverride: false, discount: 0, note: '' };
-      return Object.assign({}, o, { installments: o.installments.concat([newInst]) });
+      var patch = {}; patch[key] = list.concat([newInst]);
+      return Object.assign({}, o, patch);
     });
     savePersisted();
     render();
   }
-  function deleteInstallment(orderId, no) {
+  function deleteInstallment(orderId, no, track) {
     if (!window.confirm('ลบงวดที่ ' + no + ' ออกจากคำสั่งซื้อนี้?\n(ยกเลิกไม่ได้)')) return;
+    var key = trackKey(track);
     state.orders = state.orders.map(function (o) {
       if (o.orderId !== orderId) return o;
-      return Object.assign({}, o, { installments: o.installments.filter(function (i) { return i.no !== no; }) });
+      var patch = {}; patch[key] = (o[key] || []).filter(function (i) { return i.no !== no; });
+      return Object.assign({}, o, patch);
     });
     savePersisted();
     render();
   }
-  function resetOverride(orderId, no) {
+  function resetOverride(orderId, no, track) {
+    var key = trackKey(track);
     state.orders = state.orders.map(function (o) {
       if (o.orderId !== orderId) return o;
-      return Object.assign({}, o, {
-        installments: o.installments.map(function (i) {
-          if (i.no !== no) return i;
-          return Object.assign({}, i, { statusOverride: false, status: '' });
-        })
+      var patch = {}; patch[key] = (o[key] || []).map(function (i) {
+        if (i.no !== no) return i;
+        return Object.assign({}, i, { statusOverride: false, status: '' });
       });
+      return Object.assign({}, o, patch);
     });
     savePersisted();
     render();
@@ -1028,10 +1093,17 @@
   }
   function exportFilteredCsv(orders) {
     var content = 'รหัสลูกค้า,ชื่อลูกค้า,คำสั่งซื้อ,งวดที่,วันครบกำหนดชำระ,ยอดผ่อนต่องวด,ยอดที่ชำระจริง,วันที่ชำระ,สถานะการชำระเงิน,ส่วนลด,หมายเหตุ\n';
-    orders.forEach(function (o) { o.installments.forEach(function (i) {
-      content += [o.customerId, o.customerName, o.orderId, i.no, i.dueDate, i.amountDue, i.amountPaid, i.paidDate, i.effectiveStatus, i.discount, i.note]
-        .map(function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; }).join(',') + '\n';
-    }); });
+    function addRows(customerId, customerName, orderId, list) {
+      list.forEach(function (i) {
+        content += [customerId, customerName, orderId, i.no, i.dueDate, i.amountDue, i.amountPaid, i.paidDate, i.effectiveStatus, i.discount, i.note]
+          .map(function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; }).join(',') + '\n';
+      });
+    }
+    orders.forEach(function (o) {
+      addRows(o.customerId, o.customerName, o.orderId, o.installments);
+      // ดาวน์+อุปกรณ์เสริม orders export under their own accessory SO — it's a separate CRM bill.
+      if (o.accessoryInstallments && o.accessoryInstallments.length) addRows(o.customerId, o.customerName, o.accessoryOrderId || (o.orderId + ' (อุปกรณ์เสริม)'), o.accessoryInstallments);
+    });
     downloadBlob(content, 'debt_data_export.csv');
   }
   function downloadTemplate(type) {
@@ -1176,7 +1248,13 @@
       customerName: ['ชื่อ-นามสกุลลูกค้า', 'ชื่อลูกค้า', 'customername', 'customer name', 'ชื่อ-สกุล', 'ชื่อ - สกุล', 'ชื่อ', 'ชื่อผู้ทำสัญญา'],
       orderId: ['คำสั่งซื้อ', 'orderid', 'order id', 'order no', 'orderno', 'เลขที่คำสั่งซื้อ', 'หมายเลขคำสั่งซื้อ', 'เลขคำสั่งซื้อ', 'so', 'so number', 'sonumber', 'เลขที่ so', 'เลขที่เอกสาร', 'เลขที่ใบสั่งขาย', 'เลขที่สัญญา', 'เลขสัญญา', 'เลขที่บิล'],
       contractDate: ['วันที่ทำสัญญา', 'วันที่ที่ออกสัญญา', 'วันที่ออกสัญญา', 'contractdate', 'contract date', 'วันที่สัญญา', 'วันทำสัญญา', 'วันที่'],
-      productList: ['รายการสินค้า (ผ่อน)', 'รายการสินค้า (ดาวน์)', 'รายการสินค้าอุปกรณ์เสริม', 'รายการสินค้า', 'productlist', 'product', 'product name', 'สินค้า', 'รายการ', 'ชื่อสินค้า'],
+      // "รายการสินค้าอุปกรณ์เสริม" deliberately excluded here — it's its own accessoryProductList
+      // below now, since ดาวน์+อุปกรณ์เสริม orders bill the accessory separately (own SO, own
+      // installment schedule) rather than folding it into the main device's product line.
+      productList: ['รายการสินค้า (ผ่อน)', 'รายการสินค้า (ดาวน์)', 'รายการสินค้า', 'productlist', 'product', 'product name', 'สินค้า', 'รายการ', 'ชื่อสินค้า'],
+      accessoryProductList: ['รายการสินค้าอุปกรณ์เสริม'],
+      accessoryAmountDue: ['ยอดผ่อนต่องวด (อุปกรณ์เสริม)', 'ราคาผ่อนต่องวด (อุปกรณ์เสริม)'],
+      accessoryTerm: ['งวดที่ผ่อน (อุปกรณ์เสริม)', 'ระยะเวลาผ่อน (อุปกรณ์เสริม)', 'จำนวนงวด (อุปกรณ์เสริม)'],
       downPayment: ['ยอดวางดาวน์', 'downpayment', 'down payment', 'เงินดาวน์', 'ดาวน์', 'ยอดดาวน์'],
       // Deliberately narrow — "ราคาสุทธิ (ผ่อน/ดาวน์)" etc. don't reliably equal ราคาสินค้า, and a
       // wrong auto-fill here would trigger the ยอดผ่อนต่องวด recalc below and overwrite the
@@ -1274,8 +1352,35 @@
           _term: Math.round(resolveNumber(r, ALIASES.term)),
           _paidCount: Math.round(resolveNumber(r, ALIASES.paidCount)),
           _paidTotal: resolveNumber(r, ALIASES.paidTotal),
-          installments: []
+          installments: [],
+          // ดาวน์+อุปกรณ์เสริม only: accessoryOrderId is never in the debtor file (staff fills it in
+          // by hand once they know the accessory's own SO) — the rest come straight from the file.
+          accessoryOrderId: '',
+          accessoryProductList: String(resolveField(r, ALIASES.accessoryProductList) || ''),
+          accessoryInstallments: [],
+          _accessoryPerInst: resolveNumber(r, ALIASES.accessoryAmountDue),
+          _accessoryTerm: Math.round(resolveNumber(r, ALIASES.accessoryTerm))
         };
+      }
+      // Builds a simple synthetic schedule for the accessory bill — same due-date cadence as the
+      // main device (no separate cadence column exists in the file) but its own per-installment
+      // amount/term. Only fires for "ดาวน์+อุปกรณ์เสริม"-style purchase types with accessory data.
+      function buildAccessorySchedule(o) {
+        if (!isAccessoryBundlePurchaseType(o.purchaseType)) return;
+        var amt = o._accessoryPerInst || 0;
+        if (!o.accessoryProductList && !amt) return;
+        var term = o._accessoryTerm || o._term || 0;
+        var N = Math.max(0, Math.min(240, Math.round(term)));
+        if (!N) return;
+        var rec = schedBySO[o.orderId] || (o.customerId ? schedByCust[o.customerId] : null);
+        for (var k = 1; k <= N; k++) {
+          o.accessoryInstallments.push({
+            no: k,
+            dueDate: rec ? scheduleDueDate(rec.first, k - 1, rec.payDay) : (o.firstDueDate ? scheduleDueDate(o.firstDueDate, k - 1, o.payDay) : ''),
+            amountDue: amt,
+            amountPaid: 0, paidDate: '', status: '', statusOverride: false, discount: 0, note: ''
+          });
+        }
       }
       function addInstallment(o, r) {
         var rawDue = resolveField(r, ALIASES.dueDate);
@@ -1331,7 +1436,7 @@
         var orderId = String(resolveField(r, ALIASES.orderId) || '').trim();
         if (!orderId) return;
         var isNew = !byOrder[orderId];
-        if (isNew) byOrder[orderId] = makeOrder(r, orderId);
+        if (isNew) { byOrder[orderId] = makeOrder(r, orderId); buildAccessorySchedule(byOrder[orderId]); }
         if (useSchedule) { if (isNew) generateSchedule(byOrder[orderId]); }
         else if (!separate) addInstallment(byOrder[orderId], r);   // legacy single-sheet: row = installment
       });
@@ -1353,6 +1458,7 @@
       Object.keys(byOrder).forEach(function (k) {
         var o = byOrder[k];
         delete o._perInst; delete o._term; delete o._paidCount; delete o._paidTotal;
+        delete o._accessoryPerInst; delete o._accessoryTerm;
         if (!o.installments.length) { noInstOrders++; return; }
         var anyNo = o.installments.some(function (i) { return isFinite(i.no) && i.no > 0; });
         if (anyNo) o.installments.sort(function (a, b) { return (a.no || 0) - (b.no || 0); });
@@ -1385,6 +1491,26 @@
               ni.discount = oi.discount; ni.note = oi.note;
             }
           });
+          // accessoryOrderId is staff-entered, never in the debtor file — always carry it forward.
+          if (old.accessoryOrderId) o.accessoryOrderId = old.accessoryOrderId;
+          if (old.accessoryInstallments && old.accessoryInstallments.length) {
+            if (o.accessoryInstallments.length) {
+              o.accessoryInstallments.forEach(function (ni) {
+                var oi = old.accessoryInstallments.find(function (x) { return x.no === ni.no; });
+                if (oi) {
+                  ni.amountPaid = oi.amountPaid; ni.paidDate = oi.paidDate;
+                  ni.status = oi.status; ni.statusOverride = oi.statusOverride;
+                  ni.discount = oi.discount; ni.note = oi.note;
+                }
+              });
+            } else {
+              // This import didn't carry accessory columns (or the schedule couldn't regenerate) —
+              // keep the previously-built accessory schedule rather than silently dropping it.
+              o.accessoryInstallments = old.accessoryInstallments;
+            }
+          }
+          if (old.wasSold) o.wasSold = true;
+          if (old.wasCancelled) o.wasCancelled = true;
         }
         map[o.orderId] = o;
       });
@@ -1439,7 +1565,22 @@
     };
     readRows(file).then(function (rows) {
       var headers = rows.length ? Object.keys(rows[0]) : [];
-      var orders = state.orders.map(function (o) { return Object.assign({}, o, { installments: o.installments.map(function (i) { return Object.assign({}, i); }) }); });
+      var orders = state.orders.map(function (o) {
+        return Object.assign({}, o, {
+          installments: o.installments.map(function (i) { return Object.assign({}, i); }),
+          accessoryInstallments: (o.accessoryInstallments || []).map(function (i) { return Object.assign({}, i); })
+        });
+      });
+      // Matches a payment row's SO against either the main order OR (ดาวน์+อุปกรณ์เสริม orders
+      // only) its separately-billed accessory SO — CRM exports payments under whichever SO the
+      // customer actually paid, and the two schedules must never get each other's payments.
+      function findOrderAndTrack(orderId) {
+        var order = orders.find(function (o) { return o.orderId === orderId; });
+        if (order) return { order: order, track: 'main', list: order.installments };
+        order = orders.find(function (o) { return o.accessoryOrderId && o.accessoryOrderId === orderId; });
+        if (order) return { order: order, track: 'accessory', list: order.accessoryInstallments };
+        return null;
+      }
 
       // ---- Status-history snapshot import (e.g. "แก้ไขรับชำระ" export from the old system) ----
       // That export is an edit log, not a payment list: the same SO+งวด repeats many times as the
@@ -1458,9 +1599,10 @@
         rows.forEach(function (r) {
           var orderId = String(resolveField(r, ALIASES.orderId) || '').trim();
           var no = Number(resolveField(r, ALIASES.installmentNo) || 0);
-          var order = orders.find(function (o) { return o.orderId === orderId; });
-          if (!order) { missedSnap++; return; }
-          var inst = order.installments.find(function (i) { return i.no === no; });
+          var match = findOrderAndTrack(orderId);
+          if (!match) { missedSnap++; return; }
+          var order = match.order;
+          var inst = match.list.find(function (i) { return i.no === no; });
           if (!inst) { missedSnap++; return; }
 
           // Sticky account-status flag must see EVERY historical row, not just the one that wins
@@ -1511,8 +1653,9 @@
         var orderId = String(resolveField(r, ALIASES.orderId) || '').trim();
         var noRaw = resolveField(r, ALIASES.installmentNo);
         var no = Number(noRaw || 0);
-        var order = orders.find(function (o) { return o.orderId === orderId; });
-        if (!order) { missed++; return; }
+        var match = findOrderAndTrack(orderId);
+        if (!match) { missed++; return; }
+        var order = match.order, trackList = match.list;
         var amountPaid = resolveField(r, ALIASES.amountPaid);
         var paidDate = resolveField(r, ALIASES.paidDate);
         var status = resolveField(r, ALIASES.status);
@@ -1524,7 +1667,7 @@
 
         var inst, payKey;
         if (no > 0) {
-          inst = order.installments.find(function (i) { return i.no === no; });
+          inst = trackList.find(function (i) { return i.no === no; });
           if (!inst) { missed++; return; }
           payKey = orderId + '|' + no + '|' + toDateString(paidDate) + '|' + toNumber(amountPaid);
         } else {
@@ -1532,12 +1675,12 @@
           // that still owes a fee (it may already be fully paid on the amountDue side and so
           // would otherwise get skipped) — fall back to the earliest not-fully-paid installment
           // for everything else, same approach as the debtor-file paidTotal distribution.
-          var sortedInsts = order.installments.slice().sort(function (a, b) { return (a.no || 0) - (b.no || 0); });
+          var sortedInsts = trackList.slice().sort(function (a, b) { return (a.no || 0) - (b.no || 0); });
           if (hasPenalty) {
             inst = sortedInsts.find(function (i) { return (toNumber(i.lateFee) + toNumber(i.unlockFee)) > toNumber(i.penaltyPaid) + 0.005; });
           }
           if (!inst) {
-            inst = sortedInsts.find(function (i) { return toNumber(i.amountPaid) < (toNumber(i.amountDue) - toNumber(i.discount) - 0.01); }) || order.installments[order.installments.length - 1];
+            inst = sortedInsts.find(function (i) { return toNumber(i.amountPaid) < (toNumber(i.amountDue) - toNumber(i.discount) - 0.01); }) || trackList[trackList.length - 1];
           }
           if (!inst) { missed++; return; }
           payKey = orderId + '|noinst|' + String(paidDate) + '|' + toNumber(amountPaid);
@@ -2064,7 +2207,7 @@
   function renderNoteModal() {
     var target = state.noteModalTarget;
     var order = state.orders.find(function (o) { return o.orderId === target.orderId; });
-    var inst = order && order.installments.find(function (i) { return i.no === target.no; });
+    var inst = order && (order[trackKey(target.track)] || []).find(function (i) { return i.no === target.no; });
     var history = (inst && inst.postponeHistory) || [];
     var historyHtml = '';
     if (history.length) {
@@ -2138,7 +2281,17 @@
         '<div style="display:flex; gap:8px;"><input type="text" value="' + esc(state.customerNoteDraft) + '" data-action="noteDraft" placeholder="เพิ่มหมายเหตุใหม่..." style="flex:1; box-sizing:border-box; padding:10px 14px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13.5px; color:#2b2540; outline:none;" /><button data-action="saveNote" style="background:linear-gradient(135deg,#7c5cff,#6647e0); color:#fff; border:none; padding:10px 18px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer; white-space:nowrap;">💾 บันทึก</button></div>' +
       '</div>';
 
+    function trackTotals(list) {
+      var due = (list || []).reduce(function (s, i) { return s + Number(i.amountDue || 0); }, 0);
+      var paid = (list || []).reduce(function (s, i) { return s + Number(i.amountPaid || 0); }, 0);
+      return { paidDisp: fmtMoney(paid), outstandingDisp: fmtMoney(Math.max(0, due - paid)) };
+    }
+    function countField(ord, track, count) {
+      return '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">จำนวนงวด</div><input type="number" min="0" value="' + count + '" data-action="setInstallmentCount" data-order="' + esc(ord.orderId) + '" data-track="' + track + '" title="แก้จำนวนนี้จะเพิ่ม/ลบงวดท้ายตารางให้ตรงกัน (ไม่ลบงวดที่จ่ายแล้ว)" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#2b2540; background:#fff; outline:none;" /></div>';
+    }
+
     html += CV.selectedCustomerOrders.map(function (ord) {
+      var accessoryTotals = trackTotals(ord.accessoryInstallments);
       return '<div style="border:1px solid rgba(124,92,255,0.14); border-radius:20px; padding:22px 24px; margin-bottom:20px; background:rgba(255,255,255,0.4);">' +
         '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px;">' +
           '<div style="font-size:13px; color:#6b6785;">🔗 SO: <span style="color:#2b2540; font-weight:600;">' + esc(ord.orderId) + '</span></div>' +
@@ -2146,20 +2299,20 @@
           '<div style="background:rgba(240,140,0,0.12); color:#c2650a; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">' + esc(ord.purchaseType) + '</div>' +
           (ord.isSold ? '<div style="background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">📤 จำหน่ายชื่อให้บริษัทติดตามหนี้</div>' : '') +
           (ord.isCancelled ? '<div style="background:' + hexToRgba('#4b5563', 0.14) + '; color:#4b5563; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">↩️ ยกเลิกสัญญา คืนเครื่อง</div>' : '') +
-          '<div style="margin-left:auto; font-size:12.5px; color:#6b6785;">⏱ ' + ord.installmentCount + ' งวด</div>' +
+          '<div style="margin-left:auto; font-size:12.5px; color:#6b6785;">ยอดคงเหลือรวมทั้งบิล: <span style="font-weight:700; color:#e03131;">฿' + ord.totalOutstandingDisp + '</span></div>' +
         '</div>' +
         '<div style="display:grid; grid-template-columns:2fr 1fr; gap:16px; margin-bottom:16px;">' +
-          '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">📦 รายการสินค้า</div><div style="font-size:15px; font-weight:600; color:#2b2540;">' + esc(ord.productList) + '</div></div>' +
+          '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">📦 รายการสินค้า' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:600; color:#2b2540;">' + esc(ord.productList) + '</div></div>' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">🏷 ราคาสินค้า</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.productPrice)) + '" data-order-field="productPrice" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#2b2540; background:#fff; outline:none;" /></div>' +
         '</div>' +
         '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:16px; margin-bottom:10px;">' +
           (isInstallmentPurchaseType(ord.purchaseType)
             ? '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดผ่อนสะสม</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.downPayment)) + '" data-order-field="downPayment" data-order="' + esc(ord.orderId) + '" title="ยอดที่ผ่อนมาก่อนทำสัญญานี้ — ใช้หักฐานคำนวณยอดผ่อนต่องวด (ราคาสินค้า−ยอดนี้)/จำนวนงวด เท่านั้น ไม่ไปตั้งค่าชำระแล้วในตารางงวดด้านล่าง" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>'
             : '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดวางดาวน์</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.downPayment)) + '" data-order-field="downPayment" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>') +
-          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดผ่อนต่องวด</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.installments[0] ? ord.installments[0].amountDue : 0)) + '" data-action="setInstallmentAmount" data-order="' + esc(ord.orderId) + '" title="แก้ยอดนี้จะปรับยอดผ่อนของทุกงวดที่ยังไม่ชำระให้เท่ากันหมด" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>' +
+          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดผ่อนต่องวด</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.installments[0] ? ord.installments[0].amountDue : 0)) + '" data-action="setInstallmentAmount" data-order="' + esc(ord.orderId) + '" data-track="main" title="แก้ยอดนี้จะปรับยอดผ่อนของทุกงวดที่ยังไม่ชำระให้เท่ากันหมด" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>' +
+          countField(ord, 'main', ord.installmentCount) +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ส่วนลด</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.discount)) + '" data-order-field="discount" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#2b2540; background:#fff; outline:none;" /></div>' +
-          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดรับชำระ</div><div style="font-size:15px; font-weight:700; color:#12b886;">฿' + ord.totalPaidDisp + '</div></div>' +
-          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดคงเหลือ</div><div style="font-size:15px; font-weight:700; color:#e03131;">฿' + ord.totalOutstandingDisp + '</div></div>' +
+          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดรับชำระ' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:700; color:#12b886;">฿' + (ord.hasAccessory ? trackTotals(ord.installments).paidDisp : ord.totalPaidDisp) + '</div></div>' +
         '</div>' +
         '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; margin-bottom:14px; padding:14px 16px; background:rgba(124,92,255,0.05); border-radius:14px;">' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">🗓 วันครบกำหนดชำระงวดแรก</div><div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">' +
@@ -2171,12 +2324,31 @@
           '</div>' +
         '</div>' +
         (ord.firstDueDate && ord.payDay ? '<div style="font-size:11.5px; color:#0b7a5b; margin-bottom:10px;">✓ กรอกครบแล้ว — ตารางงวดด้านล่างคำนวณวันครบกำหนดอัตโนมัติจาก 2 ช่องนี้ (งวดที่จ่ายแล้วจะไม่ถูกแก้)</div>' : '') +
-        '<div style="font-size:12.5px; color:#6b6785; margin-bottom:18px;">จำนวนงวดที่ผ่อน: <span style="font-weight:600; color:#2b2540;">' + ord.installmentCount + ' งวด</span></div>' +
         '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:14px;">' +
-          '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540; display:flex; align-items:center; gap:8px;">🗓️ รายละเอียดงวดชำระ' + (ord.installments.length === 0 ? ' <span style="font-size:12px; font-weight:500; color:#e03131;">(ไฟล์ต้นฉบับไม่มีงวด — เพิ่มเองได้)</span>' : '') + '</div>' +
-          '<button data-action="addInstallment" data-order="' + esc(ord.orderId) + '" style="border:1px dashed rgba(124,92,255,0.4); background:transparent; color:#7c5cff; font-size:12.5px; padding:6px 14px; border-radius:20px; cursor:pointer; white-space:nowrap;">+ เพิ่มงวด</button>' +
+          '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540; display:flex; align-items:center; gap:8px;">🗓️ รายละเอียดงวดชำระ' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + (ord.installments.length === 0 ? ' <span style="font-size:12px; font-weight:500; color:#e03131;">(ไฟล์ต้นฉบับไม่มีงวด — เพิ่มเองได้)</span>' : '') + '</div>' +
+          '<button data-action="addInstallment" data-order="' + esc(ord.orderId) + '" data-track="main" style="border:1px dashed rgba(124,92,255,0.4); background:transparent; color:#7c5cff; font-size:12.5px; padding:6px 14px; border-radius:20px; cursor:pointer; white-space:nowrap;">+ เพิ่มงวด</button>' +
         '</div>' +
-        renderInstallmentTable(ord.orderId, ord.installments) +
+        renderInstallmentTable(ord.orderId, ord.installments, 'main') +
+        (ord.hasAccessory ? (
+          '<div style="border-top:1px dashed rgba(124,92,255,0.25); margin:26px 0 20px; padding-top:20px;">' +
+            '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540; margin-bottom:14px; display:flex; align-items:center; gap:8px;">🎧 อุปกรณ์เสริม <span style="font-size:12px; font-weight:500; color:#6b6785;">(บิลแยกต่างหากใน CRM — คนละ SO กับเครื่องหลัก)</span></div>' +
+            '<div style="display:grid; grid-template-columns:2fr 1fr; gap:16px; margin-bottom:16px;">' +
+              '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">📦 รายการสินค้า (อุปกรณ์เสริม)</div><input type="text" value="' + esc(ord.accessoryProductList || '') + '" data-order-field="accessoryProductList" data-order="' + esc(ord.orderId) + '" placeholder="เช่น Apple Pencil (USB-C)" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
+              '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">🔗 SO (อุปกรณ์เสริม)</div><input type="text" value="' + esc(ord.accessoryOrderId || '') + '" data-order-field="accessoryOrderId" data-order="' + esc(ord.orderId) + '" placeholder="เลข SO บิลอุปกรณ์เสริม" title="เมื่อกรอกแล้ว ไฟล์รับชำระที่มี SO นี้จะจับคู่มาลงตารางอุปกรณ์เสริมด้านล่างอัตโนมัติ" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#2b2540; background:#fff; outline:none;" /></div>' +
+            '</div>' +
+            '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:16px; margin-bottom:14px;">' +
+              '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดผ่อนต่องวด</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.accessoryInstallments[0] ? ord.accessoryInstallments[0].amountDue : 0)) + '" data-action="setInstallmentAmount" data-order="' + esc(ord.orderId) + '" data-track="accessory" title="แก้ยอดนี้จะปรับยอดผ่อนของทุกงวดที่ยังไม่ชำระให้เท่ากันหมด" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>' +
+              countField(ord, 'accessory', ord.accessoryInstallmentCount) +
+              '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดรับชำระ</div><div style="font-size:15px; font-weight:700; color:#12b886;">฿' + accessoryTotals.paidDisp + '</div></div>' +
+              '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดคงเหลือ</div><div style="font-size:15px; font-weight:700; color:#e03131;">฿' + accessoryTotals.outstandingDisp + '</div></div>' +
+            '</div>' +
+            '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:14px;">' +
+              '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540; display:flex; align-items:center; gap:8px;">🗓️ รายละเอียดงวดชำระ (อุปกรณ์เสริม)' + (ord.accessoryInstallments.length === 0 ? ' <span style="font-size:12px; font-weight:500; color:#e03131;">(ยังไม่มีงวด — ตั้งจำนวนงวดด้านบนหรือเพิ่มเอง)</span>' : '') + '</div>' +
+              '<button data-action="addInstallment" data-order="' + esc(ord.orderId) + '" data-track="accessory" style="border:1px dashed rgba(124,92,255,0.4); background:transparent; color:#7c5cff; font-size:12.5px; padding:6px 14px; border-radius:20px; cursor:pointer; white-space:nowrap;">+ เพิ่มงวด</button>' +
+            '</div>' +
+            renderInstallmentTable(ord.orderId, ord.accessoryInstallments, 'accessory') +
+          '</div>'
+        ) : '') +
       '</div>';
     }).join('');
 
@@ -2203,7 +2375,7 @@
       (short ? '<div style="color:#e03131;">ขาด ฿' + fmtMoney(charged - paid) + '</div>' : '') +
     '</div>';
   }
-  function renderInstallmentTable(orderId, installments) {
+  function renderInstallmentTable(orderId, installments, track) {
     if (!installments.length) {
       return '<div style="padding:32px 20px; text-align:center; color:#8a86a3; font-size:13px; background:rgba(124,92,255,0.03); border:1.5px dashed rgba(124,92,255,0.25); border-radius:16px;">📭 ยังไม่มีงวดชำระ — กด "+ เพิ่มงวด" ด้านบนเพื่อเริ่มกรอก</div>';
     }
@@ -2213,7 +2385,7 @@
       return '<th style="text-align:left; padding:12px 14px; font-size:11px; letter-spacing:0.03em; color:#7c5cff; font-weight:700; white-space:nowrap; background:rgba(124,92,255,0.06); border-bottom:1.5px solid rgba(124,92,255,0.16);">' + c + '</th>';
     }).join('') + '</tr>';
     var rows = installments.map(function (inst) {
-      var da = ' data-order="' + esc(orderId) + '" data-no="' + inst.no + '"';
+      var da = ' data-order="' + esc(orderId) + '" data-no="' + inst.no + '" data-track="' + track + '"';
       var dd = LATE_STATUSES.indexOf(inst.effectiveStatus) !== -1 ? dueDiffDays(inst) : null;
       var overdue = (dd !== null && dd > 0) ? dd : 0;
       var td = 'padding:12px 14px; border-bottom:1px solid rgba(124,92,255,0.08); vertical-align:middle;';
@@ -2336,13 +2508,13 @@
         case 'selectCustomer': selectCustomer(t.getAttribute('data-cid')); break;
         case 'closeDetail': state.selectedCustomerId = null; render(); break;
         case 'saveNote': saveCustomerNote(); break;
-        case 'resetOverride': resetOverride(t.getAttribute('data-order'), Number(t.getAttribute('data-no'))); break;
-        case 'addInstallment': addInstallment(t.getAttribute('data-order')); break;
-        case 'deleteInstallment': deleteInstallment(t.getAttribute('data-order'), Number(t.getAttribute('data-no'))); break;
-        case 'openPostpone': openPostpone(t.getAttribute('data-order'), Number(t.getAttribute('data-no'))); break;
+        case 'resetOverride': resetOverride(t.getAttribute('data-order'), Number(t.getAttribute('data-no')), t.getAttribute('data-track')); break;
+        case 'addInstallment': addInstallment(t.getAttribute('data-order'), t.getAttribute('data-track')); break;
+        case 'deleteInstallment': deleteInstallment(t.getAttribute('data-order'), Number(t.getAttribute('data-no')), t.getAttribute('data-track')); break;
+        case 'openPostpone': openPostpone(t.getAttribute('data-order'), Number(t.getAttribute('data-no')), t.getAttribute('data-track')); break;
         case 'closePostpone': closePostpone(); break;
         case 'confirmPostpone': confirmPostpone(); break;
-        case 'openNoteModal': openNoteModal(t.getAttribute('data-order'), Number(t.getAttribute('data-no'))); break;
+        case 'openNoteModal': openNoteModal(t.getAttribute('data-order'), Number(t.getAttribute('data-no')), t.getAttribute('data-track')); break;
         case 'closeNoteModal': closeNoteModal(); break;
         case 'saveNoteModal': saveNoteModal(); break;
         case 'togglePurchaseType': togglePurchaseType(t.getAttribute('data-type')); break;
@@ -2377,7 +2549,7 @@
       if (field) {
         var moneyInstFields = ['amountDue', 'amountPaid', 'discount', 'penaltyPaid'];
         var fieldVal = moneyInstFields.indexOf(field) !== -1 ? toNumber(t.value) : t.value;
-        updateInstallment(t.getAttribute('data-order'), Number(t.getAttribute('data-no')), field, fieldVal);
+        updateInstallment(t.getAttribute('data-order'), Number(t.getAttribute('data-no')), field, fieldVal, t.getAttribute('data-track'));
         return;
       }
       var orderField = t.getAttribute('data-order-field');
@@ -2395,7 +2567,8 @@
         case 'postponeLateFee': state.postponeLateFee = toNumber(t.value); break;
         case 'postponeUnlockFee': state.postponeUnlockFee = toNumber(t.value); break;
         case 'noteModalDraft': state.noteModalDraft = t.value; break;
-        case 'setInstallmentAmount': setInstallmentAmount(t.getAttribute('data-order'), toNumber(t.value)); break;
+        case 'setInstallmentAmount': setInstallmentAmount(t.getAttribute('data-order'), toNumber(t.value), t.getAttribute('data-track')); break;
+        case 'setInstallmentCount': setInstallmentCount(t.getAttribute('data-order'), t.getAttribute('data-track'), toNumber(t.value)); break;
         case 'filter': state[t.getAttribute('data-key')] = t.value; render(); break;
         case 'setPageSize': state.pageSize = Number(t.value) || 50; state.page = 1; render(); break;
         case 'onDebtFile': onDebtFileChange(t.files[0]); t.value = ''; break;
