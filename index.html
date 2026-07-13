@@ -938,10 +938,13 @@
       var sorted = list.slice().sort(function (a, b) { return (a.no || 0) - (b.no || 0); });
       var paidN = 0;
       for (var i = 0; i < sorted.length; i++) { if (Number(sorted[i].amountPaid || 0) > 0) paidN++; else break; }
+      // firstKey is งวดที่ 1's own due date (offset 0), not "the first unpaid one's" — every
+      // installment's offset is simply its position from the start, paidN only decides which
+      // ones get skipped (already-paid, left untouched), never shifts the recalculated dates.
       var updated = list.map(function (inst) {
         var idx = sorted.findIndex(function (s) { return s.no === inst.no; });
         if (idx < paidN) return inst;
-        return Object.assign({}, inst, { dueDate: recalcDueDate(o[firstKey], idx - paidN, payDayNum) });
+        return Object.assign({}, inst, { dueDate: recalcDueDate(o[firstKey], idx, payDayNum) });
       });
       var patch = {}; patch[listKey] = updated;
       return Object.assign({}, o, patch);
