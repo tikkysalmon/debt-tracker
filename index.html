@@ -339,17 +339,33 @@
     cloudSaveTimer = setTimeout(cloudSaveNow, 600);
   }
   var cloudErrorDetail = ''; // last save/poll failure reason, surfaced in the status pill's title
+  // The payload can run 15-20MB, so an upload can legitimately take several seconds — long enough
+  // for staff to make another edit before the first save lands. Without sequencing, that second
+  // edit fires a genuinely concurrent second upload; whichever of the two HTTP requests happens to
+  // complete last (no ordering guarantee) wins, so the earlier (slower) one can silently overwrite
+  // the later one and the newer edit visually "reverts" once the page reloads. Fix: never run two
+  // uploads at once — queue at most one more save, and always re-read state fresh when it fires so
+  // it captures everything typed during the wait, not a stale snapshot from when it was queued.
+  var cloudSaveInFlight = false;
+  var cloudSavePending = false;
   function cloudSaveNow() {
     if (!CLOUD_ENABLED || !db || !cloudConnected) return;
+    if (cloudSaveInFlight) { cloudSavePending = true; return; }
+    cloudSaveInFlight = true;
     cloudStatus = 'saving'; updateCloudStatus();
     var text = JSON.stringify(currentPayload());
     var blob = new Blob([text], { type: 'application/json' });
+    function finishSave() {
+      cloudSaveInFlight = false;
+      if (cloudSavePending) { cloudSavePending = false; cloudSaveNow(); }
+    }
     db.storage.from(CLOUD_BUCKET).upload(CLOUD_FILE, blob, { upsert: true, contentType: 'application/json' }).then(function (res) {
       if (res.error) {
         cloudStatus = 'offline';
         cloudErrorDetail = (res.error.message || JSON.stringify(res.error)) + ' (payload ~' + Math.round(text.length / 1024) + ' KB)';
         console.error('[cloudSaveNow] upload failed:', res.error, 'payload size:', text.length, 'bytes');
         updateCloudStatus();
+        finishSave();
         return;
       }
       cloudErrorDetail = '';
@@ -359,12 +375,14 @@
         lastServerTs = item ? item.updated_at : lastServerTs;
         cloudStatus = 'online';
         updateCloudStatus();
-      }).catch(function () { cloudStatus = 'online'; updateCloudStatus(); });
+        finishSave();
+      }).catch(function () { cloudStatus = 'online'; updateCloudStatus(); finishSave(); });
     }).catch(function (err) {
       cloudStatus = 'offline';
       cloudErrorDetail = (err && err.message ? err.message : String(err)) + ' (payload ~' + Math.round(text.length / 1024) + ' KB)';
       console.error('[cloudSaveNow] upload threw:', err, 'payload size:', text.length, 'bytes');
       updateCloudStatus();
+      finishSave();
     });
   }
   function cloudPoll() {
