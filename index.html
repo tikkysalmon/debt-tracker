@@ -834,12 +834,14 @@
       var updated = Object.assign({}, o, patch);
       // ราคาสินค้า − ยอดวางดาวน์ split evenly across every งวด is the contractual ยอดผ่อนต่องวด
       // (เช่น สินค้า 10,000 − ดาวน์ 2,000 = 8,000 ผ่อน 4 งวด → งวดละ 2,000) — recompute it for
-      // not-yet-paid installments whenever either figure changes. Only fires once ราคาสินค้าถูกกรอกแล้ว
-      // so orders that haven't set it yet don't get their installment amounts zeroed out.
+      // EVERY งวด (including already-paid ones) whenever either figure changes, so the total of
+      // all amountDue always equals ราคาสินค้า−ยอดวางดาวน์ and ยอดคงเหลือ (which subtracts the real
+      // amountPaid + ส่วนลด from that total) stays correct. amountPaid itself is never touched —
+      // only the "should-be-due" figure moves, never the real cash actually received historically.
+      // Only fires once ราคาสินค้าถูกกรอกแล้ว so orders that haven't set it yet don't get zeroed out.
       if ((field === 'productPrice' || field === 'downPayment') && toNumber(updated.productPrice) > 0 && updated.installments.length) {
         var perInstallment = Math.max(0, toNumber(updated.productPrice) - toNumber(updated.downPayment)) / updated.installments.length;
         updated.installments = updated.installments.map(function (inst) {
-          if (toNumber(inst.amountPaid) > 0) return inst;
           return Object.assign({}, inst, { amountDue: perInstallment });
         });
       }
