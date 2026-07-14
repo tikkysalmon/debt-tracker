@@ -960,15 +960,18 @@
       if (o.orderId !== orderId) return o;
       var patch = {}; patch[field] = value;
       var updated = Object.assign({}, o, patch);
-      // ราคาสินค้า − ยอดวางดาวน์ split evenly across every งวด is the contractual ยอดผ่อนต่องวด
-      // (เช่น สินค้า 10,000 − ดาวน์ 2,000 = 8,000 ผ่อน 4 งวด → งวดละ 2,000) — recompute it for
-      // EVERY งวด (including already-paid ones) whenever either figure changes, so the total of
-      // all amountDue always equals ราคาสินค้า−ยอดวางดาวน์ and ยอดคงเหลือ (which subtracts the real
-      // amountPaid + ส่วนลด from that total) stays correct. amountPaid itself is never touched —
-      // only the "should-be-due" figure moves, never the real cash actually received historically.
+      // ราคาสินค้า − ยอดวางดาวน์ − ส่วนลด split evenly across every งวด is the contractual
+      // ยอดผ่อนต่องวด (เช่น สินค้า 10,000 − ดาวน์ 2,000 − ส่วนลด 1,000 = 7,000 ผ่อน 4 งวด →
+      // งวดละ 1,750) — recompute it for EVERY งวด (including already-paid ones, per user
+      // confirmation) whenever any of the three figures changes. amountPaid itself is never
+      // touched — only the "should-be-due" figure moves, never the real cash actually
+      // received historically. NOTE: totalOutstanding (computeOrdersUncached) still also
+      // subtracts o.discount separately — orders edited through this path now have ส่วนลด
+      // counted twice there; see conversation with user before changing that formula, since
+      // bulk-imported orders that never go through this recompute may rely on that subtraction.
       // Only fires once ราคาสินค้าถูกกรอกแล้ว so orders that haven't set it yet don't get zeroed out.
-      if ((field === 'productPrice' || field === 'downPayment') && toNumber(updated.productPrice) > 0 && updated.installments.length) {
-        var perInstallment = Math.max(0, toNumber(updated.productPrice) - toNumber(updated.downPayment)) / updated.installments.length;
+      if ((field === 'productPrice' || field === 'downPayment' || field === 'discount') && toNumber(updated.productPrice) > 0 && updated.installments.length) {
+        var perInstallment = Math.max(0, toNumber(updated.productPrice) - toNumber(updated.downPayment) - toNumber(updated.discount)) / updated.installments.length;
         updated.installments = updated.installments.map(function (inst) {
           return Object.assign({}, inst, { amountDue: perInstallment });
         });
@@ -1007,10 +1010,11 @@
     var dd = Math.min(payDay > 0 ? payDay : p[2], lastDay);
     return t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(dd).padStart(2, '0');
   }
-  // Recomputes due dates for every not-yet-paid installment from firstDueDate + payDay (either
-  // track — main uses firstDueDate/payDay, the separately-billed accessory uses its own
-  // accessoryFirstDueDate/accessoryPayDay). Installments with amountPaid already recorded keep
-  // their existing due date untouched.
+  // Recomputes due dates for every installment — including already-paid ones, per user
+  // confirmation — from firstDueDate + payDay (either track — main uses firstDueDate/payDay,
+  // the separately-billed accessory uses its own accessoryFirstDueDate/accessoryPayDay).
+  // Editing วันครบกำหนดชำระงวดแรก now takes effect starting from งวดที่ 1, overwriting any
+  // previously-recorded or manually-postponed date on every งวด.
   function applySchedule(orderId, track) {
     var isAcc = track === 'accessory';
     var firstKey = isAcc ? 'accessoryFirstDueDate' : 'firstDueDate';
@@ -1021,14 +1025,10 @@
       var payDayNum = Number(o[payKey]);
       var list = o[listKey] || [];
       var sorted = list.slice().sort(function (a, b) { return (a.no || 0) - (b.no || 0); });
-      var paidN = 0;
-      for (var i = 0; i < sorted.length; i++) { if (Number(sorted[i].amountPaid || 0) > 0) paidN++; else break; }
-      // firstKey is งวดที่ 1's own due date (offset 0), not "the first unpaid one's" — every
-      // installment's offset is simply its position from the start, paidN only decides which
-      // ones get skipped (already-paid, left untouched), never shifts the recalculated dates.
+      // firstKey is งวดที่ 1's own due date (offset 0) — every installment's offset is simply
+      // its position from the start.
       var updated = list.map(function (inst) {
         var idx = sorted.findIndex(function (s) { return s.no === inst.no; });
-        if (idx < paidN) return inst;
         return Object.assign({}, inst, { dueDate: recalcDueDate(o[firstKey], idx, payDayNum) });
       });
       var patch = {}; patch[listKey] = updated;
@@ -2494,7 +2494,7 @@
         '</div>' +
         '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:16px; margin-bottom:10px;">' +
           (isInstallmentPurchaseType(ord.purchaseType)
-            ? '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดผ่อนสะสม</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.downPayment)) + '" data-order-field="downPayment" data-order="' + esc(ord.orderId) + '" title="ยอดที่ผ่อนมาก่อนทำสัญญานี้ — ใช้หักฐานคำนวณยอดผ่อนต่องวด (ราคาสินค้า−ยอดนี้)/จำนวนงวด เท่านั้น ไม่ไปตั้งค่าชำระแล้วในตารางงวดด้านล่าง" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>'
+            ? '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดผ่อนสะสม</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.downPayment)) + '" data-order-field="downPayment" data-order="' + esc(ord.orderId) + '" title="ยอดที่ผ่อนมาก่อนทำสัญญานี้ — ใช้หักฐานคำนวณยอดผ่อนต่องวด (ราคาสินค้า−ยอดนี้−ส่วนลด)/จำนวนงวด มีผลตั้งแต่งวดแรกรวมงวดที่จ่ายแล้ว ไม่ไปตั้งค่าชำระแล้วในตารางงวดด้านล่าง" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>'
             : '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดวางดาวน์</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.downPayment)) + '" data-order-field="downPayment" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>') +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดผ่อนต่องวด</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(firstUnpaidInstallmentAmount(ord.installments))) + '" data-action="setInstallmentAmount" data-order="' + esc(ord.orderId) + '" data-track="main" title="แก้ยอดนี้จะปรับยอดผ่อนของทุกงวดที่ยังไม่ชำระให้เท่ากันหมด" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ส่วนลด</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.discount)) + '" data-order-field="discount" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#2b2540; background:#fff; outline:none;" /></div>' +
@@ -2511,7 +2511,7 @@
           '</div>' +
           countField(ord, 'main', ord.installmentCount) +
         '</div>' +
-        (ord.firstDueDate && ord.payDay ? '<div style="font-size:11.5px; color:#0b7a5b; margin-bottom:10px;">✓ กรอกครบแล้ว — ตารางงวดด้านล่างคำนวณวันครบกำหนดอัตโนมัติจาก 2 ช่องนี้ (งวดที่จ่ายแล้วจะไม่ถูกแก้)</div>' : '') +
+        (ord.firstDueDate && ord.payDay ? '<div style="font-size:11.5px; color:#0b7a5b; margin-bottom:10px;">✓ กรอกครบแล้ว — ตารางงวดด้านล่างคำนวณวันครบกำหนดอัตโนมัติจาก 2 ช่องนี้ (มีผลตั้งแต่งวดแรก รวมงวดที่จ่ายแล้ว)</div>' : '') +
         '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:14px;">' +
           '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540; display:flex; align-items:center; gap:8px;">🗓️ รายละเอียดงวดชำระ' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + (ord.installments.length === 0 ? ' <span style="font-size:12px; font-weight:500; color:#e03131;">(ไฟล์ต้นฉบับไม่มีงวด — เพิ่มเองได้)</span>' : '') + '</div>' +
           '<button data-action="addInstallment" data-order="' + esc(ord.orderId) + '" data-track="main" style="border:1px dashed rgba(124,92,255,0.4); background:transparent; color:#7c5cff; font-size:12.5px; padding:6px 14px; border-radius:20px; cursor:pointer; white-space:nowrap;">+ เพิ่มงวด</button>' +
@@ -2544,7 +2544,7 @@
               '</div>' +
               countField(ord, 'accessory', ord.accessoryInstallmentCount) +
             '</div>' +
-            (ord.accessoryFirstDueDate && ord.accessoryPayDay ? '<div style="font-size:11.5px; color:#0b7a5b; margin-bottom:10px;">✓ กรอกครบแล้ว — ตารางงวดด้านล่างคำนวณวันครบกำหนดอัตโนมัติจาก 2 ช่องนี้ (งวดที่จ่ายแล้วจะไม่ถูกแก้)</div>' : '') +
+            (ord.accessoryFirstDueDate && ord.accessoryPayDay ? '<div style="font-size:11.5px; color:#0b7a5b; margin-bottom:10px;">✓ กรอกครบแล้ว — ตารางงวดด้านล่างคำนวณวันครบกำหนดอัตโนมัติจาก 2 ช่องนี้ (มีผลตั้งแต่งวดแรก รวมงวดที่จ่ายแล้ว)</div>' : '') +
             '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:14px;">' +
               '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540; display:flex; align-items:center; gap:8px;">🗓️ รายละเอียดงวดชำระ (อุปกรณ์เสริม)' + (ord.accessoryInstallments.length === 0 ? ' <span style="font-size:12px; font-weight:500; color:#e03131;">(ยังไม่มีงวด — ตั้งจำนวนงวดด้านบนหรือเพิ่มเอง)</span>' : '') + '</div>' +
               '<button data-action="addInstallment" data-order="' + esc(ord.orderId) + '" data-track="accessory" style="border:1px dashed rgba(124,92,255,0.4); background:transparent; color:#7c5cff; font-size:12.5px; padding:6px 14px; border-radius:20px; cursor:pointer; white-space:nowrap;">+ เพิ่มงวด</button>' +
