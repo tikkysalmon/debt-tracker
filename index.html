@@ -2015,7 +2015,13 @@
         }
         map[o.orderId] = o;
       });
-      state.orders = Object.keys(map).map(function (k) { return map[k]; });
+      // Strips any leftover demo orders here too (not just on page load) — isSampleData can already
+      // be stuck false from an earlier bug (see repairStaleSampleOrders), and a browser tab open
+      // since before that fix landed never gets a fresh applySnapshot to self-heal, so an upload in
+      // that same tab would otherwise keep merging the new data against a still-stale base forever.
+      // Only checked here, AFTER merging in newOrders, so it correctly sees "real data present now"
+      // even on what would otherwise look like a still-pure-demo base.
+      state.orders = repairStaleSampleOrders(Object.keys(map).map(function (k) { return map[k]; }));
       state.isSampleData = false;
       savePersisted();
 
