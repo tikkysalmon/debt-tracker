@@ -154,7 +154,10 @@
     var due = new Date(inst.dueDate);
     var amountDue = Number(inst.amountDue || 0);
     var amountPaid = Number(inst.amountPaid || 0);
-    if (amountDue > 0 && amountPaid >= amountDue - 0.01) return 'ชำระแล้ว';
+    // Net of ส่วนลด — a งวดที่ has ส่วนลด (e.g. a closing discount on an early-settlement งวด) is
+    // fully paid once amountPaid covers amountDue MINUS its own discount, not the full amountDue.
+    var netDue = Math.max(0, amountDue - Number(inst.discount || 0));
+    if (amountDue > 0 && amountPaid >= netDue - 0.01) return 'ชำระแล้ว';
     if (amountPaid > 0) return 'ชำระบางส่วน';
     if (isNaN(due.getTime())) return 'ยังไม่ถึงกำหนดชำระ';
     var today = new Date();
@@ -224,6 +227,26 @@
       if (!accPart) return o;
       changed = true;
       return Object.assign({}, o, { productList: mainPart, accessoryProductList: accPart });
+    });
+    if (changed) _lastRepairChanged = true;
+    return changed ? fixed : orders;
+  }
+  // One-time self-heal for orders whose overpayment (e.g. an early full-settlement lump payment
+  // recorded against a single งวด) never got carried forward onto later งวด — see
+  // cascadeOverpayment() further below for the actual redistribution logic. Runs on every load so
+  // data entered before this existed (or via any path that predates it) settles correctly too.
+  function repairOverpaidInstallments(orders) {
+    var changed = false;
+    var fixed = orders.map(function (o) {
+      var accessoryList = o.accessoryInstallments || [];
+      var mainFix = cascadeOverpayment(o.installments);
+      var accFix = cascadeOverpayment(accessoryList);
+      if (mainFix === o.installments && accFix === accessoryList) return o;
+      changed = true;
+      var patch = {};
+      if (mainFix !== o.installments) patch.installments = mainFix;
+      if (accFix !== accessoryList) patch.accessoryInstallments = accFix;
+      return Object.assign({}, o, patch);
     });
     if (changed) _lastRepairChanged = true;
     return changed ? fixed : orders;
@@ -328,11 +351,18 @@
   function applySnapshot(data) {
     if (!data) return;
     applyingRemote = true;
-    if (Array.isArray(data.orders)) { state.orders = repairAccessoryProductNames(repairDueDateSchedules(repairInvalidStatusOverrides(data.orders))); state.isSampleData = data.orders.length === 0 ? state.isSampleData : false; }
-    state.customerNotes = data.customerNotes || {};
+    // lastServerSnapshot must be the RAW data as received, not the locally self-healed version —
+    // otherwise a repair that actually changed something (e.g. cascadeOverpayment fixing a
+    // stuck-overpaid order) would look identical to its own baseline and cloudSaveNow's diff would
+    // never notice there's anything to push back to the shared file.
+    var rawOrders = Array.isArray(data.orders) ? data.orders : state.orders;
+    var rawNotes = data.customerNotes || {};
+    var rawKeys = data.appliedPaymentKeys || [];
+    if (Array.isArray(data.orders)) { state.orders = repairOverpaidInstallments(repairAccessoryProductNames(repairDueDateSchedules(repairInvalidStatusOverrides(data.orders)))); state.isSampleData = data.orders.length === 0 ? state.isSampleData : false; }
+    state.customerNotes = rawNotes;
     appliedPaymentKeys = {};
-    (data.appliedPaymentKeys || []).forEach(function (k) { appliedPaymentKeys[k] = true; });
-    lastServerSnapshot = { orders: state.orders, customerNotes: state.customerNotes, appliedPaymentKeys: Object.keys(appliedPaymentKeys) };
+    rawKeys.forEach(function (k) { appliedPaymentKeys[k] = true; });
+    lastServerSnapshot = { orders: rawOrders, customerNotes: rawNotes, appliedPaymentKeys: rawKeys };
     applyingRemote = false;
   }
   // ---- Merge helpers for cloudSaveNow ----
@@ -562,7 +592,7 @@
 
   // ---------- State ----------
   var state = {
-    orders: repairAccessoryProductNames(repairDueDateSchedules(repairInvalidStatusOverrides((persisted && persisted.orders && persisted.orders.length) ? persisted.orders : generateMock()))),
+    orders: repairOverpaidInstallments(repairAccessoryProductNames(repairDueDateSchedules(repairInvalidStatusOverrides((persisted && persisted.orders && persisted.orders.length) ? persisted.orders : generateMock())))),
     query: '',
     selectedCustomerId: null,
     uploadMsgDebt: '',
@@ -1081,13 +1111,16 @@
       if (o.orderId !== orderId) return o;
       var orderPatch = field === 'status' ? (stickyAccountStatusPatch(value) || {}) : {};
       var patch2 = {};
-      patch2[key] = (o[key] || []).map(function (i) {
+      var updatedList = (o[key] || []).map(function (i) {
         if (i.no !== no) return i;
         matched = true;
         var patch = {}; patch[field] = value;
         if (field === 'status') patch.statusOverride = true;
         return Object.assign({}, i, patch);
       });
+      // amountPaid/discount changing can create or clear an overpayment that needs to carry
+      // forward onto later งวด (or stop carrying) — see cascadeOverpayment for why.
+      patch2[key] = (field === 'amountPaid' || field === 'discount') ? cascadeOverpayment(updatedList) : updatedList;
       return Object.assign({}, o, orderPatch, patch2);
     });
     // TEMPORARY diagnostic — remove once the "สถานะดีดกลับ" report is root-caused. Logs exactly
@@ -1438,6 +1471,43 @@
     if (!s) return 0;
     var n = Number(s);
     return isFinite(n) ? n : 0;
+  }
+  // An early full-settlement payment often gets recorded entirely against ONE งวด (e.g. "ยอดชำระ
+  // ปิดยอด" landing on งวดที่ 5 while งวด 6-12 still show 0), leaving the rest of the schedule stuck
+  // at ยังไม่ถึงกำหนดชำระ under a single ballooned "เกิน" badge. This carries whatever's beyond an
+  // installment's own net-due (amountDue − discount) FORWARD onto the next งวด(s) in order, so the
+  // remaining schedule correctly settles to ชำระแล้ว. ส่วนลด (discount) itself is never moved — it
+  // always stays on whichever งวด it was entered on, per the closing-discount rule — only the
+  // payment amount cascades. Total money in equals total money out: this only reallocates what was
+  // already recorded, it never invents or drops any of it (genuine overpayment beyond the entire
+  // remaining schedule lands back on the LAST งวด instead of vanishing).
+  function cascadeOverpayment(list) {
+    if (!list || !list.length) return list;
+    var sorted = list.slice().sort(function (a, b) { return (a.no || 0) - (b.no || 0); });
+    var carry = 0, carryDate = '', touched = false;
+    var result = sorted.map(function (inst, idx) {
+      var isLast = idx === sorted.length - 1;
+      var netDue = Math.max(0, toNumber(inst.amountDue) - toNumber(inst.discount));
+      var ownPaid = toNumber(inst.amountPaid);
+      var available = ownPaid + carry;
+      // The last งวด has nowhere further to push overflow, so it simply absorbs whatever's left —
+      // capping it at netDue like every other row (then patching the excess back on afterward)
+      // would re-touch this same row on every subsequent run even when nothing actually changed,
+      // since the interim capped value never survives to be compared against.
+      var newPaid = isLast ? available : Math.min(available, netDue);
+      var overflow = isLast ? 0 : (available - newPaid);
+      var next = inst;
+      if (Math.abs(newPaid - ownPaid) > 0.005) {
+        touched = true;
+        var patch = { amountPaid: newPaid };
+        if (newPaid > ownPaid && !inst.paidDate && carryDate) patch.paidDate = carryDate;
+        next = Object.assign({}, inst, patch);
+      }
+      if (overflow > 0.005 && !carryDate) carryDate = inst.paidDate || carryDate;
+      carry = overflow;
+      return next;
+    });
+    return touched ? result : list;
   }
   // First alias that yields a value > 0 (columns like "ระยะเวลาผ่อน (ผ่อน)" hold " " when unused).
   function resolveNumber(row, aliases) {
@@ -1954,6 +2024,11 @@
           render();
           return;
         }
+        // Carry any resulting overpayment (a lump early-settlement recorded against one งวด)
+        // forward onto later งวด — see cascadeOverpayment for why.
+        orders = orders.map(function (o) {
+          return Object.assign({}, o, { installments: cascadeOverpayment(o.installments), accessoryInstallments: cascadeOverpayment(o.accessoryInstallments || []) });
+        });
         state.orders = orders;
         state.isSampleData = false;
         savePersisted();
@@ -2052,6 +2127,11 @@
         render();
         return;
       }
+      // Carry any resulting overpayment (a lump early-settlement recorded against one งวด)
+      // forward onto later งวด — see cascadeOverpayment for why.
+      orders = orders.map(function (o) {
+        return Object.assign({}, o, { installments: cascadeOverpayment(o.installments), accessoryInstallments: cascadeOverpayment(o.accessoryInstallments || []) });
+      });
       state.orders = orders;
       if (added || addedPenalty || updatedOnly) state.isSampleData = false;
       savePersisted();
