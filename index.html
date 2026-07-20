@@ -82,6 +82,13 @@
   ];
   var STATUS_TO_GROUP = {};
   STATUS_GROUP_META.forEach(function (g) { g.statuses.forEach(function (s) { STATUS_TO_GROUP[s] = g.label; }); });
+  // computeStatus() can only ever derive these 4 — a collections/business decision, never a fact
+  // computable from amountDue/amountPaid/dueDate. Only THESE may set statusOverride=true from an
+  // import; every other status is something computeStatus recomputes correctly on its own the
+  // moment amountPaid/amountDue changes, so freezing it would just make it go stale forever (this
+  // is what made ยอดชำระ/วันที่ชำระ keep updating from later payment files while สถานะ never moved
+  // off whatever a one-time historical import last recorded).
+  var MANUAL_ONLY_STATUSES = { 'หนี้สงสัยจะสูญ': true, 'จำหน่ายชื่อให้บริษัทติดตามหนี้': true, 'ยกเลิกสัญญา คืนเครื่อง': true, 'ค้างชำระ ล็อคเครื่องไม่ได้': true };
   var GRADE_COLORS = { A: '#12b886', B: '#f59f00', 'หนี้สงสัยจะสูญ': '#e03131' };
   var GRADE_LABELS = { A: 'เกรด A — ไม่เคยค้างชำระ', B: 'เกรด B — ค้างชำระ 1 งวด', 'หนี้สงสัยจะสูญ': 'หนี้สงสัยจะสูญ — ค้าง ≥2 งวด' };
   // Purchase types come straight from whatever the debtor file actually has (e.g. "ผ่อนชำระ 0%")
@@ -163,23 +170,36 @@
   }
   // One-time self-heal for data already corrupted by an earlier bug: regular payment-file imports
   // used to write the transaction status ("สำเร็จ") straight into inst.status with statusOverride
-  // = true, permanently hiding the real auto-computed status (ชำระแล้ว/ค้างชำระ/etc). Clears any
-  // override whose status isn't a real STATUS_META entry so it recomputes correctly. Runs on every
-  // load (local + cloud) — cheap no-op once the bad data is gone.
+  // = true, permanently hiding the real auto-computed status (ชำระแล้ว/ค้างชำระ/etc) — and the
+  // "แก้ไขรับชำระ" history-snapshot import did the same for EVERY status it saw, not just the 4
+  // that genuinely need to stick (see MANUAL_ONLY_STATUSES). Clears any override that isn't one of
+  // those 4, so the status goes back to recomputing live from ยอดชำระ/ยอดผ่อนต่องวด — which is what
+  // was silently broken: later payment files kept updating ยอดชำระ/วันที่ชำระ correctly but สถานะ
+  // stayed frozen on whatever this bug last recorded. Runs on every load (local + cloud), covers
+  // both tracks — cheap no-op once the bad data is gone.
   var _lastRepairChanged = false;
   function repairInvalidStatusOverrides(orders) {
     var changed = false;
-    var fixed = orders.map(function (o) {
+    function fixList(list) {
       var touched = false;
-      var insts = o.installments.map(function (i) {
-        if (i.statusOverride && i.status && !STATUS_META[i.status]) {
+      var insts = (list || []).map(function (i) {
+        if (i.statusOverride && !MANUAL_ONLY_STATUSES[i.status]) {
           touched = true;
           return Object.assign({}, i, { status: '', statusOverride: false });
         }
         return i;
       });
-      if (touched) { changed = true; return Object.assign({}, o, { installments: insts }); }
-      return o;
+      return touched ? insts : null;
+    }
+    var fixed = orders.map(function (o) {
+      var mainFix = fixList(o.installments);
+      var accFix = fixList(o.accessoryInstallments);
+      if (!mainFix && !accFix) return o;
+      changed = true;
+      var patch = {};
+      if (mainFix) patch.installments = mainFix;
+      if (accFix) patch.accessoryInstallments = accFix;
+      return Object.assign({}, o, patch);
     });
     if (changed) _lastRepairChanged = true;
     return changed ? fixed : orders;
@@ -1811,7 +1831,7 @@
           } else {
             statusOnly++;
           }
-          if (status !== '' && STATUS_META[status]) { inst.status = status; inst.statusOverride = true; }
+          if (status !== '' && STATUS_META[status]) { inst.status = status; inst.statusOverride = !!MANUAL_ONLY_STATUSES[status]; }
           if (discount !== '') inst.discount = toNumber(discount);
         });
 
@@ -1907,7 +1927,7 @@
         // auto-computed one, or every paid installment gets stuck showing "สำเร็จ" forever instead
         // of "ชำระแล้ว"/"ค้างชำระ"/etc. Only accept values that are real STATUS_META entries.
         if (status !== '' && STATUS_META[String(status)]) {
-          inst.status = String(status); inst.statusOverride = true;
+          inst.status = String(status); inst.statusOverride = !!MANUAL_ONLY_STATUSES[String(status)];
           Object.assign(order, stickyAccountStatusPatch(String(status)));
         }
       });
