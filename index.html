@@ -301,6 +301,11 @@
   var cloudSaveTimer = null;
   var cloudPollTimer = null;
   var applyingRemote = false;    // guard: don't re-save while applying a remote snapshot
+  // The last state this client knows is confirmed on the server — NOT necessarily what's on the
+  // server right now (another client may have saved since), but the baseline this client's local
+  // edits are measured against. Updated whenever a remote snapshot is applied (connect/poll) and
+  // after every successful save (see cloudSaveNow) so the next diff is always against reality.
+  var lastServerSnapshot = { orders: [], customerNotes: {}, appliedPaymentKeys: [] };
 
   var CLOUD_BUCKET = 'app-data';
   var CLOUD_FILE = 'state.json';
@@ -323,7 +328,55 @@
     state.customerNotes = data.customerNotes || {};
     appliedPaymentKeys = {};
     (data.appliedPaymentKeys || []).forEach(function (k) { appliedPaymentKeys[k] = true; });
+    lastServerSnapshot = { orders: state.orders, customerNotes: state.customerNotes, appliedPaymentKeys: Object.keys(appliedPaymentKeys) };
     applyingRemote = false;
+  }
+  // ---- Merge helpers for cloudSaveNow ----
+  // Two clients editing different orders/customers at the same time must not clobber each other —
+  // only an order this client actually changed since lastServerSnapshot should override whatever's
+  // on the server; everything else should keep the server's copy untouched (which may itself
+  // contain another client's more recent edit to some OTHER order).
+  function orderValueEqual(a, b) {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+  // Reference equality alone isn't enough — payment-file import clones every order up front even
+  // for rows that end up changing nothing, so a value comparison is needed to avoid treating the
+  // whole dataset as "changed" on every upload.
+  function diffChangedOrders(baseOrders, localOrders) {
+    var baseById = {};
+    (baseOrders || []).forEach(function (o) { baseById[o.orderId] = o; });
+    var changed = [];
+    localOrders.forEach(function (o) {
+      if (!orderValueEqual(baseById[o.orderId], o)) changed.push(o);
+    });
+    return changed;
+  }
+  // Server copy wins for every order untouched by this client; changedOrders (this client's own
+  // edits/imports since lastServerSnapshot) win for the rest, including brand-new orders neither
+  // side has seen yet.
+  function mergeOrdersList(remoteOrders, changedOrders) {
+    var byId = {}, order = [];
+    (remoteOrders || []).forEach(function (o) { byId[o.orderId] = o; order.push(o.orderId); });
+    changedOrders.forEach(function (o) { if (!byId[o.orderId]) order.push(o.orderId); byId[o.orderId] = o; });
+    return order.map(function (id) { return byId[id]; });
+  }
+  // Same idea for the per-customer note map: only carry over a note this client actually changed
+  // (differs from base); anything else defers to the server's copy.
+  function mergeNotes(baseNotes, localNotes, remoteNotes) {
+    var merged = Object.assign({}, remoteNotes || {});
+    Object.keys(localNotes || {}).forEach(function (cid) {
+      if (localNotes[cid] !== (baseNotes || {})[cid]) merged[cid] = localNotes[cid];
+    });
+    return merged;
+  }
+  // appliedPaymentKeys is a write-only dedup set (keys are only ever added, never removed) — a
+  // plain union is always correct, no base/local distinction needed.
+  function unionKeys(remoteKeys, localKeys) {
+    var seen = {}, out = [];
+    (remoteKeys || []).concat(localKeys || []).forEach(function (k) { if (!seen[k]) { seen[k] = true; out.push(k); } });
+    return out;
   }
   function findCloudFileMeta() {
     return db.storage.from(CLOUD_BUCKET).list('', { search: CLOUD_FILE }).then(function (res) {
@@ -373,46 +426,99 @@
   // it captures everything typed during the wait, not a stale snapshot from when it was queued.
   var cloudSaveInFlight = false;
   var cloudSavePending = false;
+  // Fetches whatever is on the server RIGHT NOW and merges this client's own changes (since
+  // lastServerSnapshot) on top of it, instead of blindly overwriting the whole file — so a second
+  // client's concurrent edit to a DIFFERENT order/customer survives instead of getting silently
+  // discarded by whoever saves second (see lastServerSnapshot / diffChangedOrders above for why).
   function cloudSaveNow() {
     if (!CLOUD_ENABLED || !db || !cloudConnected) return;
     if (cloudSaveInFlight) { cloudSavePending = true; return; }
     cloudSaveInFlight = true;
     cloudStatus = 'saving'; updateCloudStatus();
-    var text = JSON.stringify(currentPayload());
-    var blob = new Blob([text], { type: 'application/json' });
+    var baseOrders = lastServerSnapshot.orders;
+    var baseNotes = lastServerSnapshot.customerNotes;
+    // Captured now, not re-read after the round-trip — if a newer edit lands in state.orders while
+    // this save is in flight, cloudSavePending picks it up as its own follow-up round (below), so
+    // this round only ever claims to have saved exactly what it captured here.
+    var localOrdersSnapshot = state.orders;
+    var localNotesSnapshot = state.customerNotes;
+    var localKeysSnapshot = Object.keys(appliedPaymentKeys);
+    var changedOrders = diffChangedOrders(baseOrders, localOrdersSnapshot);
     // Only clear cloudDirty once this was the LAST queued save (nothing newer waiting behind it)
     // and it actually succeeded — on failure or when another save is already queued, local state
     // still isn't confirmed saved, so cloudPoll() must keep refusing incoming snapshots.
-    function finishSave(success) {
+    function finishSave(success, merged) {
       cloudSaveInFlight = false;
+      if (success && merged) {
+        lastServerSnapshot = merged;
+        // Adopt the merged result (which may include another client's concurrent edits to other
+        // orders) ONLY if nothing newer arrived locally during the round-trip — otherwise this
+        // would overwrite an edit the user just made with the older snapshot we captured above.
+        if (state.orders === localOrdersSnapshot) { state.orders = merged.orders; render(); }
+        if (state.customerNotes === localNotesSnapshot) state.customerNotes = merged.customerNotes;
+        appliedPaymentKeys = {};
+        merged.appliedPaymentKeys.forEach(function (k) { appliedPaymentKeys[k] = true; });
+      }
       if (cloudSavePending) { cloudSavePending = false; cloudSaveNow(); }
       else if (success) { cloudDirty = false; }
     }
-    db.storage.from(CLOUD_BUCKET).upload(CLOUD_FILE, blob, { upsert: true, contentType: 'application/json' }).then(function (res) {
-      if (res.error) {
-        cloudStatus = 'offline';
-        cloudErrorDetail = (res.error.message || JSON.stringify(res.error)) + ' (payload ~' + Math.round(text.length / 1024) + ' KB)';
-        console.error('[cloudSaveNow] upload failed:', res.error, 'payload size:', text.length, 'bytes');
-        updateCloudStatus();
-        finishSave(false);
+    // Cheap metadata check first — only pay for a full re-download (the file runs 15-20MB) when
+    // something has actually changed on the server since our last sync. The common case (nobody
+    // else saved in between) needs no extra network trip at all: our own lastServerSnapshot IS
+    // already the current remote content.
+    findCloudFileMeta().then(function (item) {
+      if (item && lastServerTs && item.updated_at === lastServerTs) {
+        uploadMerged({ orders: baseOrders, customerNotes: baseNotes, appliedPaymentKeys: lastServerSnapshot.appliedPaymentKeys });
         return;
       }
-      cloudErrorDetail = '';
-      // Upload response doesn't include the new updated_at — fetch it so the next poll
-      // recognizes this save as already-applied instead of re-downloading the whole file.
-      findCloudFileMeta().then(function (item) {
-        lastServerTs = item ? item.updated_at : lastServerTs;
-        cloudStatus = 'online';
+      return db.storage.from(CLOUD_BUCKET).download(CLOUD_FILE).then(function (res) {
+        if (res.error) { uploadMerged(null); return; }
+        return res.data.text().then(function (t) {
+          var remote = null;
+          try { remote = JSON.parse(t); } catch (e) {}
+          uploadMerged(remote);
+        });
+      });
+    }).catch(function () { uploadMerged(null); });
+    function uploadMerged(remote) {
+      // No remote yet (first-ever save) or it failed to parse/download — merge onto an empty base
+      // rather than aborting, same effect as the old bootstrap upload.
+      var remoteOrders = (remote && Array.isArray(remote.orders)) ? remote.orders : [];
+      var remoteNotes = (remote && remote.customerNotes) ? remote.customerNotes : {};
+      var remoteKeys = (remote && remote.appliedPaymentKeys) ? remote.appliedPaymentKeys : [];
+      var mergedOrders = mergeOrdersList(remoteOrders, changedOrders);
+      var mergedNotes = mergeNotes(baseNotes, localNotesSnapshot, remoteNotes);
+      var mergedKeys = unionKeys(remoteKeys, localKeysSnapshot);
+      var payload = { orders: mergedOrders, customerNotes: mergedNotes, appliedPaymentKeys: mergedKeys, _meta: { updatedAt: new Date().toISOString(), updatedBy: myClientId } };
+      var text = JSON.stringify(payload);
+      var blob = new Blob([text], { type: 'application/json' });
+      db.storage.from(CLOUD_BUCKET).upload(CLOUD_FILE, blob, { upsert: true, contentType: 'application/json' }).then(function (res) {
+        if (res.error) {
+          cloudStatus = 'offline';
+          cloudErrorDetail = (res.error.message || JSON.stringify(res.error)) + ' (payload ~' + Math.round(text.length / 1024) + ' KB)';
+          console.error('[cloudSaveNow] upload failed:', res.error, 'payload size:', text.length, 'bytes');
+          updateCloudStatus();
+          finishSave(false);
+          return;
+        }
+        cloudErrorDetail = '';
+        var merged = { orders: mergedOrders, customerNotes: mergedNotes, appliedPaymentKeys: mergedKeys };
+        // Upload response doesn't include the new updated_at — fetch it so the next poll
+        // recognizes this save as already-applied instead of re-downloading the whole file.
+        findCloudFileMeta().then(function (item) {
+          lastServerTs = item ? item.updated_at : lastServerTs;
+          cloudStatus = 'online';
+          updateCloudStatus();
+          finishSave(true, merged);
+        }).catch(function () { cloudStatus = 'online'; updateCloudStatus(); finishSave(true, merged); });
+      }).catch(function (err) {
+        cloudStatus = 'offline';
+        cloudErrorDetail = (err && err.message ? err.message : String(err)) + ' (payload ~' + Math.round(text.length / 1024) + ' KB)';
+        console.error('[cloudSaveNow] upload threw:', err, 'payload size:', text.length, 'bytes');
         updateCloudStatus();
-        finishSave(true);
-      }).catch(function () { cloudStatus = 'online'; updateCloudStatus(); finishSave(true); });
-    }).catch(function (err) {
-      cloudStatus = 'offline';
-      cloudErrorDetail = (err && err.message ? err.message : String(err)) + ' (payload ~' + Math.round(text.length / 1024) + ' KB)';
-      console.error('[cloudSaveNow] upload threw:', err, 'payload size:', text.length, 'bytes');
-      updateCloudStatus();
-      finishSave(false);
-    });
+        finishSave(false);
+      });
+    }
   }
   function cloudPoll() {
     if (!CLOUD_ENABLED || !db || !cloudConnected) return;
@@ -944,7 +1050,11 @@
   function selectCustomer(cid) { state.selectedCustomerId = cid; state.customerNoteDraft = ''; render(); }
   function saveCustomerNote() {
     if (!state.selectedCustomerId) return;
-    state.customerNotes[state.selectedCustomerId] = state.customerNoteDraft;
+    // Reassigns a fresh object (never mutates the old one in place) so cloudSaveNow's merge logic
+    // can tell "unchanged since this save round started" apart from "edited during the round-trip"
+    // by simple reference comparison, same as how state.orders edits already work.
+    var patch = {}; patch[state.selectedCustomerId] = state.customerNoteDraft;
+    state.customerNotes = Object.assign({}, state.customerNotes, patch);
     state.customerNoteDraft = '';
     savePersisted();
     render();
