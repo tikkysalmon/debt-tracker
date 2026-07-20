@@ -49,6 +49,17 @@
   var CFG = { screenDays: 3, lockDays: 5 };
   var AUTO_STATUS_ENABLED = true;
 
+  // ---------- Dataset (ลูกหนี้ปัจจุบัน vs ลูกหนี้เก่าก่อน 1/10/2025) ----------
+  // Deliberately a URL param + full page load, not an in-place hot-swap — this app keeps a LOT of
+  // state (filters, caches, cloud-sync timers, selected customer, etc.) that all assume "the
+  // dataset" never changes underneath them mid-session. A full reload re-runs the entire existing
+  // boot sequence fresh and correctly for whichever dataset is selected, at the cost of a reload
+  // when switching — an acceptable trade since staff pick one dataset and work in it, not toggle
+  // every few seconds. Two completely separate Supabase files/localStorage keys keep the datasets
+  // from ever mixing.
+  var DATASET_ID = /[?&]dataset=old\b/.test(window.location.search) ? 'old' : 'current';
+  var IS_OLD_DATASET = DATASET_ID === 'old';
+
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
   var NOTDUE_STATUSES = ['ยังไม่ถึงกำหนดชำระ', 'ถึงกำหนดชำระ'];
@@ -279,7 +290,7 @@
   }
 
   // ---------- Persistence (localStorage) ----------
-  var STORAGE_KEY = 'debtTracker.v1';
+  var STORAGE_KEY = 'debtTracker.v1' + (IS_OLD_DATASET ? '.old' : '');
   var appliedPaymentKeys = {}; // signature -> true, guards against re-adding the same payment row
   function loadPersisted() {
     try {
@@ -335,7 +346,7 @@
   var lastServerSnapshot = { orders: [], customerNotes: {}, appliedPaymentKeys: [] };
 
   var CLOUD_BUCKET = 'app-data';
-  var CLOUD_FILE = 'state.json';
+  var CLOUD_FILE = IS_OLD_DATASET ? 'state-old.json' : 'state.json';
   function initCloud() {
     if (!CLOUD_ENABLED) return false;
     if (!window.supabase || !window.supabase.createClient) { cloudStatus = 'offline'; return false; }
@@ -705,6 +716,10 @@
         accessoryOutstandingRaw: accOutstanding,
         accessoryOutstandingDisp: fmtMoney(accOutstanding),
         firstInstallmentAmountDisp: fmtMoney(installments[0] ? installments[0].amountDue : 0),
+        // ลูกหนี้เก่า only: some records have no real รหัส SO at all — orderId still holds an
+        // internal synthetic key (see onDebtFileChange) so the app never mixes them up, but staff
+        // should just see "-", never that placeholder value.
+        soDisplay: o.soUnknown ? '-' : o.orderId,
         downPaymentDisp: fmtMoney(o.downPayment),
         discountDisp: fmtMoney(o.discount),
         contractDateDisp: fmtDate(o.contractDate),
@@ -1624,14 +1639,14 @@
     if (!file) return;
     if (!window.XLSX) { state.uploadMsgDebt = 'ไม่พบไลบรารีอ่านไฟล์ กรุณาลองใหม่'; render(); return; }
     var ALIASES = {
-      customerId: ['รหัสลูกค้า', 'customerid', 'customer id', 'รหัส', 'รหัสสมาชิก'],
+      customerId: ['รหัสลูกค้า', 'customerid', 'customer id', 'รหัส', 'รหัสสมาชิก', 'รหัสลูกค้า crm'],
       customerName: ['ชื่อ-นามสกุลลูกค้า', 'ชื่อลูกค้า', 'customername', 'customer name', 'ชื่อ-สกุล', 'ชื่อ - สกุล', 'ชื่อ', 'ชื่อผู้ทำสัญญา'],
-      orderId: ['คำสั่งซื้อ', 'orderid', 'order id', 'order no', 'orderno', 'เลขที่คำสั่งซื้อ', 'หมายเลขคำสั่งซื้อ', 'เลขคำสั่งซื้อ', 'so', 'so number', 'sonumber', 'เลขที่ so', 'เลขที่เอกสาร', 'เลขที่ใบสั่งขาย', 'เลขที่สัญญา', 'เลขสัญญา', 'เลขที่บิล'],
+      orderId: ['คำสั่งซื้อ', 'orderid', 'order id', 'order no', 'orderno', 'เลขที่คำสั่งซื้อ', 'หมายเลขคำสั่งซื้อ', 'เลขคำสั่งซื้อ', 'so', 'so number', 'sonumber', 'เลขที่ so', 'เลขที่เอกสาร', 'เลขที่ใบสั่งขาย', 'เลขที่สัญญา', 'เลขสัญญา', 'เลขที่บิล', 'รหัส so'],
       contractDate: ['วันที่ทำสัญญา', 'วันที่ที่ออกสัญญา', 'วันที่ออกสัญญา', 'contractdate', 'contract date', 'วันที่สัญญา', 'วันทำสัญญา', 'วันที่'],
       // "รายการสินค้าอุปกรณ์เสริม" deliberately excluded here — it's its own accessoryProductList
       // below now, since ดาวน์+อุปกรณ์เสริม orders bill the accessory separately (own SO, own
       // installment schedule) rather than folding it into the main device's product line.
-      productList: ['รายการสินค้า (ผ่อน)', 'รายการสินค้า (ดาวน์)', 'รายการสินค้า', 'productlist', 'product', 'product name', 'สินค้า', 'รายการ', 'ชื่อสินค้า'],
+      productList: ['รายการสินค้า (ผ่อน)', 'รายการสินค้า (ดาวน์)', 'รายการสินค้า (สัญญา)', 'รายการสินค้า', 'productlist', 'product', 'product name', 'สินค้า', 'รายการ', 'ชื่อสินค้า'],
       accessoryProductList: ['รายการสินค้าอุปกรณ์เสริม'],
       accessoryAmountDue: ['ยอดผ่อนต่องวด (อุปกรณ์เสริม)', 'ราคาผ่อนต่องวด (อุปกรณ์เสริม)'],
       accessoryTerm: ['งวดที่ผ่อน (อุปกรณ์เสริม)', 'ระยะเวลาผ่อน (อุปกรณ์เสริม)', 'จำนวนงวด (อุปกรณ์เสริม)'],
@@ -1647,10 +1662,20 @@
       amountDue: ['ยอดผ่อนต่องวด', 'ราคาผ่อนต่องวด (ดาวน์)', 'amountdue', 'amount due', 'ยอดผ่อน', 'ค่างวด', 'จำนวนเงินต่องวด', 'ยอดชำระต่องวด'],
       age: ['อายุลูกค้า', 'อายุ', 'age'],
       // Schedule-style workbook: remaining term + first unpaid due date + monthly payment day
-      term: ['ระยะเวลาผ่อน (ผ่อน)', 'ระยะเวลาผ่อน (ดาวน์)', 'ระยะเวลาผ่อน', 'จำนวนงวดคงเหลือ', 'จำนวนงวด', 'งวดทั้งหมด', 'จำนวนงวดที่ผ่อน'],
+      term: ['ระยะเวลาผ่อน (ผ่อน)', 'ระยะเวลาผ่อน (ดาวน์)', 'ระยะเวลาผ่อน', 'จำนวนงวดคงเหลือ', 'จำนวนงวด', 'งวดทั้งหมด', 'จำนวนงวดที่ผ่อน', 'จำนวนงวดคงเหลือที่ต้องผ่อน'],
+      // ลูกหนี้เก่า (ก่อน 1/10/2025) only: "term" above already matches its "จำนวนงวดคงเหลือที่ต้องผ่อน"
+      // (remaining), but that file separately carries the ORIGINAL total term too — needed to
+      // derive paidCount (originalTerm − remaining) since there's no explicit "จำนวนงวดที่ชำระแล้ว"
+      // column in that file. Inert for every other file format (no column ever matches this alone).
+      originalTerm: ['ระยะเวลาการผ่อน (งวด)'],
       paidCount: ['จำนวนงวดที่ชำระแล้ว', 'งวดที่ชำระแล้ว', 'จำนวนงวดที่รับชำระ'],
       paidTotal: ['ยอดชำระหลังทำสัญญา', 'ยอดชำระแล้ว', 'ยอดที่ชำระแล้ว'],
-      firstDue: ['วันครบกำหนดชำระงวดแรก', 'วันครบกำหนดงวดแรก', 'กำหนดชำระงวดแรก'],
+      // ลูกหนี้เก่า only: used together to back-derive paidTotal as (totalDue − netOutstanding) —
+      // see makeOrder below for why ยอดคงเหลือสุทธิ wins over the file's own ยอดที่ชำระแล้ว when the
+      // two disagree (confirmed with user: trust ยอดคงเหลือสุทธิ).
+      totalDue: ['ยอดที่ต้องผ่อนต่อ'],
+      netOutstanding: ['ยอดคงเหลือสุทธิ'],
+      firstDue: ['วันครบกำหนดชำระงวดแรก', 'วันครบกำหนดงวดแรก', 'กำหนดชำระงวดแรก', 'วันที่เริ่มงวดแรก'],
       payDay: ['ชำระทุกวันที่', 'วันที่ชำระทุกเดือน', 'ชำระทุกวัน']
     };
     function sheetInfo(s) {
@@ -1711,14 +1736,24 @@
         });
       }
       var useSchedule = schedSheet && !separate && (Object.keys(schedBySO).length || Object.keys(schedByCust).length);
+      // A single-sheet file that carries its schedule anchor (จำนวนงวด + วันที่เริ่มงวดแรก) inline on
+      // the SAME row, with no separate schedule sheet to join against — ลูกหนี้เก่า (ก่อน 1/10/2025)
+      // is shaped this way. Never true when useSchedule already is (real 2-sheet files, e.g. the
+      // current production debtor file, always take that path unchanged).
+      var selfScheduled = !separate && !useSchedule && !!orderSheet.termKey && !!orderSheet.firstDueKey;
 
       var badDates = 0, badSamples = [], instCount = 0, unmatched = 0, unmatchedSamples = [];
       var byOrder = {};
-      function makeOrder(r, orderId) {
+      function makeOrder(r, orderId, soUnknown) {
+        var term = Math.round(resolveNumber(r, ALIASES.term));
+        var originalTerm = Math.round(resolveNumber(r, ALIASES.originalTerm));
+        var explicitPaidCount = Math.round(resolveNumber(r, ALIASES.paidCount));
+        var netOutstandingRaw = resolveField(r, ALIASES.netOutstanding);
         return {
           customerId: String(resolveField(r, ALIASES.customerId) || ''),
           customerName: String(resolveField(r, ALIASES.customerName) || ''),
           orderId: orderId,
+          soUnknown: !!soUnknown,
           contractDate: toDateString(resolveField(r, ALIASES.contractDate)),
           productList: joinText(r, ALIASES.productList),
           downPayment: resolveNumber(r, ALIASES.downPayment),
@@ -1729,9 +1764,16 @@
           firstDueDate: toDateString(resolveField(r, ALIASES.firstDue)),
           payDay: Math.round(resolveNumber(r, ALIASES.payDay)) || null,
           _perInst: resolveNumber(r, ALIASES.amountDue),
-          _term: Math.round(resolveNumber(r, ALIASES.term)),
-          _paidCount: Math.round(resolveNumber(r, ALIASES.paidCount)),
+          _term: term,
+          _paidCount: explicitPaidCount || Math.max(0, originalTerm - term),
           _paidTotal: resolveNumber(r, ALIASES.paidTotal),
+          // ลูกหนี้เก่า: ยอดคงเหลือสุทธิ is the figure staff treat as authoritative. Deriving paidTotal
+          // from it against the SCHEDULE'S OWN total (N × ยอดผ่อนต่องวด, computed in generateSchedule
+          // once N is known) — rather than the file's separately-stated ยอดที่ต้องผ่อนต่อ column —
+          // guarantees the imported remaining balance matches ยอดคงเหลือสุทธิ exactly even on rows
+          // where ยอดที่ต้องผ่อนต่อ itself doesn't equal ยอดผ่อนต่องวด × งวดทั้งหมด. Null (not 0) when
+          // absent, so generateSchedule can tell "not provided" apart from "genuinely zero".
+          _netOutstanding: netOutstandingRaw !== '' ? toNumber(netOutstandingRaw) : null,
           installments: [],
           // ดาวน์+อุปกรณ์เสริม only: accessoryOrderId is never in the debtor file (staff fills it in
           // by hand once they know the accessory's own SO) — the rest come straight from the file.
@@ -1792,21 +1834,45 @@
           if (!o.firstDueDate) o.firstDueDate = rec.first;
           if (!o.payDay) o.payDay = rec.payDay || null;
         } else noSched++;
+        // Falls back to the row's OWN firstDueDate/payDay (already set straight from this same row
+        // in makeOrder) when there's no separate schedule-sheet join — the ลูกหนี้เก่า file carries
+        // its schedule anchor inline on every row rather than via a second sheet.
+        var anchor = rec ? rec.first : o.firstDueDate;
+        var anchorPayDay = rec ? rec.payDay : o.payDay;
         var amt = o._perInst || 0;
         var paidN = Math.max(0, Math.min(240, o._paidCount || 0));
         var N = Math.max(0, Math.min(240, paidN + Math.max(0, o._term || 0)));
+        if (N === 0) {
+          if (o._netOutstanding > 0) {
+            // No term, no per-installment amount — the only figure this record has at all is its
+            // bottom-line remaining balance (very old ลูกหนี้เก่า records with no surviving
+            // schedule). Surface it as a single placeholder งวด so it isn't silently dropped;
+            // flagged for staff to fill in the real schedule once/if it's ever recovered.
+            o.installments.push({
+              no: 1, dueDate: '', amountDue: o._netOutstanding, amountPaid: 0, paidDate: '',
+              status: '', statusOverride: false, discount: 0,
+              note: 'นำเข้าจากไฟล์ลูกหนี้เก่า — ไม่มีข้อมูลตารางผ่อน มีแค่ยอดคงเหลือ กรุณาตรวจสอบ/แก้ไข'
+            });
+            instCount++;
+          }
+          return;
+        }
         // "ยอดชำระหลังทำสัญญา" (actual cumulative paid) is the authoritative amount when present —
         // distribute it across installments in order rather than assuming each paid installment
         // is exactly `amt` (handles partial/short/over payments). Falls back to paidN × amt when
-        // the file has no such column.
-        var remainingPaid = (o._paidTotal && o._paidTotal > 0) ? o._paidTotal : (paidN * amt);
+        // the file has no such column. ลูกหนี้เก่า instead derives it from ยอดคงเหลือสุทธิ against
+        // this schedule's own total (N × amt) — see makeOrder's _netOutstanding comment for why.
+        var scheduleTotal = amt * N;
+        var remainingPaid = (o._netOutstanding !== null && o._netOutstanding !== undefined)
+          ? Math.max(0, scheduleTotal - o._netOutstanding)
+          : ((o._paidTotal && o._paidTotal > 0) ? o._paidTotal : (paidN * amt));
         var uploadDate = toDateString(new Date());
         for (var k = 1; k <= N; k++) {
           var paidHere = 0;
           if (remainingPaid > 0 && amt > 0) { paidHere = Math.min(remainingPaid, amt); remainingPaid -= paidHere; }
           o.installments.push({
             no: k,
-            dueDate: rec ? scheduleDueDate(rec.first, k - 1 - paidN, rec.payDay) : '',
+            dueDate: anchor ? scheduleDueDate(anchor, k - 1 - paidN, anchorPayDay) : '',
             amountDue: amt,
             amountPaid: paidHere,
             paidDate: paidHere > 0 ? uploadDate : '', status: '', statusOverride: false, discount: 0, note: ''
@@ -1815,13 +1881,23 @@
         }
       }
 
+      // Non-informative placeholder text some ลูกหนี้เก่า rows carry in the รหัส SO column instead
+      // of actually being blank — must be treated as "no real SO" too, or every row sharing the
+      // same placeholder text collapses into a single order (loses all but the first).
+      var SO_PLACEHOLDER_VALUES = { 'ไม่พบแชท': true };
       // Order headers (one row per คำสั่งซื้อ; first row wins)
-      orderSheet.rows.forEach(function (r) {
-        var orderId = String(resolveField(r, ALIASES.orderId) || '').trim();
-        if (!orderId) return;
+      orderSheet.rows.forEach(function (r, idx) {
+        var rawOrderId = String(resolveField(r, ALIASES.orderId) || '').trim();
+        if (SO_PLACEHOLDER_VALUES[rawOrderId]) rawOrderId = '';
+        // A blank/placeholder รหัส SO (some ลูกหนี้เก่า rows have none at all, or a "ไม่พบแชท"-style
+        // note instead) still needs a real UNIQUE key internally — everything in this app keys off
+        // orderId, so leaving it blank/shared would silently merge unrelated customers into one
+        // order. Shown as "-" everywhere instead (soUnknown/soDisplay), never shown to staff.
+        var soUnknown = !rawOrderId;
+        var orderId = rawOrderId || ('OLD-' + (idx + 1));
         var isNew = !byOrder[orderId];
-        if (isNew) { byOrder[orderId] = makeOrder(r, orderId); buildAccessorySchedule(byOrder[orderId]); }
-        if (useSchedule) { if (isNew) generateSchedule(byOrder[orderId]); }
+        if (isNew) { byOrder[orderId] = makeOrder(r, orderId, soUnknown); buildAccessorySchedule(byOrder[orderId]); }
+        if (useSchedule || selfScheduled) { if (isNew) generateSchedule(byOrder[orderId]); }
         else if (!separate) addInstallment(byOrder[orderId], r);   // legacy single-sheet: row = installment
       });
       // Installments from the dedicated sheet, joined on คำสั่งซื้อ
@@ -1842,7 +1918,7 @@
       Object.keys(byOrder).forEach(function (k) {
         var o = byOrder[k];
         delete o._perInst; delete o._term; delete o._paidCount; delete o._paidTotal;
-        delete o._accessoryPerInst; delete o._accessoryTerm;
+        delete o._accessoryPerInst; delete o._accessoryTerm; delete o._netOutstanding;
         if (!o.installments.length) { noInstOrders++; return; }
         var anyNo = o.installments.some(function (i) { return isFinite(i.no) && i.no > 0; });
         if (anyNo) o.installments.sort(function (a, b) { return (a.no || 0) - (b.no || 0); });
@@ -1909,13 +1985,14 @@
       var msg = 'นำเข้าสำเร็จ ' + newOrders.length + ' คำสั่งซื้อ · ' + instCount + ' งวด\n'
         + 'ชีทลูกหนี้: "' + orderSheet.name + '"'
         + (separate ? (' · ชีทงวด: "' + instSheet.name + '"')
-          : useSchedule ? (' · ชีทวันครบกำหนด: "' + schedSheet.name + '" (สร้างตารางงวดอัตโนมัติ)') : ' (ชีทเดียว)')
+          : useSchedule ? (' · ชีทวันครบกำหนด: "' + schedSheet.name + '" (สร้างตารางงวดอัตโนมัติ)')
+          : selfScheduled ? ' (ชีทเดียว — สร้างตารางงวดจากยอดสรุปในแถวเดียวกัน)' : ' (ชีทเดียว)')
         + ' — ยอดชำระเดิมถูกเก็บไว้';
       if (useSchedule) {
         msg += '\nจับคู่ด้วยคำสั่งซื้อ ' + joinSO + ' · ด้วยรหัสลูกค้า ' + joinCust + (noSched ? (' · ไม่พบวันครบกำหนด ' + noSched) : '');
       }
       var warn = [];
-      if (!instSheet && !useSchedule) {
+      if (!instSheet && !useSchedule && !selfScheduled) {
         warn.push('ไม่พบคอลัมน์ "วันครบกำหนดชำระ" ในชีทใดเลย — ทุกงวดจะถูกนับเป็น "ยังไม่ถึงกำหนด" (ชีทที่พบ: ' + sheetList + ')');
       } else if (useSchedule && noSched > 0) {
         warn.push('มี ' + noSched + ' คำสั่งซื้อ ที่หาวันครบกำหนดไม่เจอ (งวดจะไม่มีวันที่)');
@@ -2401,7 +2478,7 @@
     if (showDetail) {
       html += '<div style="margin-top:14px; display:flex; flex-direction:column; gap:8px;">' +
         sm.orders.map(function (o) {
-          return '<div style="display:flex; justify-content:space-between; background:' + detailBg + '; border-radius:10px; padding:10px 14px; font-size:13px; color:#2b2540;"><div>' + esc(o.customerName) + ' · ' + esc(o.orderId) + ' · ' + esc(o.productList) + '</div><div style="color:#6b6785;">คงเหลือ ฿' + o.totalOutstandingDisp + '</div></div>';
+          return '<div style="display:flex; justify-content:space-between; background:' + detailBg + '; border-radius:10px; padding:10px 14px; font-size:13px; color:#2b2540;"><div>' + esc(o.customerName) + ' · ' + esc(o.soDisplay) + ' · ' + esc(o.productList) + '</div><div style="color:#6b6785;">คงเหลือ ฿' + o.totalOutstandingDisp + '</div></div>';
         }).join('') +
       '</div>';
     }
@@ -2582,7 +2659,7 @@
             return '<tr data-action="selectCustomer" data-cid="' + esc(order.customerId) + '" style="cursor:pointer; font-size:14px; color:#2b2540; border-top:1px solid rgba(124,92,255,0.10);">' +
               '<td style="padding:14px 16px; font-weight:600;">' + esc(order.customerId) + '</td>' +
               '<td style="padding:14px 16px;">' + esc(order.customerName) + '</td>' +
-              '<td style="padding:14px 16px;">' + esc(order.orderId) + '</td>' +
+              '<td style="padding:14px 16px;">' + esc(order.soDisplay) + '</td>' +
               '<td style="padding:14px 16px; color:#6b6785;">' + esc(order.productList) + '</td>' +
               '<td style="padding:14px 16px; color:#6b6785;">' + esc(order.contractDateDisp) + '</td>' +
               '<td style="padding:14px 16px; font-weight:600;">' + order.totalOutstandingDisp + ' บาท</td>' +
@@ -2714,7 +2791,7 @@
     html += CV.selectedCustomerOrders.map(function (ord) {
       return '<div style="border:1px solid rgba(124,92,255,0.14); border-radius:20px; padding:22px 24px; margin-bottom:20px; background:rgba(255,255,255,0.4);">' +
         '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px;">' +
-          '<div style="font-size:13px; color:#6b6785;">🔗 SO: <span style="color:#2b2540; font-weight:600;">' + esc(ord.orderId) + '</span></div>' +
+          '<div style="font-size:13px; color:#6b6785;">🔗 SO: <span style="color:#2b2540; font-weight:600;">' + esc(ord.soDisplay) + '</span></div>' +
           '<div style="font-size:13px; color:#6b6785;">🗓 วันที่ออกสัญญา: <span style="color:#2b2540; font-weight:600;">' + esc(ord.contractDateDisp) + '</span></div>' +
           '<div style="background:rgba(240,140,0,0.12); color:#c2650a; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">' + esc(ord.purchaseType) + '</div>' +
           (ord.isSold ? '<div style="background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">📤 จำหน่ายชื่อให้บริษัทติดตามหนี้</div>' : '') +
@@ -2865,6 +2942,18 @@
     '</div>';
   }
 
+  // ลูกหนี้ปัจจุบัน/เก่า — plain <a> navigation (full reload), not a JS click handler, so switching
+  // always goes through the app's normal boot sequence fresh. See DATASET_ID above for why this
+  // isn't an in-place hot-swap.
+  function datasetSwitcher() {
+    var pillBase = 'text-decoration:none; padding:6px 14px; border-radius:20px; font-size:12.5px; font-weight:700; white-space:nowrap;';
+    var activeStyle = pillBase + ' background:linear-gradient(135deg,#7c5cff,#6647e0); color:#fff;';
+    var inactiveStyle = pillBase + ' background:rgba(124,92,255,0.08); color:#6b6785;';
+    return '<div style="display:flex; align-items:center; gap:6px; margin-right:10px; padding:3px; background:rgba(124,92,255,0.05); border-radius:24px;">' +
+      '<a href="?" style="' + (IS_OLD_DATASET ? inactiveStyle : activeStyle) + '">ลูกหนี้ปัจจุบัน</a>' +
+      '<a href="?dataset=old" style="' + (IS_OLD_DATASET ? activeStyle : inactiveStyle) + '">ลูกหนี้เก่า (ก่อน 1/10/2025)</a>' +
+    '</div>';
+  }
   // ---------- Sidebar (static shell) ----------
   function navItem(id, action, iconHtml, label) {
     return '<div id="' + id + '" data-action="' + action + '" style="cursor:pointer; display:flex; align-items:center; gap:12px; padding:12px 14px; border-radius:12px; font-weight:600; font-size:14px;">' +
@@ -2886,6 +2975,7 @@
       navItem('tab-tracking', 'goTracking', trackIcon, 'ติดตามหนี้') +
       navItem('tab-upload', 'goUpload', uploadIcon, 'อัพโหลดไฟล์') +
       '<div style="flex:1;"></div>' +
+      datasetSwitcher() +
       '<div id="cloudStatusPill">' + cloudStatusPillInner() + '</div>' +
     '</div>';
 
@@ -3061,6 +3151,7 @@
   }
 
   // ---------- Boot ----------
+  if (IS_OLD_DATASET) document.title = 'ลูกหนี้เก่า (ก่อน 1/10/2025) — ระบบติดตามหนี้และผ่อนชำระ';
   buildShell();
   initEvents();
   render();
