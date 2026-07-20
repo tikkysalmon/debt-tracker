@@ -163,8 +163,12 @@
     var diffDays = Math.round((todayMid - dueMid) / 86400000);
     if (diffDays < 0) return 'ยังไม่ถึงกำหนดชำระ';
     if (diffDays === 0) return 'ถึงกำหนดชำระ';
-    if (diffDays >= cfg.lockDays) return 'ล็อคเครื่อง';
-    if (diffDays >= cfg.screenDays) return 'เปลี่ยนภาพพักหน้าจอ';
+    // cfg.lockDays/screenDays days are a grace COUNT after the due date (เช่น ครบกำหนด 15, นับ 16-20
+    // เป็น 5 วัน) — the status only changes on the day AFTER that count finishes (วันที่ 21), hence
+    // strictly-greater-than here rather than >=, which would have flipped the status a day early
+    // (on the last day still being counted, วันที่ 20).
+    if (diffDays > cfg.lockDays) return 'ล็อคเครื่อง';
+    if (diffDays > cfg.screenDays) return 'เปลี่ยนภาพพักหน้าจอ';
     if (diffDays === 1) return 'ค้างชำระ';
     return 'เกินกำหนดชำระ';
   }
