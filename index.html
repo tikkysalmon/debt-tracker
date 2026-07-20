@@ -502,7 +502,22 @@
       var allInstallments = installments.concat(accessoryInstallments);
       var totalDue = allInstallments.reduce(function (s, i) { return s + Number(i.amountDue || 0); }, 0);
       var totalPaid = allInstallments.reduce(function (s, i) { return s + Number(i.amountPaid || 0); }, 0);
-      var totalOutstanding = Math.max(0, totalDue - totalPaid - Number(o.discount || 0));
+      var sumDiscount = function (list) { return list.reduce(function (s, i) { return s + Number(i.discount || 0); }, 0); };
+      // ส่วนลด (o.discount) applies to the main device contract only — the separately-billed
+      // อุปกรณ์เสริม track never gets it. Per-installment ส่วนลด (i.discount, entered per งวด) is
+      // subtracted on whichever track it was entered on, so it's never double-counted here.
+      // o._discountAppliedToInstallments (set by updateOrderField, see there) means ราคาสินค้า −
+      // ยอดวางดาวน์ − ส่วนลด was already folded into every งวด's ยอดผ่อนต่องวด (amountDue) — in
+      // that case o.discount must NOT be subtracted again here, or it gets counted twice and
+      // ยอดคงเหลือ comes out too low. Orders that never went through that recalc (e.g. imported
+      // orders, whose amountDue comes straight from the file) still need it subtracted here.
+      var mainDue = installments.reduce(function (s, i) { return s + Number(i.amountDue || 0); }, 0);
+      var mainPaid = installments.reduce(function (s, i) { return s + Number(i.amountPaid || 0); }, 0);
+      var accDue = accessoryInstallments.reduce(function (s, i) { return s + Number(i.amountDue || 0); }, 0);
+      var accPaid = accessoryInstallments.reduce(function (s, i) { return s + Number(i.amountPaid || 0); }, 0);
+      var mainOutstanding = Math.max(0, mainDue - mainPaid - sumDiscount(installments) - (o._discountAppliedToInstallments ? 0 : Number(o.discount || 0)));
+      var accOutstanding = Math.max(0, accDue - accPaid - sumDiscount(accessoryInstallments));
+      var totalOutstanding = mainOutstanding + accOutstanding;
       // OR in the sticky wasSold/wasCancelled flags (set the moment a status is ever assigned, in
       // updateInstallment/onPaymentFileChange) so a later ชำระแล้ว on some งวด doesn't make the
       // account-status badge disappear — see stickyAccountStatusPatch for why.
@@ -523,6 +538,12 @@
         totalDueDisp: fmtMoney(totalDue),
         totalPaidDisp: fmtMoney(totalPaid),
         totalOutstandingDisp: fmtMoney(totalOutstanding),
+        mainPaidDisp: fmtMoney(mainPaid),
+        mainOutstandingRaw: mainOutstanding,
+        mainOutstandingDisp: fmtMoney(mainOutstanding),
+        accessoryPaidDisp: fmtMoney(accPaid),
+        accessoryOutstandingRaw: accOutstanding,
+        accessoryOutstandingDisp: fmtMoney(accOutstanding),
         firstInstallmentAmountDisp: fmtMoney(installments[0] ? installments[0].amountDue : 0),
         downPaymentDisp: fmtMoney(o.downPayment),
         discountDisp: fmtMoney(o.discount),
@@ -965,16 +986,16 @@
       // งวดละ 1,750) — recompute it for EVERY งวด (including already-paid ones, per user
       // confirmation) whenever any of the three figures changes. amountPaid itself is never
       // touched — only the "should-be-due" figure moves, never the real cash actually
-      // received historically. NOTE: totalOutstanding (computeOrdersUncached) still also
-      // subtracts o.discount separately — orders edited through this path now have ส่วนลด
-      // counted twice there; see conversation with user before changing that formula, since
-      // bulk-imported orders that never go through this recompute may rely on that subtraction.
+      // received historically. Sets _discountAppliedToInstallments so computeOrdersUncached knows
+      // ส่วนลด is already folded into amountDue and must NOT subtract o.discount again when
+      // computing ยอดคงเหลือ (that used to double-count it — see computeOrdersUncached).
       // Only fires once ราคาสินค้าถูกกรอกแล้ว so orders that haven't set it yet don't get zeroed out.
       if ((field === 'productPrice' || field === 'downPayment' || field === 'discount') && toNumber(updated.productPrice) > 0 && updated.installments.length) {
         var perInstallment = Math.max(0, toNumber(updated.productPrice) - toNumber(updated.downPayment) - toNumber(updated.discount)) / updated.installments.length;
         updated.installments = updated.installments.map(function (inst) {
           return Object.assign({}, inst, { amountDue: perInstallment });
         });
+        updated._discountAppliedToInstallments = true;
       }
       // Same recalc, same rules, for the separately-billed อุปกรณ์เสริม track.
       if ((field === 'accessoryProductPrice' || field === 'accessoryDownPayment') && toNumber(updated.accessoryProductPrice) > 0 && updated.accessoryInstallments.length) {
@@ -2458,11 +2479,6 @@
         '<div style="display:flex; gap:8px;"><input type="text" value="' + esc(state.customerNoteDraft) + '" data-action="noteDraft" placeholder="เพิ่มหมายเหตุใหม่..." style="flex:1; box-sizing:border-box; padding:10px 14px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13.5px; color:#2b2540; outline:none;" /><button data-action="saveNote" style="background:linear-gradient(135deg,#7c5cff,#6647e0); color:#fff; border:none; padding:10px 18px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer; white-space:nowrap;">💾 บันทึก</button></div>' +
       '</div>';
 
-    function trackTotals(list) {
-      var due = (list || []).reduce(function (s, i) { return s + Number(i.amountDue || 0); }, 0);
-      var paid = (list || []).reduce(function (s, i) { return s + Number(i.amountPaid || 0); }, 0);
-      return { paidDisp: fmtMoney(paid), outstandingDisp: fmtMoney(Math.max(0, due - paid)) };
-    }
     // "ยอดผ่อนต่องวด" input calls setInstallmentAmount, which only ever touches NOT-YET-PAID งวด
     // (paid ones keep their historical amount) — so the box must show the first UNPAID งวด's
     // amount, never installments[0]. Anchoring the display to installments[0] made the field look
@@ -2479,7 +2495,6 @@
     }
 
     html += CV.selectedCustomerOrders.map(function (ord) {
-      var accessoryTotals = trackTotals(ord.accessoryInstallments);
       return '<div style="border:1px solid rgba(124,92,255,0.14); border-radius:20px; padding:22px 24px; margin-bottom:20px; background:rgba(255,255,255,0.4);">' +
         '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px;">' +
           '<div style="font-size:13px; color:#6b6785;">🔗 SO: <span style="color:#2b2540; font-weight:600;">' + esc(ord.orderId) + '</span></div>' +
@@ -2498,8 +2513,8 @@
             : '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดวางดาวน์</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.downPayment)) + '" data-order-field="downPayment" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>') +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดผ่อนต่องวด</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(firstUnpaidInstallmentAmount(ord.installments))) + '" data-action="setInstallmentAmount" data-order="' + esc(ord.orderId) + '" data-track="main" title="แก้ยอดนี้จะปรับยอดผ่อนของทุกงวดที่ยังไม่ชำระให้เท่ากันหมด" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ส่วนลด</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.discount)) + '" data-order-field="discount" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#2b2540; background:#fff; outline:none;" /></div>' +
-          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดรับชำระ' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:700; color:#12b886;">฿' + (ord.hasAccessory ? trackTotals(ord.installments).paidDisp : ord.totalPaidDisp) + '</div></div>' +
-          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดคงเหลือ' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:700; color:#e03131;">฿' + (ord.hasAccessory ? trackTotals(ord.installments).outstandingDisp : ord.totalOutstandingDisp) + '</div></div>' +
+          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดรับชำระ' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:700; color:#12b886;">฿' + (ord.hasAccessory ? ord.mainPaidDisp : ord.totalPaidDisp) + '</div></div>' +
+          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดคงเหลือ' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:700; color:#e03131;">฿' + (ord.hasAccessory ? ord.mainOutstandingDisp : ord.totalOutstandingDisp) + '</div></div>' +
         '</div>' +
         '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; margin-bottom:14px; padding:14px 16px; background:rgba(124,92,255,0.05); border-radius:14px;">' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">🗓 วันครบกำหนดชำระงวดแรก</div><div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">' +
@@ -2531,8 +2546,8 @@
             '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:16px; margin-bottom:10px;">' +
               '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดวางดาวน์</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.accessoryDownPayment)) + '" data-order-field="accessoryDownPayment" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>' +
               '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดผ่อนต่องวด</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(firstUnpaidInstallmentAmount(ord.accessoryInstallments))) + '" data-action="setInstallmentAmount" data-order="' + esc(ord.orderId) + '" data-track="accessory" title="แก้ยอดนี้จะปรับยอดผ่อนของทุกงวดที่ยังไม่ชำระให้เท่ากันหมด" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>' +
-              '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดรับชำระ</div><div style="font-size:15px; font-weight:700; color:#12b886;">฿' + accessoryTotals.paidDisp + '</div></div>' +
-              '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดคงเหลือ</div><div style="font-size:15px; font-weight:700; color:#e03131;">฿' + accessoryTotals.outstandingDisp + '</div></div>' +
+              '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดรับชำระ</div><div style="font-size:15px; font-weight:700; color:#12b886;">฿' + ord.accessoryPaidDisp + '</div></div>' +
+              '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดคงเหลือ</div><div style="font-size:15px; font-weight:700; color:#e03131;">฿' + ord.accessoryOutstandingDisp + '</div></div>' +
             '</div>' +
             '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; margin-bottom:14px; padding:14px 16px; background:rgba(124,92,255,0.05); border-radius:14px;">' +
               '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">🗓 วันครบกำหนดชำระงวดแรก</div><div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">' +
