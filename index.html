@@ -1774,6 +1774,7 @@
         var originalTerm = Math.round(resolveNumber(r, ALIASES.originalTerm));
         var explicitPaidCount = Math.round(resolveNumber(r, ALIASES.paidCount));
         var netOutstandingRaw = resolveField(r, ALIASES.netOutstanding);
+        var totalDueRaw = resolveField(r, ALIASES.totalDue);
         return {
           customerId: String(resolveField(r, ALIASES.customerId) || ''),
           customerName: String(resolveField(r, ALIASES.customerName) || ''),
@@ -1792,12 +1793,18 @@
           _term: term,
           _paidCount: explicitPaidCount || Math.max(0, originalTerm - term),
           _paidTotal: resolveNumber(r, ALIASES.paidTotal),
-          // ลูกหนี้เก่า: ยอดคงเหลือสุทธิ is the figure staff treat as authoritative. Deriving paidTotal
-          // from it against the SCHEDULE'S OWN total (N × ยอดผ่อนต่องวด, computed in generateSchedule
-          // once N is known) — rather than the file's separately-stated ยอดที่ต้องผ่อนต่อ column —
-          // guarantees the imported remaining balance matches ยอดคงเหลือสุทธิ exactly even on rows
-          // where ยอดที่ต้องผ่อนต่อ itself doesn't equal ยอดผ่อนต่องวด × งวดทั้งหมด. Null (not 0) when
-          // absent, so generateSchedule can tell "not provided" apart from "genuinely zero".
+          // ลูกหนี้เก่า: on ~58 rows ยอดผ่อนต่องวด × งวดทั้งหมด doesn't equal the file's own
+          // ยอดที่ต้องผ่อนต่อ (a pre-existing inconsistency in the source file) — generateSchedule
+          // reconciles by using ยอดที่ต้องผ่อนต่อ ÷ N as the per-installment amount instead of the
+          // raw ยอดผ่อนต่องวด for those rows, so BOTH ยอดรวมสัญญา (contract total) and, combined with
+          // ยอดคงเหลือสุทธิ below, ยอดที่ชำระแล้ว match the file's own totals exactly — not just the
+          // remaining balance. Null (not 0) when absent, so generateSchedule can tell "not provided"
+          // apart from "genuinely zero".
+          _totalDue: totalDueRaw !== '' ? toNumber(totalDueRaw) : null,
+          // ยอดคงเหลือสุทธิ is the figure staff treat as authoritative for the remaining balance —
+          // paidTotal is back-derived from it (against whichever schedule total was just settled on
+          // above) rather than trusting the file's separately-stated ยอดที่ชำระแล้ว column, per the
+          // same reconciliation.
           _netOutstanding: netOutstandingRaw !== '' ? toNumber(netOutstandingRaw) : null,
           installments: [],
           // ดาวน์+อุปกรณ์เสริม only: accessoryOrderId is never in the debtor file (staff fills it in
@@ -1867,6 +1874,11 @@
         var amt = o._perInst || 0;
         var paidN = Math.max(0, Math.min(240, o._paidCount || 0));
         var N = Math.max(0, Math.min(240, paidN + Math.max(0, o._term || 0)));
+        // Reconcile the per-installment amount to the file's own stated total (ยอดที่ต้องผ่อนต่อ ÷ N)
+        // rather than the raw ยอดผ่อนต่องวด when the two disagree (~58 rows in ลูกหนี้เก่า) — see
+        // makeOrder's _totalDue comment for why this keeps ยอดรวมสัญญา/ยอดที่ชำระแล้ว matching the
+        // file exactly too, not just the remaining balance.
+        if (N > 0 && o._totalDue > 0) amt = o._totalDue / N;
         if (N === 0) {
           if (o._netOutstanding > 0) {
             // No term, no per-installment amount — the only figure this record has at all is its
