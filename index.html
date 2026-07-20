@@ -1880,15 +1880,24 @@
         // file exactly too, not just the remaining balance.
         if (N > 0 && o._totalDue > 0) amt = o._totalDue / N;
         if (N === 0) {
-          if (o._netOutstanding > 0) {
-            // No term, no per-installment amount — the only figure this record has at all is its
-            // bottom-line remaining balance (very old ลูกหนี้เก่า records with no surviving
-            // schedule). Surface it as a single placeholder งวด so it isn't silently dropped;
-            // flagged for staff to fill in the real schedule once/if it's ever recovered.
+          // No term, no per-installment amount — the only figures these records still have are
+          // the totals (very old ลูกหนี้เก่า records with no surviving schedule). Some have BOTH
+          // ยอดที่ต้องผ่อนต่อ and ยอดคงเหลือสุทธิ (so the difference IS a real amountPaid, not 0 —
+          // e.g. a record showing totalDue 6,900 with 3,400 already paid must not get flattened
+          // into "amountDue 3,500, amountPaid 0", which would silently erase that 3,400 as if
+          // nothing had ever been paid); others have only ยอดคงเหลือสุทธิ, so that's the whole
+          // placeholder with nothing (yet) recorded as paid.
+          var placeholderDue = o._totalDue > 0 ? o._totalDue : o._netOutstanding;
+          if (placeholderDue > 0) {
+            var placeholderPaid = (o._totalDue > 0 && o._netOutstanding !== null && o._netOutstanding !== undefined)
+              ? Math.max(0, o._totalDue - o._netOutstanding)
+              : 0;
+            // Surface it as a single placeholder งวด so it isn't silently dropped; flagged for
+            // staff to fill in the real schedule once/if it's ever recovered.
             o.installments.push({
-              no: 1, dueDate: '', amountDue: o._netOutstanding, amountPaid: 0, paidDate: '',
+              no: 1, dueDate: '', amountDue: placeholderDue, amountPaid: placeholderPaid, paidDate: '',
               status: '', statusOverride: false, discount: 0,
-              note: 'นำเข้าจากไฟล์ลูกหนี้เก่า — ไม่มีข้อมูลตารางผ่อน มีแค่ยอดคงเหลือ กรุณาตรวจสอบ/แก้ไข'
+              note: 'นำเข้าจากไฟล์ลูกหนี้เก่า — ไม่มีข้อมูลตารางผ่อน มีแค่ยอดรวม/ยอดคงเหลือ กรุณาตรวจสอบ/แก้ไข'
             });
             instCount++;
           }
