@@ -262,6 +262,21 @@
     if (changed) _lastRepairChanged = true;
     return changed ? fixed : orders;
   }
+  // Built-in demo orderIds from generateMock() below — a freshly-seeded cloud file (first-ever
+  // connect on a brand-new dataset, e.g. ?dataset=old) starts out holding these, and a since-fixed
+  // bug (see applySnapshot's isSampleData handling) could flip isSampleData to false while this
+  // demo data was still the only thing there, causing the NEXT real debtor-file upload to MERGE
+  // with rather than replace it — leaving these 7 fake orders sitting alongside real ones forever.
+  // Strips them out once real data exists; never touches a dataset that's still pure demo (nothing
+  // real uploaded yet — that's the intended first-run experience, not something to "fix").
+  var MOCK_ORDER_IDS = { 'O-2026-001': true, 'O-2026-002': true, 'O-2026-003': true, 'O-2026-004': true, 'O-2026-006': true, 'O-2026-007': true, 'O-2026-008': true };
+  function repairStaleSampleOrders(orders) {
+    var hasMock = false, hasReal = false;
+    orders.forEach(function (o) { if (MOCK_ORDER_IDS[o.orderId]) hasMock = true; else hasReal = true; });
+    if (!hasMock || !hasReal) return orders;
+    _lastRepairChanged = true;
+    return orders.filter(function (o) { return !MOCK_ORDER_IDS[o.orderId]; });
+  }
 
   // ---------- Mock data ----------
   function mk(no, dueDate, amountDue, amountPaid, paidDate, status, override) {
@@ -369,7 +384,12 @@
     var rawOrders = Array.isArray(data.orders) ? data.orders : state.orders;
     var rawNotes = data.customerNotes || {};
     var rawKeys = data.appliedPaymentKeys || [];
-    if (Array.isArray(data.orders)) { state.orders = repairOverpaidInstallments(repairAccessoryProductNames(repairDueDateSchedules(repairInvalidStatusOverrides(data.orders)))); state.isSampleData = data.orders.length === 0 ? state.isSampleData : false; }
+    if (Array.isArray(data.orders)) {
+      state.orders = repairStaleSampleOrders(repairOverpaidInstallments(repairAccessoryProductNames(repairDueDateSchedules(repairInvalidStatusOverrides(data.orders)))));
+      // Trust an explicit flag from the payload when present (see cloudSaveNow) — only fall back to
+      // the old length-based guess for snapshots saved before that existed.
+      state.isSampleData = typeof data.isSampleData === 'boolean' ? data.isSampleData : (data.orders.length === 0 ? state.isSampleData : false);
+    }
     state.customerNotes = rawNotes;
     appliedPaymentKeys = {};
     rawKeys.forEach(function (k) { appliedPaymentKeys[k] = true; });
@@ -534,7 +554,12 @@
       var mergedOrders = mergeOrdersList(remoteOrders, changedOrders);
       var mergedNotes = mergeNotes(baseNotes, localNotesSnapshot, remoteNotes);
       var mergedKeys = unionKeys(remoteKeys, localKeysSnapshot);
-      var payload = { orders: mergedOrders, customerNotes: mergedNotes, appliedPaymentKeys: mergedKeys, _meta: { updatedAt: new Date().toISOString(), updatedBy: myClientId } };
+      // isSampleData travels WITH the payload so applySnapshot can trust it explicitly instead of
+      // guessing from orders.length — a freshly-seeded bucket's built-in demo data (generateMock())
+      // is non-empty too, and inferring "no longer sample" from length alone meant the demo orders
+      // silently got treated as real and merged alongside the first genuine upload (see
+      // repairStaleSampleOrders below for cleaning up datasets already affected by this).
+      var payload = { orders: mergedOrders, customerNotes: mergedNotes, appliedPaymentKeys: mergedKeys, isSampleData: state.isSampleData, _meta: { updatedAt: new Date().toISOString(), updatedBy: myClientId } };
       var text = JSON.stringify(payload);
       var blob = new Blob([text], { type: 'application/json' });
       db.storage.from(CLOUD_BUCKET).upload(CLOUD_FILE, blob, { upsert: true, contentType: 'application/json' }).then(function (res) {
@@ -603,7 +628,7 @@
 
   // ---------- State ----------
   var state = {
-    orders: repairOverpaidInstallments(repairAccessoryProductNames(repairDueDateSchedules(repairInvalidStatusOverrides((persisted && persisted.orders && persisted.orders.length) ? persisted.orders : generateMock())))),
+    orders: repairStaleSampleOrders(repairOverpaidInstallments(repairAccessoryProductNames(repairDueDateSchedules(repairInvalidStatusOverrides((persisted && persisted.orders && persisted.orders.length) ? persisted.orders : generateMock()))))),
     query: '',
     selectedCustomerId: null,
     uploadMsgDebt: '',
