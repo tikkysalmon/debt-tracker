@@ -161,6 +161,15 @@
   function isAccessoryBundlePurchaseType(purchaseType) {
     return /อุปกรณ์เสริม/.test(String(purchaseType || ''));
   }
+  // รหัสลูกค้า is NOT reliably unique per person in the real source files — confirmed collisions
+  // in BOTH the current and ลูกหนี้เก่า debtor files, where the exact same รหัสลูกค้า is a data-entry
+  // mistake shared by two totally unrelated people. Grouping the customer-detail view by
+  // customerId alone would silently merge their orders together (and, since the header name comes
+  // from whichever order happens to render first, made it look like editing one customer's data
+  // "bounced back" to a different person's). Every customer-level grouping (selection, notes)
+  // keys off this compound customerId+customerName string instead, so two different people never
+  // collapse into one — real re-imports of the SAME person (same id, same name) are unaffected.
+  function customerKey(o) { return String(o.customerId || '').trim() + '||' + String(o.customerName || '').trim(); }
   function computeStatus(inst, cfg) {
     var due = new Date(inst.dueDate);
     var amountDue = Number(inst.amountDue || 0);
@@ -1042,7 +1051,7 @@
       state.dueFrom !== state.appliedDueFrom || state.dueTo !== state.appliedDueTo ||
       state.paidFrom !== state.appliedPaidFrom || state.paidTo !== state.appliedPaidTo;
 
-    var selectedCustomerOrders = state.selectedCustomerId ? computedOrders.filter(function (o) { return o.customerId === state.selectedCustomerId; }) : [];
+    var selectedCustomerOrders = state.selectedCustomerId ? computedOrders.filter(function (o) { return customerKey(o) === state.selectedCustomerId; }) : [];
     var hasSelectedCustomer = selectedCustomerOrders.length > 0;
     var selectedCustomerGrade = 'A';
     // ปิดยอด — ยอดคงเหลือรวมทุกบิลของลูกค้าคนนี้เป็น 0 แล้ว (จ่ายครบ/ปิดยอดแล้วทุกสัญญา)
@@ -1068,7 +1077,9 @@
       selectedCustomerOrders: selectedCustomerOrders,
       hasSelectedCustomer: hasSelectedCustomer,
       selectedCustomerName: hasSelectedCustomer ? selectedCustomerOrders[0].customerName : '',
-      selectedCustomerIdDisp: state.selectedCustomerId || '',
+      // Derived from the resolved orders' own customerId, not state.selectedCustomerId itself —
+      // that now holds the compound customerKey (id+name), not a displayable id on its own.
+      selectedCustomerIdDisp: hasSelectedCustomer ? selectedCustomerOrders[0].customerId : '',
       selectedCustomerGradeLabel: GRADE_LABELS[selectedCustomerGrade],
       selectedCustomerGradeColor: GRADE_COLORS[selectedCustomerGrade],
       selectedCustomerFullySettled: selectedCustomerFullySettled,
@@ -2708,7 +2719,7 @@
           ['รหัสลูกค้า','ชื่อลูกค้า','คำสั่งซื้อ','สินค้า','วันที่ทำสัญญา','ยอดค้างชำระ','งวดค้าง'].map(function (h) { return '<th style="padding:14px 16px; font-weight:600;">' + h + '</th>'; }).join('') +
         '</tr></thead><tbody>' +
           pageRows.map(function (order) {
-            return '<tr data-action="selectCustomer" data-cid="' + esc(order.customerId) + '" style="cursor:pointer; font-size:14px; color:#2b2540; border-top:1px solid rgba(124,92,255,0.10);">' +
+            return '<tr data-action="selectCustomer" data-cid="' + esc(customerKey(order)) + '" style="cursor:pointer; font-size:14px; color:#2b2540; border-top:1px solid rgba(124,92,255,0.10);">' +
               '<td style="padding:14px 16px; font-weight:600;">' + esc(order.customerId) + '</td>' +
               '<td style="padding:14px 16px;">' + esc(order.customerName) + '</td>' +
               '<td style="padding:14px 16px;">' + esc(order.soDisplay) + '</td>' +
