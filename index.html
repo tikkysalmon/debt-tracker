@@ -2603,6 +2603,14 @@
     var dueMid = new Date(due.getFullYear(), due.getMonth(), due.getDate());
     return Math.round((todayMid - dueMid) / 86400000);
   }
+  // Same badge semantics as the customer-detail card (isSold/isCancelled/ปิดยอด) — reused here
+  // so the due-report table row matches what staff see after clicking into the customer.
+  function orderAccountStatusBadge(order) {
+    if (order.isSold) return '<span style="background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">📤 จำหน่ายชื่อฯ</span>';
+    if (order.isCancelled) return '<span style="background:' + hexToRgba('#4b5563', 0.14) + '; color:#4b5563; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">↩️ ยกเลิกสัญญา</span>';
+    if (order.totalOutstandingRaw <= 0.005) return '<span style="background:rgba(18,184,134,0.14); color:#12b886; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">✅ ปิดยอด</span>';
+    return '<span style="background:rgba(43,37,64,0.06); color:#6b6785; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">ปกติ</span>';
+  }
   // Aging report over each order's current (earliest unpaid) installment — mirrors the
   // reference site's "รายงานสินเชื่อที่ครบกำหนด" bucket row.
   function renderDueBuckets(orders) {
@@ -2719,13 +2727,14 @@
       var pageStart = (page - 1) * pageSize;
       var pageRows = CV.filteredOrders.slice(pageStart, pageStart + pageSize);
       html += '<div style="background:rgba(255,255,255,0.55); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.8); border-radius:20px; padding:6px; margin-bottom:28px; box-shadow:0 8px 30px rgba(124,92,255,0.08); overflow-x:auto;">' +
-        '<table style="width:100%; border-collapse:collapse; min-width:820px;"><thead><tr style="text-align:left; font-size:12px; color:#6b6785;">' +
-          ['รหัสลูกค้า','ชื่อลูกค้า','คำสั่งซื้อ','สินค้า','วันที่ทำสัญญา','ยอดค้างชำระ','งวดค้าง'].map(function (h) { return '<th style="padding:14px 16px; font-weight:600;">' + h + '</th>'; }).join('') +
+        '<table style="width:100%; border-collapse:collapse; min-width:920px;"><thead><tr style="text-align:left; font-size:12px; color:#6b6785;">' +
+          ['รหัสลูกค้า','ชื่อลูกค้า','สถานะบัญชี','คำสั่งซื้อ','สินค้า','วันที่ทำสัญญา','ยอดค้างชำระ','งวดค้าง'].map(function (h) { return '<th style="padding:14px 16px; font-weight:600;">' + h + '</th>'; }).join('') +
         '</tr></thead><tbody>' +
           pageRows.map(function (order) {
             return '<tr data-action="selectCustomer" data-cid="' + esc(customerKey(order)) + '" style="cursor:pointer; font-size:14px; color:#2b2540; border-top:1px solid rgba(124,92,255,0.10);">' +
               '<td style="padding:14px 16px; font-weight:600;">' + esc(order.customerId) + '</td>' +
               '<td style="padding:14px 16px;">' + esc(order.customerName) + '</td>' +
+              '<td style="padding:14px 16px;">' + orderAccountStatusBadge(order) + '</td>' +
               '<td style="padding:14px 16px;">' + esc(order.soDisplay) + '</td>' +
               '<td style="padding:14px 16px; color:#6b6785;">' + esc(order.productList) + '</td>' +
               '<td style="padding:14px 16px; color:#6b6785;">' + esc(order.contractDateDisp) + '</td>' +
