@@ -1543,7 +1543,17 @@
       // would re-touch this same row on every subsequent run even when nothing actually changed,
       // since the interim capped value never survives to be compared against.
       var newPaid = isLast ? available : Math.min(available, netDue);
-      var overflow = isLast ? 0 : (available - newPaid);
+      var overflowRaw = isLast ? 0 : (available - newPaid);
+      // A real payment is always whole cents, but netDue can be a repeating decimal (e.g.
+      // 33620/12 = 2801.6666...6), so every genuine on-time payment leaves a sub-0.005 "overflow"
+      // that is really just rounding noise, not a true overpayment. Cascading that noise forward
+      // WITHOUT deducting it from this row (the row stays untouched below, since the same 0.005
+      // threshold says the diff is negligible) meant every re-run of this repair — which fires on
+      // every page load and every cloud sync — added the SAME sliver again, compounding forever
+      // instead of converging. Confirmed by replaying this function 23x on identical input and
+      // watching a stray installment's amountPaid climb linearly from 0 to 0.38. Zeroing
+      // below-threshold overflow (instead of only skipping the row write) makes this idempotent.
+      var overflow = overflowRaw > 0.005 ? overflowRaw : 0;
       var next = inst;
       if (Math.abs(newPaid - ownPaid) > 0.005) {
         touched = true;
