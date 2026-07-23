@@ -93,13 +93,25 @@
   ];
   var STATUS_TO_GROUP = {};
   STATUS_GROUP_META.forEach(function (g) { g.statuses.forEach(function (s) { STATUS_TO_GROUP[s] = g.label; }); });
-  // computeStatus() can only ever derive these 4 — a collections/business decision, never a fact
+  // computeStatus() can only ever derive these — a collections/business decision, never a fact
   // computable from amountDue/amountPaid/dueDate. Only THESE may set statusOverride=true from an
   // import; every other status is something computeStatus recomputes correctly on its own the
   // moment amountPaid/amountDue changes, so freezing it would just make it go stale forever (this
   // is what made ยอดชำระ/วันที่ชำระ keep updating from later payment files while สถานะ never moved
   // off whatever a one-time historical import last recorded).
-  var MANUAL_ONLY_STATUSES = { 'หนี้สงสัยจะสูญ': true, 'จำหน่ายชื่อให้บริษัทติดตามหนี้': true, 'ยกเลิกสัญญา คืนเครื่อง': true, 'ค้างชำระ ล็อคเครื่องไม่ได้': true };
+  // เปลี่ยนภาพพักหน้าจอ joined this whitelist because it has the same blind spot: a customer can
+  // pay off ค่าปรับ+ค่าปลดล็อค (tracked in lateFee/unlockFee/penaltyPaid) while the งวด itself is
+  // still unpaid, and staff need to manually hold the status there so the device doesn't get
+  // re-locked — computeStatus has no way to see "the fees are settled" from amountDue/amountPaid/
+  // dueDate alone. See PAYMENT_CLEARS_OVERRIDE_STATUSES below for how this override still expires
+  // once the customer actually pays the งวด, unlike the other manual-only statuses which need a
+  // staff member to click "รีเซ็ตสถานะเป็นอัตโนมัติ" (⟲) to clear.
+  var MANUAL_ONLY_STATUSES = { 'หนี้สงสัยจะสูญ': true, 'จำหน่ายชื่อให้บริษัทติดตามหนี้': true, 'ยกเลิกสัญญา คืนเครื่อง': true, 'ค้างชำระ ล็อคเครื่องไม่ได้': true, 'เปลี่ยนภาพพักหน้าจอ': true };
+  // A statusOverride for one of these becomes stale the moment the งวด itself receives any
+  // payment (amountPaid > 0) — that's the signal the customer settled the outstanding installment,
+  // so the manual hold should release on its own instead of needing a staff member to notice and
+  // click ⟲. withEffectiveStatus() below checks this before honoring statusOverride.
+  var PAYMENT_CLEARS_OVERRIDE_STATUSES = { 'เปลี่ยนภาพพักหน้าจอ': true };
   var GRADE_COLORS = { A: '#12b886', B: '#f59f00', 'หนี้สงสัยจะสูญ': '#e03131' };
   var GRADE_LABELS = { A: 'เกรด A — ไม่เคยค้างชำระ', B: 'เกรด B — ค้างชำระ 1 งวด', 'หนี้สงสัยจะสูญ': 'หนี้สงสัยจะสูญ — ค้าง ≥2 งวด' };
   // Purchase types come straight from whatever the debtor file actually has (e.g. "ผ่อนชำระ 0%")
@@ -686,7 +698,8 @@
   }
   function withEffectiveStatus(list) {
     return list.map(function (i) {
-      var status = ((i.statusOverride || !AUTO_STATUS_ENABLED) && i.status) ? i.status : computeStatus(i, CFG);
+      var overrideStale = PAYMENT_CLEARS_OVERRIDE_STATUSES[i.status] && Number(i.amountPaid || 0) > 0;
+      var status = ((i.statusOverride && !overrideStale || !AUTO_STATUS_ENABLED) && i.status) ? i.status : computeStatus(i, CFG);
       var m = STATUS_META[status] || { color: '#94a3b8' };
       return Object.assign({}, i, {
         effectiveStatus: status,
@@ -1160,14 +1173,12 @@
   function trackKey(track) { return track === 'accessory' ? 'accessoryInstallments' : 'installments'; }
   function updateInstallment(orderId, no, field, value, track) {
     var key = trackKey(track);
-    var matched = false;
     state.orders = state.orders.map(function (o) {
       if (o.orderId !== orderId) return o;
       var orderPatch = field === 'status' ? (stickyAccountStatusPatch(value) || {}) : {};
       var patch2 = {};
       var updatedList = (o[key] || []).map(function (i) {
         if (i.no !== no) return i;
-        matched = true;
         var patch = {}; patch[field] = value;
         if (field === 'status') patch.statusOverride = true;
         return Object.assign({}, i, patch);
@@ -1177,25 +1188,8 @@
       patch2[key] = (field === 'amountPaid' || field === 'discount') ? cascadeOverpayment(updatedList) : updatedList;
       return Object.assign({}, o, orderPatch, patch2);
     });
-    // TEMPORARY diagnostic — remove once the "สถานะดีดกลับ" report is root-caused. Logs exactly
-    // what updateInstallment saw and wrote, so the next repro tells us whether the lookup even
-    // matched the right งวด, what got stored, and what a fresh computeOrders() derives from it.
-    if (field === 'status') {
-      var afterOrder = state.orders.find(function (o) { return o.orderId === orderId; });
-      var afterInst = afterOrder && (afterOrder[key] || []).find(function (i) { return i.no === no; });
-      console.log('[updateInstallment status]', {
-        orderId: orderId, no: no, track: track, key: key, valuePicked: value,
-        matchedRow: matched,
-        storedAfterWrite: afterInst ? { status: afterInst.status, statusOverride: afterInst.statusOverride } : null
-      });
-    }
     savePersisted();
     render();
-    if (field === 'status') {
-      var recomputed = computeOrders().find(function (o) { return o.orderId === orderId; });
-      var recomputedInst = recomputed && (recomputed[key] || []).find(function (i) { return i.no === no; });
-      console.log('[updateInstallment status] after render, effectiveStatus =', recomputedInst && recomputedInst.effectiveStatus);
-    }
   }
   function updateOrderField(orderId, field, value) {
     state.orders = state.orders.map(function (o) {
