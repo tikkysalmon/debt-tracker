@@ -263,6 +263,78 @@
     if (changed) _lastRepairChanged = true;
     return changed ? fixed : orders;
   }
+  // Redistributes payments across an order's installment list ONLY when, in aggregate, enough has
+  // been paid to cover every remaining installment in full — i.e. a genuine early full settlement
+  // (customer pays off everything that's left before the next due date). Per user confirmation
+  // 2026-07-24: a single installment merely paying a bit more than its own ยอดผ่อนต่องวด (but not
+  // enough to close out everything remaining) must NOT bleed into the next installment — that's
+  // just a slightly-larger regular payment and should show as "เกิน" on its own row (ขาด/เกิน
+  // column), not silently inflate the following installment's amountPaid. Only when the WHOLE
+  // order's payments-so-far now cover the WHOLE order's remaining balance does this redistribute,
+  // filling each installment in order and leaving any final rounding remainder on the last one.
+  function cascadeOverpayment(list) {
+    if (!list || !list.length) return list;
+    var sorted = list.slice().sort(function (a, b) { return (a.no || 0) - (b.no || 0); });
+    var totalNetDue = 0, totalPaid = 0;
+    sorted.forEach(function (inst) {
+      totalNetDue += Math.max(0, toNumber(inst.amountDue) - toNumber(inst.discount));
+      totalPaid += toNumber(inst.amountPaid);
+    });
+    if (totalPaid < totalNetDue - 0.005) return list; // not a full settlement — leave every row as individually recorded
+    var carry = 0, carryDate = '', touched = false;
+    var result = sorted.map(function (inst, idx) {
+      var isLast = idx === sorted.length - 1;
+      var netDue = Math.max(0, toNumber(inst.amountDue) - toNumber(inst.discount));
+      var ownPaid = toNumber(inst.amountPaid);
+      var available = ownPaid + carry;
+      // The last งวด has nowhere further to push overflow, so it simply absorbs whatever's left —
+      // capping it at netDue like every other row (then patching the excess back on afterward)
+      // would re-touch this same row on every subsequent run even when nothing actually changed,
+      // since the interim capped value never survives to be compared against.
+      var newPaid = isLast ? available : Math.min(available, netDue);
+      var overflowRaw = isLast ? 0 : (available - newPaid);
+      // A real payment is always whole cents, but netDue can be a repeating decimal (e.g.
+      // 33620/12 = 2801.6666...6), so every genuine on-time payment leaves a sub-0.005 "overflow"
+      // that is really just rounding noise, not a true overpayment. Cascading that noise forward
+      // WITHOUT deducting it from this row (the row stays untouched below, since the same 0.005
+      // threshold says the diff is negligible) meant every re-run of this repair — which fires on
+      // every page load and every cloud sync — added the SAME sliver again, compounding forever
+      // instead of converging. Zeroing below-threshold overflow (instead of only skipping the row
+      // write) makes this idempotent.
+      var overflow = overflowRaw > 0.005 ? overflowRaw : 0;
+      var next = inst;
+      if (Math.abs(newPaid - ownPaid) > 0.005) {
+        touched = true;
+        var patch = { amountPaid: newPaid };
+        if (newPaid > ownPaid && !inst.paidDate && carryDate) patch.paidDate = carryDate;
+        next = Object.assign({}, inst, patch);
+      }
+      if (overflow > 0.005 && !carryDate) carryDate = inst.paidDate || carryDate;
+      carry = overflow;
+      return next;
+    });
+    return touched ? result : list;
+  }
+  // One-time self-heal for orders whose overpayment (a lump early-settlement payment recorded
+  // against a single งวด) never got carried forward onto later งวด — see cascadeOverpayment() above
+  // for the actual redistribution logic. Runs on every load so data entered before this existed (or
+  // via any path that predates it) settles correctly too.
+  function repairOverpaidInstallments(orders) {
+    var changed = false;
+    var fixed = orders.map(function (o) {
+      var accessoryList = o.accessoryInstallments || [];
+      var mainFix = cascadeOverpayment(o.installments);
+      var accFix = cascadeOverpayment(accessoryList);
+      if (mainFix === o.installments && accFix === accessoryList) return o;
+      changed = true;
+      var patch = {};
+      if (mainFix !== o.installments) patch.installments = mainFix;
+      if (accFix !== accessoryList) patch.accessoryInstallments = accFix;
+      return Object.assign({}, o, patch);
+    });
+    if (changed) _lastRepairChanged = true;
+    return changed ? fixed : orders;
+  }
   // Built-in demo orderIds from generateMock() below — a freshly-seeded cloud file (first-ever
   // connect on a brand-new dataset, e.g. ?dataset=old) starts out holding these, and a since-fixed
   // bug (see applySnapshot's isSampleData handling) could flip isSampleData to false while this
@@ -379,13 +451,14 @@
     if (!data) return;
     applyingRemote = true;
     // lastServerSnapshot must be the RAW data as received, not the locally self-healed version —
-    // otherwise a repair that actually changed something would look identical to its own baseline
-    // and cloudSaveNow's diff would never notice there's anything to push back to the shared file.
+    // otherwise a repair that actually changed something (e.g. cascadeOverpayment fixing a
+    // stuck-overpaid order) would look identical to its own baseline and cloudSaveNow's diff would
+    // never notice there's anything to push back to the shared file.
     var rawOrders = Array.isArray(data.orders) ? data.orders : state.orders;
     var rawNotes = data.customerNotes || {};
     var rawKeys = data.appliedPaymentKeys || [];
     if (Array.isArray(data.orders)) {
-      state.orders = repairStaleSampleOrders(repairAccessoryProductNames(repairDueDateSchedules(repairInvalidStatusOverrides(data.orders))));
+      state.orders = repairStaleSampleOrders(repairOverpaidInstallments(repairAccessoryProductNames(repairDueDateSchedules(repairInvalidStatusOverrides(data.orders)))));
       // Trust an explicit flag from the payload when present (see cloudSaveNow) — only fall back to
       // the old length-based guess for snapshots saved before that existed.
       state.isSampleData = typeof data.isSampleData === 'boolean' ? data.isSampleData : (data.orders.length === 0 ? state.isSampleData : false);
@@ -647,7 +720,7 @@
 
   // ---------- State ----------
   var state = {
-    orders: repairStaleSampleOrders(repairAccessoryProductNames(repairDueDateSchedules(repairInvalidStatusOverrides((persisted && persisted.orders && persisted.orders.length) ? persisted.orders : generateMock())))),
+    orders: repairStaleSampleOrders(repairOverpaidInstallments(repairAccessoryProductNames(repairDueDateSchedules(repairInvalidStatusOverrides((persisted && persisted.orders && persisted.orders.length) ? persisted.orders : generateMock()))))),
     query: '',
     selectedCustomerId: null,
     uploadMsgDebt: '',
@@ -1204,7 +1277,9 @@
         if (field === 'status') patch.statusOverride = true;
         return Object.assign({}, i, patch);
       });
-      patch2[key] = updatedList;
+      // amountPaid/discount changing can create or clear an overpayment that needs to carry
+      // forward onto later งวด (or stop carrying) — see cascadeOverpayment for why.
+      patch2[key] = (field === 'amountPaid' || field === 'discount') ? cascadeOverpayment(updatedList) : updatedList;
       return Object.assign({}, o, orderPatch, patch2);
     });
     savePersisted();
@@ -2152,6 +2227,10 @@
           render();
           return;
         }
+        // Only redistributes when it amounts to a full early settlement — see cascadeOverpayment.
+        orders = orders.map(function (o) {
+          return Object.assign({}, o, { installments: cascadeOverpayment(o.installments), accessoryInstallments: cascadeOverpayment(o.accessoryInstallments || []) });
+        });
         state.orders = orders;
         state.isSampleData = false;
         savePersisted();
@@ -2250,6 +2329,10 @@
         render();
         return;
       }
+      // Only redistributes when it amounts to a full early settlement — see cascadeOverpayment.
+      orders = orders.map(function (o) {
+        return Object.assign({}, o, { installments: cascadeOverpayment(o.installments), accessoryInstallments: cascadeOverpayment(o.accessoryInstallments || []) });
+      });
       state.orders = orders;
       if (added || addedPenalty || updatedOnly) state.isSampleData = false;
       savePersisted();
