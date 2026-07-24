@@ -805,14 +805,19 @@
     var cancelledOrders = orders.filter(function (o) { return o.isCancelled; });
     var soldOrders = orders.filter(function (o) { return o.isSold; });
 
-    var paidSum = 0, overdueSum = 0, notDueSum = 0, paidInstCount = 0, overdueInstCount = 0, notDueInstCount = 0;
+    // Sub-labels on these 3 KPI cards count distinct CUSTOMERS (ราย), not installments (งวด) — per
+    // user request 2026-07-24, since a "งวด" count double-counts a customer with several
+    // installments in the same bucket. Keyed by customerKey (id+name, see its own comment above) so
+    // two different people sharing/missing a customerId never merge into one.
+    var paidSum = 0, overdueSum = 0, notDueSum = 0, paidCustomerSet = {}, overdueCustomerSet = {}, notDueCustomerSet = {};
     activeOrders.forEach(function (o) {
       paidSum += o.totalPaidFullRaw;
+      var ck = customerKey(o);
       o.installments.concat(o.accessoryInstallments || []).forEach(function (i) {
         var outstanding = Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0));
-        if (i.effectiveStatus === 'ชำระแล้ว') paidInstCount++;
-        else if (LATE_STATUSES.indexOf(i.effectiveStatus) !== -1) { overdueSum += outstanding; overdueInstCount++; }
-        else if (NOTDUE_STATUSES.indexOf(i.effectiveStatus) !== -1) { notDueSum += outstanding; notDueInstCount++; }
+        if (i.effectiveStatus === 'ชำระแล้ว') paidCustomerSet[ck] = true;
+        else if (LATE_STATUSES.indexOf(i.effectiveStatus) !== -1) { overdueSum += outstanding; overdueCustomerSet[ck] = true; }
+        else if (NOTDUE_STATUSES.indexOf(i.effectiveStatus) !== -1) { notDueSum += outstanding; notDueCustomerSet[ck] = true; }
       });
     });
     var cancelledSum = cancelledOrders.reduce(function (s, o) { return s + o.totalContractRaw; }, 0);
@@ -823,12 +828,12 @@
 
     var kpi = {
       totalContractDisp: fmtMoney(totalContract), contractCount: orders.length,
-      paidDisp: fmtMoney(paidSum), paidInstCount: paidInstCount,
+      paidDisp: fmtMoney(paidSum), paidCustomerCount: Object.keys(paidCustomerSet).length,
       netRemainingDisp: fmtMoney(netRemaining),
-      overdueDisp: fmtMoney(overdueSum), overdueInstCount: overdueInstCount,
+      overdueDisp: fmtMoney(overdueSum), overdueCustomerCount: Object.keys(overdueCustomerSet).length,
       cancelledDisp: fmtMoney(cancelledSum), cancelledCount: cancelledOrders.length,
       soldDisp: fmtMoney(soldSum), soldCount: soldOrders.length,
-      notDueDisp: fmtMoney(notDueSum), notDueInstCount: notDueInstCount,
+      notDueDisp: fmtMoney(notDueSum), notDueCustomerCount: Object.keys(notDueCustomerSet).length,
       paidRatePercent: paidRatePercent.toFixed(1)
     };
 
@@ -2395,12 +2400,12 @@
     // KPI grid
     html += '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; margin-bottom:24px;">';
     html += kpiCard('#4f46e5', '', '1px solid rgba(124,92,255,0.10)', '0 4px 14px rgba(124,92,255,0.06)', 'ยอดรวมสัญญา', '#4f46e5', '฿' + k.totalContractDisp, k.contractCount + ' สัญญา');
-    html += kpiCard('#12b886', '', '1px solid rgba(18,184,134,0.15)', '0 4px 14px rgba(18,184,134,0.06)', 'ยอดชำระแล้ว', '#12b886', '฿' + k.paidDisp, k.paidInstCount + ' งวด');
+    html += kpiCard('#12b886', '', '1px solid rgba(18,184,134,0.15)', '0 4px 14px rgba(18,184,134,0.06)', 'ยอดชำระแล้ว', '#12b886', '฿' + k.paidDisp, k.paidCustomerCount + ' ราย');
     html += kpiCard('#6b6785', '', '1px solid rgba(0,0,0,0.08)', '0 4px 14px rgba(0,0,0,0.04)', 'ยอดคงเหลือสุทธิ', '#2b2540', '฿' + k.netRemainingDisp, 'ยอดรวมสัญญา − ยอดชำระแล้ว');
-    html += kpiCard('#e03131', '', '1px solid rgba(224,49,49,0.15)', '0 4px 14px rgba(224,49,49,0.06)', 'ยอดค้างชำระ', '#e03131', '฿' + k.overdueDisp, k.overdueInstCount + ' งวด');
+    html += kpiCard('#e03131', '', '1px solid rgba(224,49,49,0.15)', '0 4px 14px rgba(224,49,49,0.06)', 'ยอดค้างชำระ', '#e03131', '฿' + k.overdueDisp, k.overdueCustomerCount + ' ราย');
     html += kpiCard('#d6336c', '', '1px solid rgba(214,51,108,0.15)', '0 4px 14px rgba(214,51,108,0.06)', 'ยกเลิกสัญญา คืนเครื่อง', '#d6336c', '฿' + k.cancelledDisp, k.cancelledCount + ' สัญญา');
     html += kpiCard('#f08c00', '', '1px solid rgba(240,140,0,0.15)', '0 4px 14px rgba(240,140,0,0.06)', 'จำหน่ายชื่อให้บริษัทติดตามหนี้', '#f08c00', '฿' + k.soldDisp, k.soldCount + ' สัญญา');
-    html += kpiCard('#adb5bd', '', '1px solid rgba(173,181,189,0.25)', '0 4px 14px rgba(0,0,0,0.04)', 'ยังไม่ถึงกำหนด', '#6b6785', '฿' + k.notDueDisp, k.notDueInstCount + ' งวด');
+    html += kpiCard('#adb5bd', '', '1px solid rgba(173,181,189,0.25)', '0 4px 14px rgba(0,0,0,0.04)', 'ยังไม่ถึงกำหนด', '#6b6785', '฿' + k.notDueDisp, k.notDueCustomerCount + ' ราย');
     html += '<div style="background:#fff; border-radius:14px; border:1px solid rgba(79,70,229,0.15); border-left:4px solid #4f46e5; padding:16px 18px; box-shadow:0 4px 14px rgba(79,70,229,0.06);">' +
       '<div style="font-size:12.5px; color:#6b6785; margin-bottom:8px;">อัตราการชำระจากยอดรวมสัญญา</div>' +
       '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:21px; color:#4f46e5; margin-bottom:8px;">' + k.paidRatePercent + '%</div>' +
