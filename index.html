@@ -470,35 +470,78 @@
     applyingRemote = false;
   }
   // ---- Merge helpers for cloudSaveNow ----
-  // Two clients editing different orders/customers at the same time must not clobber each other —
-  // only an order this client actually changed since lastServerSnapshot should override whatever's
-  // on the server; everything else should keep the server's copy untouched (which may itself
-  // contain another client's more recent edit to some OTHER order).
-  function orderValueEqual(a, b) {
+  // Three-way merge (base = lastServerSnapshot, local = this client's state, remote = what's
+  // currently on the server) at ORDER granularity for scalar fields, and at งวด (installment
+  // number) granularity within installments/accessoryInstallments — NOT at whole-order granularity.
+  // An earlier version merged whole orders: if two clients edited the SAME order at the same time
+  // (even different งวด, or even different header fields like ราคาสินค้า vs. one งวด's ยอดชำระ),
+  // whichever saved last silently discarded the other's edit to that entire order. Per user report
+  // 2026-07-24 (an installment fix vanishing when someone else was working on the same debtor
+  // record), conflicts must resolve per-field/per-งวด instead, so two clients touching different
+  // parts of the SAME order both survive.
+  function fieldsEqual(a, b) {
     if (a === b) return true;
-    if (!a || !b) return false;
+    if (a === undefined || b === undefined) return false;
     return JSON.stringify(a) === JSON.stringify(b);
   }
-  // Reference equality alone isn't enough — payment-file import clones every order up front even
-  // for rows that end up changing nothing, so a value comparison is needed to avoid treating the
-  // whole dataset as "changed" on every upload.
-  function diffChangedOrders(baseOrders, localOrders) {
-    var baseById = {};
-    (baseOrders || []).forEach(function (o) { baseById[o.orderId] = o; });
-    var changed = [];
-    localOrders.forEach(function (o) {
-      if (!orderValueEqual(baseById[o.orderId], o)) changed.push(o);
-    });
-    return changed;
+  // A single งวด's 3-way merge: if this client's own copy differs from the shared base, this
+  // client touched it — keep its version. Otherwise defer to remote (may hold another client's
+  // edit to this SAME งวด). No common ancestor (baseInst missing) means a งวด either side added
+  // independently — prefer local (this client's own save should reflect what it intends to write).
+  function mergeInstallment(baseInst, localInst, remoteInst) {
+    if (!baseInst) return (localInst && remoteInst) ? localInst : (localInst || remoteInst || null);
+    if (!localInst) return remoteInst || null;
+    if (!remoteInst) return localInst;
+    return fieldsEqual(baseInst, localInst) ? remoteInst : localInst;
   }
-  // Server copy wins for every order untouched by this client; changedOrders (this client's own
-  // edits/imports since lastServerSnapshot) win for the rest, including brand-new orders neither
-  // side has seen yet.
-  function mergeOrdersList(remoteOrders, changedOrders) {
-    var byId = {}, order = [];
-    (remoteOrders || []).forEach(function (o) { byId[o.orderId] = o; order.push(o.orderId); });
-    changedOrders.forEach(function (o) { if (!byId[o.orderId]) order.push(o.orderId); byId[o.orderId] = o; });
-    return order.map(function (id) { return byId[id]; });
+  function mergeInstallmentList(baseList, localList, remoteList) {
+    var baseByNo = {}, localByNo = {}, remoteByNo = {}, nos = {};
+    (baseList || []).forEach(function (i) { baseByNo[i.no] = i; nos[i.no] = true; });
+    (localList || []).forEach(function (i) { localByNo[i.no] = i; nos[i.no] = true; });
+    (remoteList || []).forEach(function (i) { remoteByNo[i.no] = i; nos[i.no] = true; });
+    var merged = Object.keys(nos)
+      .map(function (n) { return mergeInstallment(baseByNo[n], localByNo[n], remoteByNo[n]); })
+      .filter(Boolean);
+    merged.sort(function (a, b) { return (a.no || 0) - (b.no || 0); });
+    return merged;
+  }
+  // Whole-order 3-way merge: scalar fields (everything except the two installment arrays, which
+  // get their own per-งวด merge) follow the same "differs from base → this client touched it" rule
+  // as mergeInstallment above.
+  function mergeOrder(baseOrder, localOrder, remoteOrder) {
+    if (!baseOrder) {
+      if (localOrder && remoteOrder) {
+        return Object.assign({}, localOrder, {
+          installments: mergeInstallmentList(null, localOrder.installments, remoteOrder.installments),
+          accessoryInstallments: mergeInstallmentList(null, localOrder.accessoryInstallments || [], remoteOrder.accessoryInstallments || [])
+        });
+      }
+      return localOrder || remoteOrder || null;
+    }
+    if (!localOrder) return remoteOrder || null;
+    if (!remoteOrder) return localOrder;
+    if (fieldsEqual(baseOrder, localOrder)) return remoteOrder; // this client never touched this order
+    if (fieldsEqual(baseOrder, remoteOrder)) return localOrder; // nobody else touched it either
+    var merged = Object.assign({}, remoteOrder);
+    Object.keys(localOrder).forEach(function (key) {
+      if (key === 'installments' || key === 'accessoryInstallments') return;
+      if (!fieldsEqual(baseOrder[key], localOrder[key])) merged[key] = localOrder[key];
+    });
+    merged.installments = mergeInstallmentList(baseOrder.installments, localOrder.installments, remoteOrder.installments);
+    merged.accessoryInstallments = mergeInstallmentList(baseOrder.accessoryInstallments || [], localOrder.accessoryInstallments || [], remoteOrder.accessoryInstallments || []);
+    return merged;
+  }
+  function mergeOrdersList(baseOrders, localOrders, remoteOrders) {
+    var baseById = {}, localById = {}, remoteById = {}, orderIds = [], seen = {};
+    (baseOrders || []).forEach(function (o) { baseById[o.orderId] = o; });
+    (localOrders || []).forEach(function (o) { localById[o.orderId] = o; });
+    (remoteOrders || []).forEach(function (o) { remoteById[o.orderId] = o; });
+    // Remote's ordering is the shared source of truth; any local-only new order is appended.
+    (remoteOrders || []).forEach(function (o) { if (!seen[o.orderId]) { orderIds.push(o.orderId); seen[o.orderId] = true; } });
+    (localOrders || []).forEach(function (o) { if (!seen[o.orderId]) { orderIds.push(o.orderId); seen[o.orderId] = true; } });
+    return orderIds
+      .map(function (id) { return mergeOrder(baseById[id], localById[id], remoteById[id]); })
+      .filter(Boolean);
   }
   // Same idea for the per-customer note map: only carry over a note this client actually changed
   // (differs from base); anything else defers to the server's copy.
@@ -564,10 +607,10 @@
   // it captures everything typed during the wait, not a stale snapshot from when it was queued.
   var cloudSaveInFlight = false;
   var cloudSavePending = false;
-  // Fetches whatever is on the server RIGHT NOW and merges this client's own changes (since
+  // Fetches whatever is on the server RIGHT NOW and 3-way-merges this client's own changes (since
   // lastServerSnapshot) on top of it, instead of blindly overwriting the whole file — so a second
-  // client's concurrent edit to a DIFFERENT order/customer survives instead of getting silently
-  // discarded by whoever saves second (see lastServerSnapshot / diffChangedOrders above for why).
+  // client's concurrent edit, even to the SAME order/customer, survives as long as it touched a
+  // different field/งวด (see lastServerSnapshot / mergeOrdersList above for why).
   function cloudSaveNow() {
     if (!CLOUD_ENABLED || !db || !cloudConnected) return;
     if (cloudSaveInFlight) { cloudSavePending = true; return; }
@@ -581,7 +624,6 @@
     var localOrdersSnapshot = state.orders;
     var localNotesSnapshot = state.customerNotes;
     var localKeysSnapshot = Object.keys(appliedPaymentKeys);
-    var changedOrders = diffChangedOrders(baseOrders, localOrdersSnapshot);
     // Only clear cloudDirty once this was the LAST queued save (nothing newer waiting behind it)
     // and it actually succeeded — on failure or when another save is already queued, local state
     // still isn't confirmed saved, so cloudPoll() must keep refusing incoming snapshots.
@@ -633,7 +675,7 @@
         var remoteOrders = (remote && Array.isArray(remote.orders)) ? remote.orders : [];
         var remoteNotes = (remote && remote.customerNotes) ? remote.customerNotes : {};
         var remoteKeys = (remote && remote.appliedPaymentKeys) ? remote.appliedPaymentKeys : [];
-        var mergedOrders = mergeOrdersList(remoteOrders, changedOrders);
+        var mergedOrders = mergeOrdersList(baseOrders, localOrdersSnapshot, remoteOrders);
         var mergedNotes = mergeNotes(baseNotes, localNotesSnapshot, remoteNotes);
         var mergedKeys = unionKeys(remoteKeys, localKeysSnapshot);
         // isSampleData travels WITH the payload so applySnapshot can trust it explicitly instead of
