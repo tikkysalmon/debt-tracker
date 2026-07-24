@@ -60,6 +60,12 @@
   var DATASET_ID = /[?&]dataset=old\b/.test(window.location.search) ? 'old' : 'current';
   var IS_OLD_DATASET = DATASET_ID === 'old';
 
+  // Bump this string on every deploy (see checkForNewBuild below) — a browser tab left open all
+  // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
+  // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
+  // this constant shipped with) until they happened to refresh on their own.
+  var APP_BUILD = '2026-07-24.1';
+
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
   var NOTDUE_STATUSES = ['ยังไม่ถึงกำหนดชำระ', 'ถึงกำหนดชำระ'];
@@ -3155,6 +3161,7 @@
       '<div style="min-height:100vh; background: linear-gradient(160deg, #f3f1fb 0%, #eef2fb 45%, #f6f4fd 100%); position:relative; overflow-x:hidden; display:flex; flex-direction:column; animation:fadeInUp 0.5s ease;">' +
         '<div style="position:absolute; top:-120px; right:-100px; width:420px; height:420px; border-radius:50%; background:radial-gradient(circle, rgba(124,92,255,0.30), transparent 70%); filter:blur(10px); pointer-events:none; animation:floatBlobA 14s ease-in-out infinite;"></div>' +
         '<div style="position:absolute; bottom:-160px; left:-140px; width:480px; height:480px; border-radius:50%; background:radial-gradient(circle, rgba(79,124,255,0.22), transparent 70%); filter:blur(10px); pointer-events:none; animation:floatBlobB 16s ease-in-out infinite;"></div>' +
+        '<div id="buildBanner" style="position:relative; z-index:3;">' + buildBannerInner() + '</div>' +
         topbar +
         '<div style="flex:1; min-width:0; padding:28px 28px 90px; position:relative; z-index:1;"><div id="main-inner" style="max-width:1600px; margin:0 auto; position:relative;"></div></div>' +
       '</div>';
@@ -3215,6 +3222,7 @@
         case 'toggleFilters': state.showFilters = !state.showFilters; render(); break;
         case 'performSearch': performSearch(); break;
         case 'clearAllFilters': clearAllFilters(); break;
+        case 'reloadPage': window.location.reload(); break;
         case 'clearQuery': state.query = ''; render(); break;
         case 'exportCsv': exportFilteredCsv(CV.filteredOrders); break;
         case 'downloadTemplate': downloadTemplate(t.getAttribute('data-type')); break;
@@ -3322,11 +3330,49 @@
     if (el) el.innerHTML = cloudStatusPillInner();
   }
 
+  // ---------- New-build detection ----------
+  // Re-fetches this same page (cache-busted so a stale CDN/browser cache copy can't hide a real
+  // update) and compares its APP_BUILD against the one this tab loaded with. A tab that's been open
+  // all day is running whatever code existed at page-load — this is the only way it ever finds out
+  // a newer build (bug fix, schema change, etc.) exists, since nothing else in the page re-executes
+  // on its own. Fails silently: a failed check (offline, CORS on some hosts, file:// during local
+  // testing) is not worth alarming over, it just tries again next interval.
+  var newBuildAvailable = false;
+  function checkForNewBuild() {
+    fetch(window.location.pathname + '?_v=' + Date.now(), { cache: 'no-store' })
+      .then(function (res) { return res.text(); })
+      .then(function (html) {
+        var m = html.match(/APP_BUILD\s*=\s*'([^']+)'/);
+        if (m && m[1] && m[1] !== APP_BUILD && !newBuildAvailable) {
+          newBuildAvailable = true;
+          updateBuildBanner();
+        }
+      })
+      .catch(function () {});
+  }
+  function buildBannerInner() {
+    if (!newBuildAvailable) return '';
+    return '<div style="display:flex; align-items:center; justify-content:center; gap:10px; background:#fff3bf; border-bottom:1px solid #f0d030; color:#5c4a00; padding:9px 16px; font-size:13px; font-weight:600; text-align:center;">' +
+      '🔄 มีอัปเดตใหม่ของระบบ (อาจมีการแก้บั๊ก) — หน้านี้เปิดค้างไว้จะไม่ได้รับอัปเดตจนกว่าจะรีเฟรช' +
+      '<span data-action="reloadPage" style="text-decoration:underline; cursor:pointer; white-space:nowrap;">รีเฟรชตอนนี้ ↻</span>' +
+    '</div>';
+  }
+  function updateBuildBanner() {
+    var el = document.getElementById('buildBanner');
+    if (el) el.innerHTML = buildBannerInner();
+  }
+  var BUILD_CHECK_MS = 5 * 60 * 1000; // every 5 min — a bug fix reaching open tabs within minutes, not all day, without re-fetching this page constantly for every open session
+  function startBuildCheckPolling() {
+    setInterval(checkForNewBuild, BUILD_CHECK_MS);
+  }
+
   // ---------- Boot ----------
   if (IS_OLD_DATASET) document.title = 'ลูกหนี้เก่า (ก่อน 1/10/2025) — ระบบติดตามหนี้และผ่อนชำระ';
   buildShell();
   initEvents();
   render();
+  setTimeout(checkForNewBuild, 15000); // first check shortly after boot, not competing with initial cloud connect
+  startBuildCheckPolling();
   if (CLOUD_ENABLED && initCloud()) {
     // Open access — connects straight to the shared cloud state, no login step.
     cloudConnect().then(function () {
