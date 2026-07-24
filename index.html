@@ -548,41 +548,59 @@
       if (cloudSavePending) { cloudSavePending = false; cloudSaveNow(); }
       else if (success) { cloudDirty = false; }
     }
-    // Cheap metadata check first — only pay for a full re-download (the file runs 15-20MB) when
-    // something has actually changed on the server since our last sync. The common case (nobody
-    // else saved in between) needs no extra network trip at all: our own lastServerSnapshot IS
-    // already the current remote content.
-    findCloudFileMeta().then(function (item) {
-      if (item && lastServerTs && item.updated_at === lastServerTs) {
-        uploadMerged({ orders: baseOrders, customerNotes: baseNotes, appliedPaymentKeys: lastServerSnapshot.appliedPaymentKeys });
-        return;
+    // Two clients can both reach this point with the SAME remote snapshot as their merge base (one
+    // downloads it, then before its upload lands the other downloads that same still-current copy
+    // too) — each merge looks correct in isolation, but whichever upload wins the race silently
+    // discards the other's already-merged edit, because a plain upload has no way to know the
+    // remote moved on underneath it. attempt() re-checks the file's updated_at immediately before
+    // writing and, if it changed since the copy this merge was built from, redoes the merge against
+    // the newer remote instead of overwriting it — closing all but a razor-thin final window (the
+    // gap between that last check and the upload landing), which a Storage-file upload with no
+    // compare-and-swap primitive can't close entirely.
+    var SAVE_RETRY_BUDGET = 5;
+    function attempt(retriesLeft) {
+      findCloudFileMeta().then(function (item) {
+        if (item && lastServerTs && item.updated_at === lastServerTs) {
+          proceed(item ? item.updated_at : null, { orders: baseOrders, customerNotes: baseNotes, appliedPaymentKeys: lastServerSnapshot.appliedPaymentKeys });
+          return;
+        }
+        var remoteTs = item ? item.updated_at : null;
+        db.storage.from(CLOUD_BUCKET).download(CLOUD_FILE).then(function (res) {
+          if (res.error) { proceed(remoteTs, null); return; }
+          res.data.text().then(function (t) {
+            var remote = null;
+            try { remote = JSON.parse(t); } catch (e) {}
+            proceed(remoteTs, remote);
+          });
+        }).catch(function () { proceed(remoteTs, null); });
+      }).catch(function () { proceed(null, null); });
+
+      // remoteTs is the updated_at this merge's `remote` reflects (null = no remote file yet, or
+      // the fetch failed and we're merging onto an empty base — same effect as the old bootstrap).
+      function proceed(remoteTs, remote) {
+        var remoteOrders = (remote && Array.isArray(remote.orders)) ? remote.orders : [];
+        var remoteNotes = (remote && remote.customerNotes) ? remote.customerNotes : {};
+        var remoteKeys = (remote && remote.appliedPaymentKeys) ? remote.appliedPaymentKeys : [];
+        var mergedOrders = mergeOrdersList(remoteOrders, changedOrders);
+        var mergedNotes = mergeNotes(baseNotes, localNotesSnapshot, remoteNotes);
+        var mergedKeys = unionKeys(remoteKeys, localKeysSnapshot);
+        // isSampleData travels WITH the payload so applySnapshot can trust it explicitly instead of
+        // guessing from orders.length — a freshly-seeded bucket's built-in demo data (generateMock())
+        // is non-empty too, and inferring "no longer sample" from length alone meant the demo orders
+        // silently got treated as real and merged alongside the first genuine upload (see
+        // repairStaleSampleOrders below for cleaning up datasets already affected by this).
+        var payload = { orders: mergedOrders, customerNotes: mergedNotes, appliedPaymentKeys: mergedKeys, isSampleData: state.isSampleData, _meta: { updatedAt: new Date().toISOString(), updatedBy: myClientId } };
+        var text = JSON.stringify(payload);
+        var blob = new Blob([text], { type: 'application/json' });
+        if (retriesLeft <= 0) { doUpload(mergedOrders, mergedNotes, mergedKeys, blob, text); return; }
+        findCloudFileMeta().then(function (freshItem) {
+          var freshTs = freshItem ? freshItem.updated_at : null;
+          if (freshTs !== remoteTs) { attempt(retriesLeft - 1); return; }
+          doUpload(mergedOrders, mergedNotes, mergedKeys, blob, text);
+        }).catch(function () { doUpload(mergedOrders, mergedNotes, mergedKeys, blob, text); });
       }
-      return db.storage.from(CLOUD_BUCKET).download(CLOUD_FILE).then(function (res) {
-        if (res.error) { uploadMerged(null); return; }
-        return res.data.text().then(function (t) {
-          var remote = null;
-          try { remote = JSON.parse(t); } catch (e) {}
-          uploadMerged(remote);
-        });
-      });
-    }).catch(function () { uploadMerged(null); });
-    function uploadMerged(remote) {
-      // No remote yet (first-ever save) or it failed to parse/download — merge onto an empty base
-      // rather than aborting, same effect as the old bootstrap upload.
-      var remoteOrders = (remote && Array.isArray(remote.orders)) ? remote.orders : [];
-      var remoteNotes = (remote && remote.customerNotes) ? remote.customerNotes : {};
-      var remoteKeys = (remote && remote.appliedPaymentKeys) ? remote.appliedPaymentKeys : [];
-      var mergedOrders = mergeOrdersList(remoteOrders, changedOrders);
-      var mergedNotes = mergeNotes(baseNotes, localNotesSnapshot, remoteNotes);
-      var mergedKeys = unionKeys(remoteKeys, localKeysSnapshot);
-      // isSampleData travels WITH the payload so applySnapshot can trust it explicitly instead of
-      // guessing from orders.length — a freshly-seeded bucket's built-in demo data (generateMock())
-      // is non-empty too, and inferring "no longer sample" from length alone meant the demo orders
-      // silently got treated as real and merged alongside the first genuine upload (see
-      // repairStaleSampleOrders below for cleaning up datasets already affected by this).
-      var payload = { orders: mergedOrders, customerNotes: mergedNotes, appliedPaymentKeys: mergedKeys, isSampleData: state.isSampleData, _meta: { updatedAt: new Date().toISOString(), updatedBy: myClientId } };
-      var text = JSON.stringify(payload);
-      var blob = new Blob([text], { type: 'application/json' });
+    }
+    function doUpload(mergedOrders, mergedNotes, mergedKeys, blob, text) {
       db.storage.from(CLOUD_BUCKET).upload(CLOUD_FILE, blob, { upsert: true, contentType: 'application/json' }).then(function (res) {
         if (res.error) {
           cloudStatus = 'offline';
@@ -610,6 +628,7 @@
         finishSave(false);
       });
     }
+    attempt(SAVE_RETRY_BUDGET);
   }
   function cloudPoll() {
     if (!CLOUD_ENABLED || !db || !cloudConnected) return;
@@ -873,11 +892,18 @@
         }
       });
       allInsts.forEach(function (i) {
-        var outstanding = Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0));
         var g = STATUS_TO_GROUP[i.effectiveStatus] || i.effectiveStatus;
+        // ชำระแล้ว/ชำระบางส่วน installments are already closed out (or partly so) — their bucket
+        // amount should be money actually collected, not what's left owing (outstanding is ~0 for a
+        // fully-paid installment, which made the "ชำระแล้ว" card show almost ฿0 and contradict the
+        // ยอดชำระแล้ว KPI above). Every other bucket (ค้างชำระ, ยังไม่ถึงกำหนด, ...) is still an open
+        // balance, so those keep showing outstanding.
+        var amountForBucket = g === 'ชำระแล้ว'
+          ? Number(i.amountPaid || 0)
+          : Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0));
         var grp = ensureDueGroup(g);
-        grp.amount += outstanding;
-        grp.subAmounts[i.effectiveStatus] = (grp.subAmounts[i.effectiveStatus] || 0) + outstanding;
+        grp.amount += amountForBucket;
+        grp.subAmounts[i.effectiveStatus] = (grp.subAmounts[i.effectiveStatus] || 0) + amountForBucket;
       });
     });
     var dueDateBreakdown = STATUS_GROUP_META
