@@ -906,6 +906,17 @@
         grp.subAmounts[i.effectiveStatus] = (grp.subAmounts[i.effectiveStatus] || 0) + amountForBucket;
       });
     });
+    // Per user decision (2026-07-24): the "ชำระแล้ว" card's total must equal the ยอดชำระแล้ว KPI
+    // above it exactly, always — so it's pinned to the same paidSum variable instead of being
+    // re-derived here. A per-installment sum can never reach that figure on its own: it structurally
+    // excludes เงินดาวน์ (order-level, not tied to any installment) and excludes already-paid
+    // installments that belong to orders which still have OTHER open installments elsewhere (those
+    // orders' paid installments live under this same group's per-installment loop above, but the
+    // order itself is scoped into "ยังไม่ถึงกำหนด" for orderSet/count purposes, not here). The
+    // children (ชำระแล้ว/ชำระบางส่วน sub-rows) are left as real, unscaled per-installment figures —
+    // they intentionally will NOT sum to this total; they're "how much came in through fully-vs-
+    // partially-paid installments," a different, narrower question than "total money collected."
+    if (dueGroups['ชำระแล้ว']) dueGroups['ชำระแล้ว'].amount = paidSum;
     var dueDateBreakdown = STATUS_GROUP_META
       .filter(function (g) { return dueGroups[g.label]; })
       .map(function (g) {
