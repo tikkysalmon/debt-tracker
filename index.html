@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.21';
+  var APP_BUILD = '2026-07-30.22';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1258,13 +1258,14 @@
           customerName: list[0].customerName, customerId: list[0].customerId, orderCount: list.length,
           contractRaw: contractRaw, contractDisp: fmtMoney(contractRaw),
           paidRaw: paidRaw, paidDisp: fmtMoney(paidRaw),
-          overdueDisp: fmtMoney(overdueRaw), notDueDisp: fmtMoney(notDueRaw)
+          overdueRaw: overdueRaw, overdueDisp: fmtMoney(overdueRaw), notDueDisp: fmtMoney(notDueRaw)
         };
       })
       .sort(function (a, b) { return b.contractRaw - a.contractRaw; });
     var multiOrderTotalContract = multiOrderCustomers.reduce(function (s, c) { return s + c.contractRaw; }, 0);
     var multiOrderTotalPaid = multiOrderCustomers.reduce(function (s, c) { return s + c.paidRaw; }, 0);
     var multiOrderTotalOrders = multiOrderCustomers.reduce(function (s, c) { return s + c.orderCount; }, 0);
+    var multiOrderTotalOverdue = multiOrderCustomers.reduce(function (s, c) { return s + c.overdueRaw; }, 0);
     var multiOrderRemainingRaw = Math.max(0, multiOrderTotalContract - multiOrderTotalPaid);
     var multiOrderSegs = [
       { label: 'ชำระแล้ว', color: '#4f7cff', amount: multiOrderTotalPaid },
@@ -1273,6 +1274,7 @@
     var multiOrderSummary = {
       count: multiOrderCustomers.length, totalOrderCount: multiOrderTotalOrders,
       contractDisp: fmtMoney(multiOrderTotalContract), paidDisp: fmtMoney(multiOrderTotalPaid), remainingDisp: fmtMoney(multiOrderRemainingRaw),
+      overdueDisp: fmtMoney(multiOrderTotalOverdue),
       donut: { conic: buildConicGradient(multiOrderSegs), segments: multiOrderSegs.map(function (s) { return Object.assign({}, s, { pctDisp: s.pct.toFixed(1), amountDisp: fmtMoney(s.amount) }); }) },
       customers: multiOrderCustomers
     };
@@ -2974,6 +2976,7 @@
         '<div style="border-left:3px solid #7c5cff; background:rgba(255,255,255,0.5); border-radius:12px; padding:12px 14px;"><div style="font-size:11.5px; color:#6b6785;">จำนวนคำสั่งซื้อทั้งหมด</div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#2b2540;">' + sm.totalOrderCount + ' คำสั่งซื้อ</div></div>' +
         '<div style="border-left:3px solid #4f46e5; background:rgba(255,255,255,0.5); border-radius:12px; padding:12px 14px;"><div style="font-size:11.5px; color:#6b6785;">ยอดรวมสัญญา</div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#4f46e5;">฿' + sm.contractDisp + '</div></div>' +
         '<div style="border-left:3px solid #12b886; background:rgba(255,255,255,0.5); border-radius:12px; padding:12px 14px;"><div style="font-size:11.5px; color:#6b6785;">ยอดชำระแล้ว</div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#12b886;">฿' + sm.paidDisp + '</div></div>' +
+        '<div style="border-left:3px solid #e03131; background:rgba(255,255,255,0.5); border-radius:12px; padding:12px 14px;"><div style="font-size:11.5px; color:#6b6785;">ยอดค้างชำระ</div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#e03131;">฿' + sm.overdueDisp + '</div></div>' +
         '<div style="border-left:3px solid #f08c00; background:rgba(255,255,255,0.5); border-radius:12px; padding:12px 14px;"><div style="font-size:11.5px; color:#6b6785;">ยอดคงเหลือ</div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#f08c00;">฿' + sm.remainingDisp + '</div></div>' +
       '</div>' +
       '<div style="display:flex; align-items:center; gap:24px; flex-wrap:wrap; margin-bottom:12px;">' +
