@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.17';
+  var APP_BUILD = '2026-07-30.18';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1318,11 +1318,28 @@
     // not the customer's total ค้างชำระ across all months). Recomputed only on this locally-scoped
     // copy of the filtered rows — never mutates the cached computeOrders() result other views rely
     // on — and only when a per-งวด filter is actually active; otherwise the unfiltered totals stand.
+    // Once a per-งวด filter narrows which งวด actually matched, staff expect both the ยอดค้างชำระ/
+    // งวดค้าง columns AND the "โหลดข้อมูลเป็น CSV" export to reflect just that filtered slice — not
+    // the order's whole ค้างชำระ total, and not every งวด of every matched order (per user request
+    // 2026-07-30: filtering "ล็อคเครื่อง" + "ครบกำหนด เม.ย. 2026" should show/export only the
+    // matching April ล็อคเครื่อง งวด, not the customer's full history). filteredInstallments/
+    // filteredAccessoryInstallments (used by exportFilteredCsv) have no STATUS_TO_GROUP restriction
+    // — they reflect whatever the filters actually selected (e.g. ชำระแล้ว or a paid-date range
+    // still needs to export correctly), unlike ยอดค้างชำระ which is specifically the overdue subset.
+    // Recomputed only on this locally-scoped copy of the filtered rows — never mutates the cached
+    // computeOrders() result other views rely on — and only when a per-งวด filter is active;
+    // otherwise the unfiltered totals/full installment lists stand.
     if (hasPerInstFilter) {
       filteredOrders = filteredOrders.map(function (o) {
-        var matches = allInstsOf(o).filter(function (i) { return STATUS_TO_GROUP[i.effectiveStatus] === 'ค้างชำระ' && instMatchesPerInstFilters(i); });
-        var raw = matches.reduce(function (s, i) { return s + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0);
-        return Object.assign({}, o, { trueOverdueRaw: raw, trueOverdueDisp: fmtMoney(raw), overdueCount: matches.length });
+        var filteredInstallments = o.installments.filter(instMatchesPerInstFilters);
+        var filteredAccessoryInstallments = (o.accessoryInstallments || []).filter(instMatchesPerInstFilters);
+        var overdueMatches = filteredInstallments.concat(filteredAccessoryInstallments).filter(function (i) { return STATUS_TO_GROUP[i.effectiveStatus] === 'ค้างชำระ'; });
+        var raw = overdueMatches.reduce(function (s, i) { return s + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0);
+        return Object.assign({}, o, {
+          filteredInstallments: filteredInstallments,
+          filteredAccessoryInstallments: filteredAccessoryInstallments,
+          trueOverdueRaw: raw, trueOverdueDisp: fmtMoney(raw), overdueCount: overdueMatches.length
+        });
       });
     }
     // Once the user presses ค้นหา we always show the result table — even with no criteria,
@@ -1853,9 +1870,14 @@
       });
     }
     orders.forEach(function (o) {
-      addRows(o.customerId, o.customerName, o.orderId, o.installments);
+      // When a per-งวด filter is active, computeView() attaches filteredInstallments/
+      // filteredAccessoryInstallments (only the งวด that matched) — export those instead of every
+      // งวด the order has, so the file matches what the filters actually selected on screen.
+      var mainInsts = o.filteredInstallments || o.installments;
+      var accInsts = o.filteredAccessoryInstallments || o.accessoryInstallments;
+      addRows(o.customerId, o.customerName, o.orderId, mainInsts);
       // ดาวน์+อุปกรณ์เสริม orders export under their own accessory SO — it's a separate CRM bill.
-      if (o.accessoryInstallments && o.accessoryInstallments.length) addRows(o.customerId, o.customerName, o.accessoryOrderId || (o.orderId + ' (อุปกรณ์เสริม)'), o.accessoryInstallments);
+      if (accInsts && accInsts.length) addRows(o.customerId, o.customerName, o.accessoryOrderId || (o.orderId + ' (อุปกรณ์เสริม)'), accInsts);
     });
     downloadBlob(content, 'debt_data_export.csv');
   }
