@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.8';
+  var APP_BUILD = '2026-07-30.9';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -320,6 +320,39 @@
       return next;
     });
     return touched ? result : list;
+  }
+  // Splits ONE payment-file row's amount across consecutive not-yet-fully-paid งวด, starting at
+  // insts[0], capping each at its own remaining due — for the "no งวดที่ column" import path, where
+  // a customer's single transaction can cover several งวด at once (e.g. paying 3 งวด worth in one
+  // go) but there's nothing in the file to say which งวด each portion belongs to. Previously the
+  // whole row amount landed on ONE งวด only, leaving later งวด stuck unpaid even though the money to
+  // cover them had already arrived (see [[project-debt-tracker-site]] memory, 2026-07-30 — a
+  // customer's combined ฿10,500 payment covering 3 งวด left the middle one at ฿0 and showing
+  // "ล็อคเครื่อง"). Unlike cascadeOverpayment(), this doesn't require the whole ORDER to be settled —
+  // it just spreads exactly this one payment's amount as far as it goes. Any leftover once the money
+  // runs out (i.e. not enough left to fill a WHOLE next งวด) is added onto the LAST งวด actually
+  // filled — shown there as เกิน — rather than opening the next งวด with a partial amount, per user
+  // request.
+  function distributeCombinedPayment(insts, amount) {
+    var remaining = amount, touched = [];
+    for (var i = 0; i < insts.length && remaining > 0.005; i++) {
+      var inst = insts[i];
+      var due = Math.max(0, toNumber(inst.amountDue) - toNumber(inst.discount) - toNumber(inst.amountPaid));
+      var isLastCandidate = (i === insts.length - 1);
+      if (!isLastCandidate && remaining >= due - 0.005) {
+        inst.amountPaid = toNumber(inst.amountPaid) + due;
+        remaining -= due;
+        touched.push(inst);
+      } else if (touched.length && remaining < due - 0.005) {
+        touched[touched.length - 1].amountPaid = toNumber(touched[touched.length - 1].amountPaid) + remaining;
+        remaining = 0;
+      } else {
+        inst.amountPaid = toNumber(inst.amountPaid) + remaining;
+        touched.push(inst);
+        remaining = 0;
+      }
+    }
+    return touched;
   }
   // One-time self-heal for orders whose overpayment (a lump early-settlement payment recorded
   // against a single งวด) never got carried forward onto later งวด — see cascadeOverpayment() above
@@ -2409,6 +2442,9 @@
         // A penalty-tagged row's amount is bigger than the installment actually owes — the
         // excess over what's still due on this installment IS the fee (late fee / unlock fee
         // are fixed at ฿500 each occurrence), no need to already have a "charged" figure on record.
+        var multiInsts = [inst]; // งวด actually touched by this row — normally just `inst`, but a
+        // combined no-งวดที่ payment can spread across several (see below), and paidDate/discount/
+        // note/status below must stamp every one of them, not just the first.
         if (amountPaid !== '') {
           if (appliedPaymentKeys[payKey]) { duplicate++; return; } // same row already added before → skip
           appliedPaymentKeys[payKey] = true;
@@ -2430,6 +2466,15 @@
               addedPenalty++;
             }
             if (installmentPortion > 0) added++;
+          } else if (no <= 0) {
+            // No งวดที่ column — this one row's amount may cover more than one งวด at once (e.g. a
+            // customer settling several งวด in a single transaction). Spread it starting at `inst`
+            // instead of dumping everything on just that one งวด, which used to leave later งวด
+            // stuck unpaid despite the money for them having already arrived.
+            var pool = sortedInsts.slice(sortedInsts.indexOf(inst));
+            var touchedByFill = distributeCombinedPayment(pool, rowAmount);
+            multiInsts = touchedByFill.length ? touchedByFill : [inst];
+            added++;
           } else {
             inst.amountPaid = toNumber(inst.amountPaid) + rowAmount;
             added++;
@@ -2437,17 +2482,19 @@
         } else {
           updatedOnly++;
         }
-        if (paidDate !== '') inst.paidDate = toDateString(paidDate); // latest payment date wins
-        if (discount !== '') inst.discount = toNumber(discount);
-        if (note !== '') inst.note = String(note);
-        // Regular payment exports tag every row's "สถานะการชำระ" as "สำเร็จ" (the bank/QR
-        // transaction succeeded) — that's not a debt-collection status and must NOT override the
-        // auto-computed one, or every paid installment gets stuck showing "สำเร็จ" forever instead
-        // of "ชำระแล้ว"/"ค้างชำระ"/etc. Only accept values that are real STATUS_META entries.
-        if (status !== '' && STATUS_META[String(status)]) {
-          inst.status = String(status); inst.statusOverride = !!MANUAL_ONLY_STATUSES[String(status)];
-          Object.assign(order, stickyAccountStatusPatch(String(status)));
-        }
+        multiInsts.forEach(function (mi) {
+          if (paidDate !== '') mi.paidDate = toDateString(paidDate); // latest payment date wins
+          if (discount !== '') mi.discount = toNumber(discount);
+          if (note !== '') mi.note = String(note);
+          // Regular payment exports tag every row's "สถานะการชำระ" as "สำเร็จ" (the bank/QR
+          // transaction succeeded) — that's not a debt-collection status and must NOT override the
+          // auto-computed one, or every paid installment gets stuck showing "สำเร็จ" forever instead
+          // of "ชำระแล้ว"/"ค้างชำระ"/etc. Only accept values that are real STATUS_META entries.
+          if (status !== '' && STATUS_META[String(status)]) {
+            mi.status = String(status); mi.statusOverride = !!MANUAL_ONLY_STATUSES[String(status)];
+          }
+        });
+        if (status !== '' && STATUS_META[String(status)]) Object.assign(order, stickyAccountStatusPatch(String(status)));
       });
       // Nothing matched at all (not even duplicates) → likely wrong columns OR debtor not imported yet.
       if (added === 0 && addedPenalty === 0 && updatedOnly === 0 && duplicate === 0) {
