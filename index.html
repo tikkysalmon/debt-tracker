@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.5';
+  var APP_BUILD = '2026-07-30.6';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -447,6 +447,23 @@
     db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { persistSession: false } });
     return true;
   }
+  // The uploaded object itself carries cacheControl:max-age=3600 (the supabase-js upload() default
+  // when not overridden — confirmed via the bucket's list() metadata, 2026-07-30) and the
+  // SDK's download() is a plain fetch() under the hood, so depending on the browser/CDN edge a
+  // client can get an HTTP-cached copy of state.json up to an hour stale even right after a full
+  // page reload — this is what made one staff member's tab keep showing old totals no matter how
+  // many times they refreshed (see [[project-debt-tracker-site]] memory). Bypasses the SDK entirely
+  // for reads: fetches the public object URL directly with cache:'no-store' plus a cache-busting
+  // query param, so no HTTP cache layer (browser or CDN) can ever serve a stale body regardless of
+  // whatever Cache-Control header it was given. Shaped to match the {data:{text},error} contract
+  // db.storage...download() returns, so every call site can swap in this drop-in replacement.
+  function downloadCloudFile() {
+    var url = SUPABASE_URL + '/storage/v1/object/public/' + CLOUD_BUCKET + '/' + CLOUD_FILE + '?_=' + Date.now();
+    return fetch(url, { cache: 'no-store' }).then(function (res) {
+      if (!res.ok) return { data: null, error: new Error('HTTP ' + res.status) };
+      return res.text().then(function (text) { return { data: { text: function () { return Promise.resolve(text); } }, error: null }; });
+    }).catch(function (err) { return { data: null, error: err }; });
+  }
   function currentPayload() {
     return {
       orders: state.orders, customerNotes: state.customerNotes, appliedPaymentKeys: Object.keys(appliedPaymentKeys),
@@ -578,7 +595,7 @@
   function cloudConnect() {
     return findCloudFileMeta().then(function (item) {
       if (!item) { cloudConnected = true; cloudStatus = 'online'; cloudSaveNow(); return true; } // first-ever: seed the bucket
-      return db.storage.from(CLOUD_BUCKET).download(CLOUD_FILE).then(function (res) {
+      return downloadCloudFile().then(function (res) {
         cloudConnected = true;
         if (res.error) throw res.error;
         return res.data.text().then(function (text) {
@@ -665,7 +682,7 @@
           return;
         }
         var remoteTs = item ? item.updated_at : null;
-        db.storage.from(CLOUD_BUCKET).download(CLOUD_FILE).then(function (res) {
+        downloadCloudFile().then(function (res) {
           if (res.error) { proceed(remoteTs, null); return; }
           res.data.text().then(function (t) {
             var remote = null;
@@ -701,7 +718,7 @@
       }
     }
     function doUpload(mergedOrders, mergedNotes, mergedKeys, blob, text) {
-      db.storage.from(CLOUD_BUCKET).upload(CLOUD_FILE, blob, { upsert: true, contentType: 'application/json' }).then(function (res) {
+      db.storage.from(CLOUD_BUCKET).upload(CLOUD_FILE, blob, { upsert: true, contentType: 'application/json', cacheControl: '0' }).then(function (res) {
         if (res.error) {
           cloudStatus = 'offline';
           cloudErrorDetail = (res.error.message || JSON.stringify(res.error)) + ' (payload ~' + Math.round(text.length / 1024) + ' KB)';
@@ -747,7 +764,7 @@
         updateCloudStatus();
         return;
       }
-      db.storage.from(CLOUD_BUCKET).download(CLOUD_FILE).then(function (res) {
+      downloadCloudFile().then(function (res) {
         if (res.error) { cloudStatus = 'offline'; updateCloudStatus(); return; }
         res.data.text().then(function (text) {
           lastServerTs = item.updated_at;
