@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-24.2';
+  var APP_BUILD = '2026-07-30.1';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -860,7 +860,19 @@
       // account-status badge disappear — see stickyAccountStatusPatch for why.
       var isCancelled = !!o.wasCancelled || allInstallments.some(function (i) { return i.effectiveStatus === 'ยกเลิกสัญญา คืนเครื่อง'; });
       var isSold = !!o.wasSold || allInstallments.some(function (i) { return i.effectiveStatus === 'จำหน่ายชื่อให้บริษัทติดตามหนี้'; });
-      var overdueCount = allInstallments.filter(function (i) { return ['ชำระแล้ว', 'ยังไม่ถึงกำหนดชำระ', 'ถึงกำหนดชำระ'].indexOf(i.effectiveStatus) === -1; }).length;
+      // "ยอดค้างชำระ"/"งวดค้าง" on the due-report table (renderTracking) must mean ONLY the 5
+      // statuses staff actually consider "ค้างชำระจริงๆ" (the STATUS_GROUP_META 'ค้างชำระ' group —
+      // same grouping the "แยกสถานะการชำระ" dashboard widget already uses), NOT every unpaid งวด.
+      // Previously this counted/summed anything that wasn't ชำระแล้ว/ยังไม่ถึงกำหนดชำระ/ถึงกำหนดชำระ,
+      // which silently folded in ยังไม่ถึงกำหนดชำระ-adjacent future งวด via totalOutstandingRaw
+      // (a separate bug) and also over-counted ชำระบางส่วน/หนี้สงสัยจะสูญ/จำหน่ายชื่อ/ยกเลิกสัญญา งวด
+      // as "ค้าง" here. Kept separate from lateInsts/lateOutstandingRaw/lateCount below (LATE_STATUSES,
+      // 7 statuses) — those still drive grading (เกรด A/B/หนี้สงสัยจะสูญ), age buckets, purchase-type
+      // breakdown, and the monthly trend, which are a distinct, established "at risk" concept nobody
+      // asked to change.
+      var trueOverdueInsts = allInstallments.filter(function (i) { return STATUS_TO_GROUP[i.effectiveStatus] === 'ค้างชำระ'; });
+      var trueOverdueRaw = trueOverdueInsts.reduce(function (s, i) { return s + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0);
+      var overdueCount = trueOverdueInsts.length;
       var lateInsts = allInstallments.filter(function (i) { return LATE_STATUSES.indexOf(i.effectiveStatus) !== -1; });
       var lateOutstandingRaw = lateInsts.reduce(function (s, i) { return s + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0);
       return Object.assign({}, o, {
@@ -890,6 +902,8 @@
         discountDisp: fmtMoney(o.discount),
         contractDateDisp: fmtDate(o.contractDate),
         overdueCount: overdueCount,
+        trueOverdueRaw: trueOverdueRaw,
+        trueOverdueDisp: fmtMoney(trueOverdueRaw),
         isCancelled: isCancelled,
         isSold: isSold,
         lateCount: lateInsts.length,
@@ -909,14 +923,23 @@
     // user request 2026-07-24, since a "งวด" count double-counts a customer with several
     // installments in the same bucket. Keyed by customerKey (id+name, see its own comment above) so
     // two different people sharing/missing a customerId never merge into one.
-    var paidSum = 0, overdueSum = 0, notDueSum = 0, paidCustomerSet = {}, overdueCustomerSet = {}, notDueCustomerSet = {};
+    // "ยอดค้างชำระ" here means ONLY the 5 statuses in the STATUS_GROUP_META 'ค้างชำระ' group — same
+    // fix/reasoning as trueOverdueRaw in computeOrdersUncached. ชำระบางส่วน's remaining balance and
+    // หนี้สงสัยจะสูญ's outstanding balance used to be folded into this via the broader LATE_STATUSES;
+    // หนี้สงสัยจะสูญ now gets its own bucket below (badDebtSum) — mirroring the group the
+    // "แยกสถานะการชำระ" widget already shows it under — so that money stays visible instead of
+    // vanishing from the donut/KPI. ชำระบางส่วน's remainder is left untracked here on purpose, same
+    // as the "แยกสถานะการชำระ" widget (its ชำระแล้ว group shows amountPaid, not what's still owed).
+    var paidSum = 0, overdueSum = 0, notDueSum = 0, badDebtSum = 0, paidCustomerSet = {}, overdueCustomerSet = {}, notDueCustomerSet = {}, badDebtCustomerSet = {};
     activeOrders.forEach(function (o) {
       paidSum += o.totalPaidFullRaw;
       var ck = customerKey(o);
       o.installments.concat(o.accessoryInstallments || []).forEach(function (i) {
         var outstanding = Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0));
+        var grp = STATUS_TO_GROUP[i.effectiveStatus];
         if (i.effectiveStatus === 'ชำระแล้ว') paidCustomerSet[ck] = true;
-        else if (LATE_STATUSES.indexOf(i.effectiveStatus) !== -1) { overdueSum += outstanding; overdueCustomerSet[ck] = true; }
+        else if (grp === 'ค้างชำระ') { overdueSum += outstanding; overdueCustomerSet[ck] = true; }
+        else if (grp === 'หนี้สงสัยจะสูญ') { badDebtSum += outstanding; badDebtCustomerSet[ck] = true; }
         else if (NOTDUE_STATUSES.indexOf(i.effectiveStatus) !== -1) { notDueSum += outstanding; notDueCustomerSet[ck] = true; }
       });
     });
@@ -931,16 +954,18 @@
       paidDisp: fmtMoney(paidSum), paidCustomerCount: Object.keys(paidCustomerSet).length,
       netRemainingDisp: fmtMoney(netRemaining),
       overdueDisp: fmtMoney(overdueSum), overdueCustomerCount: Object.keys(overdueCustomerSet).length,
+      badDebtDisp: fmtMoney(badDebtSum), badDebtCustomerCount: Object.keys(badDebtCustomerSet).length,
       cancelledDisp: fmtMoney(cancelledSum), cancelledCount: cancelledOrders.length,
       soldDisp: fmtMoney(soldSum), soldCount: soldOrders.length,
       notDueDisp: fmtMoney(notDueSum), notDueCustomerCount: Object.keys(notDueCustomerSet).length,
       paidRatePercent: paidRatePercent.toFixed(1)
     };
 
-    var donutTotal = paidSum + overdueSum + cancelledSum + soldSum + notDueSum;
+    var donutTotal = paidSum + overdueSum + badDebtSum + cancelledSum + soldSum + notDueSum;
     var rawSegs = [
       { label: 'ยอดชำระแล้ว', color: '#4f7cff', amount: paidSum },
       { label: 'ค้างชำระ', color: '#e03131', amount: overdueSum },
+      { label: 'หนี้สงสัยจะสูญ', color: '#9c1f4a', amount: badDebtSum },
       { label: 'ยกเลิกสัญญา คืนเครื่อง', color: '#d6336c', amount: cancelledSum },
       { label: 'จำหน่ายชื่อให้บริษัทติดตามหนี้', color: '#f08c00', amount: soldSum },
       { label: 'ยังไม่ถึงกำหนด', color: '#adb5bd', amount: notDueSum }
@@ -949,7 +974,7 @@
 
     var trendMap = {};
     activeOrders.forEach(function (o) { o.installments.concat(o.accessoryInstallments || []).forEach(function (i) {
-      if (LATE_STATUSES.indexOf(i.effectiveStatus) === -1 || !i.dueDate) return;
+      if (STATUS_TO_GROUP[i.effectiveStatus] !== 'ค้างชำระ' || !i.dueDate) return;
       var key = i.dueDate.slice(0, 7);
       var outstanding = Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0));
       trendMap[key] = (trendMap[key] || 0) + outstanding;
@@ -2463,6 +2488,7 @@
     html += kpiCard('#12b886', '', '1px solid rgba(18,184,134,0.15)', '0 4px 14px rgba(18,184,134,0.06)', 'ยอดชำระแล้ว', '#12b886', '฿' + k.paidDisp, k.paidCustomerCount + ' ราย');
     html += kpiCard('#6b6785', '', '1px solid rgba(0,0,0,0.08)', '0 4px 14px rgba(0,0,0,0.04)', 'ยอดคงเหลือสุทธิ', '#2b2540', '฿' + k.netRemainingDisp, 'ยอดรวมสัญญา − ยอดชำระแล้ว');
     html += kpiCard('#e03131', '', '1px solid rgba(224,49,49,0.15)', '0 4px 14px rgba(224,49,49,0.06)', 'ยอดค้างชำระ', '#e03131', '฿' + k.overdueDisp, k.overdueCustomerCount + ' ราย');
+    html += kpiCard('#9c1f4a', '', '1px solid rgba(156,31,74,0.15)', '0 4px 14px rgba(156,31,74,0.06)', 'หนี้สงสัยจะสูญ', '#9c1f4a', '฿' + k.badDebtDisp, k.badDebtCustomerCount + ' ราย');
     html += kpiCard('#d6336c', '', '1px solid rgba(214,51,108,0.15)', '0 4px 14px rgba(214,51,108,0.06)', 'ยกเลิกสัญญา คืนเครื่อง', '#d6336c', '฿' + k.cancelledDisp, k.cancelledCount + ' สัญญา');
     html += kpiCard('#f08c00', '', '1px solid rgba(240,140,0,0.15)', '0 4px 14px rgba(240,140,0,0.06)', 'จำหน่ายชื่อให้บริษัทติดตามหนี้', '#f08c00', '฿' + k.soldDisp, k.soldCount + ' สัญญา');
     html += kpiCard('#adb5bd', '', '1px solid rgba(173,181,189,0.25)', '0 4px 14px rgba(0,0,0,0.04)', 'ยังไม่ถึงกำหนด', '#6b6785', '฿' + k.notDueDisp, k.notDueCustomerCount + ' ราย');
@@ -2840,7 +2866,7 @@
               '<td style="padding:14px 16px;">' + esc(order.soDisplay) + '</td>' +
               '<td style="padding:14px 16px; color:#6b6785;">' + esc(order.productList) + '</td>' +
               '<td style="padding:14px 16px; color:#6b6785;">' + esc(order.contractDateDisp) + '</td>' +
-              '<td style="padding:14px 16px; font-weight:600;">' + order.totalOutstandingDisp + ' บาท</td>' +
+              '<td style="padding:14px 16px; font-weight:600;">' + order.trueOverdueDisp + ' บาท</td>' +
               '<td style="padding:14px 16px;">' + (order.overdueCount ? '<span style="background:rgba(224,49,49,0.12); color:#e03131; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:600;">' + order.overdueCount + ' งวด</span>' : '') + '</td>' +
             '</tr>';
           }).join('') +
