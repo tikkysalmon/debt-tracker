@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.6';
+  var APP_BUILD = '2026-07-30.7';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -803,7 +803,7 @@
     filterCrmStatus: 'all',
     filterGrade: 'all',
     filterPurchaseTypes: [],
-    dueFrom: '', dueTo: '', paidFrom: '', paidTo: '',
+    dueFrom: '', dueTo: '', paidFrom: '', paidTo: '', contractFrom: '', contractTo: '',
     customerNotes: (persisted && persisted.customerNotes) || {},
     lastSavedAt: (persisted && persisted.savedAt) || '',
     isSampleData: !(persisted && persisted.orders && persisted.orders.length),
@@ -818,7 +818,7 @@
     appliedPaymentStatuses: [],
     appliedGrade: 'all',
     appliedPurchaseTypes: [], // types EXCLUDED from results; empty = show every purchase type
-    appliedDueFrom: '', appliedDueTo: '', appliedPaidFrom: '', appliedPaidTo: ''
+    appliedDueFrom: '', appliedDueTo: '', appliedPaidFrom: '', appliedPaidTo: '', appliedContractFrom: '', appliedContractTo: ''
   };
 
   // ---------- Derivations ----------
@@ -1192,7 +1192,8 @@
       filterGrade: state.appliedGrade,
       purchaseTypes: state.appliedPurchaseTypes,
       dueFrom: state.appliedDueFrom, dueTo: state.appliedDueTo,
-      paidFrom: state.appliedPaidFrom, paidTo: state.appliedPaidTo
+      paidFrom: state.appliedPaidFrom, paidTo: state.appliedPaidTo,
+      contractFrom: state.appliedContractFrom, contractTo: state.appliedContractTo
     };
     function inRange(dateStr, from, to) {
       if (!dateStr) return false;
@@ -1245,6 +1246,9 @@
     if (f.paidFrom || f.paidTo) {
       filteredOrders = filteredOrders.filter(function (o) { return allInstsOf(o).some(function (i) { return inRange(i.paidDate, f.paidFrom, f.paidTo); }); });
     }
+    if (f.contractFrom || f.contractTo) {
+      filteredOrders = filteredOrders.filter(function (o) { return inRange(o.contractDate, f.contractFrom, f.contractTo); });
+    }
     // Once the user presses ค้นหา we always show the result table — even with no criteria,
     // where it simply lists every order.
     var hasSearched = state.searched;
@@ -1256,7 +1260,8 @@
       state.filterGrade !== state.appliedGrade ||
       state.filterPurchaseTypes.join(',') !== state.appliedPurchaseTypes.join(',') ||
       state.dueFrom !== state.appliedDueFrom || state.dueTo !== state.appliedDueTo ||
-      state.paidFrom !== state.appliedPaidFrom || state.paidTo !== state.appliedPaidTo;
+      state.paidFrom !== state.appliedPaidFrom || state.paidTo !== state.appliedPaidTo ||
+      state.contractFrom !== state.appliedContractFrom || state.contractTo !== state.appliedContractTo;
 
     var selectedCustomerOrders = state.selectedCustomerId ? computedOrders.filter(function (o) { return customerKey(o) === state.selectedCustomerId; }) : [];
     var hasSelectedCustomer = selectedCustomerOrders.length > 0;
@@ -1310,6 +1315,7 @@
     state.appliedPurchaseTypes = state.filterPurchaseTypes.slice();
     state.appliedDueFrom = state.dueFrom; state.appliedDueTo = state.dueTo;
     state.appliedPaidFrom = state.paidFrom; state.appliedPaidTo = state.paidTo;
+    state.appliedContractFrom = state.contractFrom; state.appliedContractTo = state.contractTo;
     render();
   }
   function togglePurchaseType(type) {
@@ -1336,9 +1342,10 @@
       page: 1,
       selectedCustomerId: null,
       query: '', filterAccountStatus: 'all', filterDueStatus: 'all', filterPaymentStatuses: [],
-      filterCrmStatus: 'all', filterGrade: 'all', filterPurchaseTypes: [], dueFrom: '', dueTo: '', paidFrom: '', paidTo: '',
+      filterCrmStatus: 'all', filterGrade: 'all', filterPurchaseTypes: [], dueFrom: '', dueTo: '', paidFrom: '', paidTo: '', contractFrom: '', contractTo: '',
       appliedQuery: '', appliedAccountStatus: 'all', appliedDueStatus: 'all', appliedPaymentStatuses: [],
-      appliedGrade: 'all', appliedPurchaseTypes: [], appliedDueFrom: '', appliedDueTo: '', appliedPaidFrom: '', appliedPaidTo: ''
+      appliedGrade: 'all', appliedPurchaseTypes: [], appliedDueFrom: '', appliedDueTo: '', appliedPaidFrom: '', appliedPaidTo: '',
+      appliedContractFrom: '', appliedContractTo: ''
     });
     render();
   }
@@ -1675,6 +1682,7 @@
     state.appliedQuery = ''; state.appliedAccountStatus = 'all'; state.appliedDueStatus = 'all';
     state.appliedPaymentStatuses = []; state.appliedGrade = 'all';
     state.appliedDueFrom = ''; state.appliedDueTo = ''; state.appliedPaidFrom = ''; state.appliedPaidTo = '';
+    state.appliedContractFrom = ''; state.appliedContractTo = '';
     state.uploadMsgDebt = '';
     state.uploadMsgPayment = toSample ? 'ล้างข้อมูลแล้ว — กลับไปเป็นข้อมูลตัวอย่าง' : 'ล้างข้อมูลแล้ว — พร้อมอัปโหลดข้อมูลจริง (เริ่มจากว่างเปล่า)';
     render();
@@ -2861,11 +2869,13 @@
             '</select></div>' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">🛒 ประเภทการซื้อ</div>' + renderPurchaseTypeFilter() + '</div>' +
         '</div>' +
-        '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:14px; margin-bottom:18px;">' +
-          dateFilter('🗓 ครบกำหนดตั้งแต่', 'dueFrom', state.dueFrom) +
-          dateFilter('📅 ถึงวันที่', 'dueTo', state.dueTo) +
-          dateFilter('🗓 วันที่รับชำระตั้งแต่', 'paidFrom', state.paidFrom) +
-          dateFilter('📅 ถึงวันที่', 'paidTo', state.paidTo) +
+        '<div style="background:rgba(124,92,255,0.04); border:1px solid rgba(124,92,255,0.12); border-radius:14px; padding:16px; margin-bottom:4px;">' +
+          '<div style="font-size:12.5px; color:#7c5cff; font-weight:700; margin-bottom:12px; display:flex; align-items:center; gap:6px;">📆 กรองตามช่วงวันที่</div>' +
+          '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:14px;">' +
+            dateRangeFilter('🗓', 'ครบกำหนดตั้งแต่ – ถึง', 'dueFrom', state.dueFrom, 'dueTo', state.dueTo) +
+            dateRangeFilter('💰', 'วันที่รับชำระตั้งแต่ – ถึง', 'paidFrom', state.paidFrom, 'paidTo', state.paidTo) +
+            dateRangeFilter('📄', 'วันที่ทำสัญญาตั้งแต่ – ถึง', 'contractFrom', state.contractFrom, 'contractTo', state.contractTo) +
+          '</div>' +
         '</div>' +
       '</div>';
     }
@@ -3000,9 +3010,17 @@
     '</div>';
   }
 
-  function dateFilter(label, key, value) {
-    return '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">' + label + '</div>' +
-      '<input type="date" value="' + esc(value) + '" data-action="filter" data-key="' + key + '" style="width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13px; color:#2b2540;" /></div>';
+  // Groups a "จาก – ถึง" pair into a single labeled cell (instead of 2 separate boxes each
+  // repeating a bare "ถึงวันที่" label) so the date filters read as ranges, not 4 unrelated fields.
+  function dateRangeFilter(icon, label, fromKey, fromValue, toKey, toValue) {
+    var inputStyle = 'flex:1; min-width:0; box-sizing:border-box; padding:9px 10px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13px; color:#2b2540;';
+    return '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">' + icon + ' ' + label + '</div>' +
+      '<div style="display:flex; align-items:center; gap:8px;">' +
+        '<input type="date" value="' + esc(fromValue) + '" data-action="filter" data-key="' + fromKey + '" style="' + inputStyle + '" />' +
+        '<span style="color:#b3aed6; font-size:12px; flex-shrink:0;">–</span>' +
+        '<input type="date" value="' + esc(toValue) + '" data-action="filter" data-key="' + toKey + '" style="' + inputStyle + '" />' +
+      '</div>' +
+    '</div>';
   }
 
   function renderCustomerDetail() {
