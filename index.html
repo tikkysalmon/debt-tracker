@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.4';
+  var APP_BUILD = '2026-07-30.5';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -3431,6 +3431,21 @@
       // Push the self-healed statuses back to the shared file so every other client sees the fix too.
       if (_lastRepairChanged) { _lastRepairChanged = false; savePersisted(); }
     }).catch(function () { cloudStatus = 'offline'; updateCloudStatus(); });
+    // Browsers throttle setInterval in background tabs (can silently stretch the 12s poll to
+    // minutes) — a tab left open in the background shows stale numbers until manually refreshed,
+    // which is exactly what made two staff looking at two different tabs of the SAME dashboard see
+    // different totals (user report, 2026-07-30 — traced to this, not a deploy/data-split issue).
+    // Force a poll the instant the tab is looked at again instead of waiting for a throttled tick.
+    // Also covers the rarer case where the initial cloudConnect() itself failed (transient network
+    // blip) and left this tab permanently un-synced with no retry — try connecting again too.
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState !== 'visible') return;
+      if (!cloudConnected) {
+        cloudConnect().then(function () { render(); updateCloudStatus(); startCloudPolling(); }).catch(function () { cloudStatus = 'offline'; updateCloudStatus(); });
+      } else {
+        cloudPoll();
+      }
+    });
   } else if (_lastRepairChanged) {
     _lastRepairChanged = false; savePersisted();
   }
