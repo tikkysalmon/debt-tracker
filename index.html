@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.12';
+  var APP_BUILD = '2026-07-30.13';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -269,57 +269,52 @@
     if (changed) _lastRepairChanged = true;
     return changed ? fixed : orders;
   }
-  // Redistributes payments across an order's installment list ONLY when, in aggregate, enough has
-  // been paid to cover every remaining installment in full — i.e. a genuine early full settlement
-  // (customer pays off everything that's left before the next due date). Per user confirmation
-  // 2026-07-24: a single installment merely paying a bit more than its own ยอดผ่อนต่องวด (but not
-  // enough to close out everything remaining) must NOT bleed into the next installment — that's
-  // just a slightly-larger regular payment and should show as "เกิน" on its own row (ขาด/เกิน
-  // column), not silently inflate the following installment's amountPaid. Only when the WHOLE
-  // order's payments-so-far now cover the WHOLE order's remaining balance does this redistribute,
-  // filling each installment in order and leaving any final rounding remainder on the last one.
+  // Redistributes payment ONLY from the "frontier" งวด (the LAST one, in งวด order, with anything
+  // individually recorded on it) onto later งวด that still have nothing recorded — and only when
+  // the frontier's own excess is enough to cover every one of those trailing งวด in full, i.e. a
+  // genuine early full settlement (customer pays off everything that's left in one go). Every งวด
+  // up to and including the frontier is NEVER touched or capped, no matter what it individually
+  // shows — per user correction 2026-07-30: a customer who simply overpaid a little on SEVERAL
+  // DIFFERENT งวด across separate months (e.g. ยอดผ่อนต่องวด ฿3,700 but paid ฿4,000 each month for 4
+  // months running) must keep each of those เกิน amounts exactly where they were individually
+  // recorded — the old whole-order-sum trigger (2026-07-24) treated the ACCUMULATED total of many
+  // small unrelated overpayments as if it were one lump early-payoff, stripped every one of them
+  // back down to their own ยอดผ่อนต่องวด, and dumped the sum onto the last งวด — which is wrong
+  // unless it was actually ONE payment meant to close out the loan.
   function cascadeOverpayment(list) {
     if (!list || !list.length) return list;
     var sorted = list.slice().sort(function (a, b) { return (a.no || 0) - (b.no || 0); });
-    var totalNetDue = 0, totalPaid = 0;
-    sorted.forEach(function (inst) {
-      totalNetDue += Math.max(0, toNumber(inst.amountDue) - toNumber(inst.discount));
-      totalPaid += toNumber(inst.amountPaid);
-    });
-    if (totalPaid < totalNetDue - 0.005) return list; // not a full settlement — leave every row as individually recorded
-    var carry = 0, carryDate = '', touched = false;
+    var frontierIdx = -1;
+    for (var k = 0; k < sorted.length; k++) { if (toNumber(sorted[k].amountPaid) > 0.005) frontierIdx = k; }
+    if (frontierIdx === -1) return list; // nothing recorded at all yet
+    var frontier = sorted[frontierIdx];
+    var frontierNetDue = Math.max(0, toNumber(frontier.amountDue) - toNumber(frontier.discount));
+    // A real payment is always whole cents, but netDue can be a repeating decimal, so a sub-0.005
+    // diff here is rounding noise, not a true excess — see the same threshold used below.
+    var remaining = toNumber(frontier.amountPaid) - frontierNetDue;
+    if (remaining <= 0.005) return list; // frontier itself has no real excess to push forward
+    var trailing = sorted.slice(frontierIdx + 1);
+    if (!trailing.length) return list; // frontier IS the last งวด — nowhere for the excess to go
+    var trailingTotalDue = trailing.reduce(function (s, i) { return s + Math.max(0, toNumber(i.amountDue) - toNumber(i.discount)); }, 0);
+    if (remaining < trailingTotalDue - 0.005) return list; // doesn't cover everything remaining — not a genuine settlement, leave every งวด exactly as recorded
+
+    var changed = false;
+    var carryDate = frontier.paidDate || '';
     var result = sorted.map(function (inst, idx) {
+      if (idx <= frontierIdx) return inst;
       var isLast = idx === sorted.length - 1;
       var netDue = Math.max(0, toNumber(inst.amountDue) - toNumber(inst.discount));
-      var ownPaid = toNumber(inst.amountPaid);
-      var available = ownPaid + carry;
-      // The last งวด has nowhere further to push overflow, so it simply absorbs whatever's left —
-      // capping it at netDue like every other row (then patching the excess back on afterward)
-      // would re-touch this same row on every subsequent run even when nothing actually changed,
-      // since the interim capped value never survives to be compared against.
-      var newPaid = isLast ? available : Math.min(available, netDue);
-      var overflowRaw = isLast ? 0 : (available - newPaid);
-      // A real payment is always whole cents, but netDue can be a repeating decimal (e.g.
-      // 33620/12 = 2801.6666...6), so every genuine on-time payment leaves a sub-0.005 "overflow"
-      // that is really just rounding noise, not a true overpayment. Cascading that noise forward
-      // WITHOUT deducting it from this row (the row stays untouched below, since the same 0.005
-      // threshold says the diff is negligible) meant every re-run of this repair — which fires on
-      // every page load and every cloud sync — added the SAME sliver again, compounding forever
-      // instead of converging. Zeroing below-threshold overflow (instead of only skipping the row
-      // write) makes this idempotent.
-      var overflow = overflowRaw > 0.005 ? overflowRaw : 0;
-      var next = inst;
-      if (Math.abs(newPaid - ownPaid) > 0.005) {
-        touched = true;
+      var newPaid = isLast ? remaining : Math.min(remaining, netDue);
+      if (!isLast) remaining -= newPaid;
+      if (Math.abs(newPaid - toNumber(inst.amountPaid)) > 0.005) {
+        changed = true;
         var patch = { amountPaid: newPaid };
-        if (newPaid > ownPaid && !inst.paidDate && carryDate) patch.paidDate = carryDate;
-        next = Object.assign({}, inst, patch);
+        if (newPaid > 0 && !inst.paidDate && carryDate) patch.paidDate = carryDate;
+        return Object.assign({}, inst, patch);
       }
-      if (overflow > 0.005 && !carryDate) carryDate = inst.paidDate || carryDate;
-      carry = overflow;
-      return next;
+      return inst;
     });
-    return touched ? result : list;
+    return changed ? result : list;
   }
   // Splits ONE payment-file row's amount across consecutive not-yet-fully-paid งวด, starting at
   // insts[0], capping each at its own remaining due — for the "no งวดที่ column" import path, where
