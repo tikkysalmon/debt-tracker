@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.11';
+  var APP_BUILD = '2026-07-30.12';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1182,8 +1182,21 @@
       var soldList = list.filter(function (o) { return o.isSold; });
       var contractRaw = list.reduce(function (s, o) { return s + o.totalContractRaw; }, 0);
       var paidRaw = activeList.reduce(function (s, o) { return s + o.totalPaidFullRaw; }, 0);
-      var overdueRaw = activeList.reduce(function (s, o) { return s + o.lateOutstandingRaw; }, 0);
-      var notDueRaw = activeList.reduce(function (s, o) { return s + o.installments.concat(o.accessoryInstallments || []).filter(function (i) { return NOTDUE_STATUSES.indexOf(i.effectiveStatus) !== -1; }).reduce(function (s2, i) { return s2 + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0); }, 0);
+      // ค้างชำระ/หนี้สงสัยจะสูญ here must use the same STATUS_TO_GROUP grouping as "แยกสถานะการชำระ"
+      // and the top ยอดค้างชำระ/หนี้สงสัยจะสูญ KPI cards (fixed 2026-07-30) — this used to sum
+      // o.lateOutstandingRaw (the broader LATE_STATUSES, which also folds in ชำระบางส่วน) and had no
+      // หนี้สงสัยจะสูญ figure of its own at all, so this card disagreed with every other "ค้างชำระ"
+      // number on the dashboard.
+      var overdueRaw = 0, badDebtRaw = 0, notDueRaw = 0;
+      activeList.forEach(function (o) {
+        o.installments.concat(o.accessoryInstallments || []).forEach(function (i) {
+          var outstanding = Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0));
+          var grp = STATUS_TO_GROUP[i.effectiveStatus];
+          if (grp === 'ค้างชำระ') overdueRaw += outstanding;
+          else if (grp === 'หนี้สงสัยจะสูญ') badDebtRaw += outstanding;
+          else if (NOTDUE_STATUSES.indexOf(i.effectiveStatus) !== -1) notDueRaw += outstanding;
+        });
+      });
       var cancelledRaw = cancelledList.reduce(function (s, o) { return s + o.totalContractRaw; }, 0);
       var soldRaw = soldList.reduce(function (s, o) { return s + o.totalContractRaw; }, 0);
       var gCounts = { A: 0, B: 0, 'หนี้สงสัยจะสูญ': 0 };
@@ -1194,6 +1207,7 @@
         type: type, count: list.length,
         contractDisp: fmtMoney(contractRaw), paidDisp: fmtMoney(paidRaw),
         overdueDisp: fmtMoney(overdueRaw), notDueDisp: fmtMoney(notDueRaw),
+        badDebtDisp: fmtMoney(badDebtRaw),
         cancelledDisp: fmtMoney(cancelledRaw), soldDisp: fmtMoney(soldRaw),
         gradeDonut: { conic: buildConicGradient(gSegs), segments: gSegs.map(function (s) { return Object.assign({}, s, { pctDisp: s.pct.toFixed(1) }); }) }
       };
@@ -2737,7 +2751,8 @@
               '<div style="background:rgba(224,49,49,0.10); border-radius:10px; padding:8px; text-align:center;"><div style="font-size:11px; color:#6b6785;">ค้างชำระ</div><div style="font-size:12.5px; font-weight:600; color:#e03131;">฿' + pt.overdueDisp + '</div></div>' +
               '<div style="background:rgba(240,140,0,0.10); border-radius:10px; padding:8px; text-align:center;"><div style="font-size:11px; color:#6b6785;">ยังไม่ถึงกำหนด</div><div style="font-size:12.5px; font-weight:600; color:#c2650a;">฿' + pt.notDueDisp + '</div></div>' +
             '</div>' +
-            '<div style="display:grid; grid-template-columns:repeat(2,1fr); gap:8px; margin-bottom:16px;">' +
+            '<div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:16px;">' +
+              '<div style="background:rgba(156,31,74,0.10); border-radius:10px; padding:8px; text-align:center;"><div style="font-size:11px; color:#6b6785;">หนี้สงสัยจะสูญ</div><div style="font-size:12.5px; font-weight:600; color:#9c1f4a;">฿' + pt.badDebtDisp + '</div></div>' +
               '<div style="background:rgba(214,51,108,0.10); border-radius:10px; padding:8px; text-align:center;"><div style="font-size:11px; color:#6b6785;">ยกเลิกสัญญา คืนเครื่อง</div><div style="font-size:12.5px; font-weight:600; color:#d6336c;">฿' + pt.cancelledDisp + '</div></div>' +
               '<div style="background:rgba(240,140,0,0.10); border-radius:10px; padding:8px; text-align:center;"><div style="font-size:11px; color:#6b6785;">จำหน่ายชื่อฯ ติดตามหนี้</div><div style="font-size:12.5px; font-weight:600; color:#f08c00;">฿' + pt.soldDisp + '</div></div>' +
             '</div>' +
