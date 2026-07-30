@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.9';
+  var APP_BUILD = '2026-07-30.10';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1132,15 +1132,23 @@
     // (ไม่รวมยกเลิกสัญญา/จำหน่ายชื่อ) ตามที่ผู้ใช้ท้วงติง 2026-07-30 — การจัดกลุ่มเกรด (บรรทัดด้านบน)
     // ยังคงนับเฉพาะ activeOrders เหมือนเดิม (สัญญาที่ยกเลิก/จำหน่ายชื่อไม่ควรมีเกรด) เปลี่ยนแค่ตัวหาร.
     var gradeTotal = orders.length;
+    // % ต่อการ์ดเกรด (2026-07-30, ตามที่ผู้ใช้ระบุ): ไม่ใช่สัดส่วนจำนวนสัญญาอีกต่อไป แต่เป็นสัดส่วน
+    // ยอดเงินเทียบกับยอดรวมสัญญาทั้งหมด (totalContract) — เกรด A ใช้ยอดชำระแล้วของเกรดนั้นเป็นตัวตั้ง
+    // (สะท้อนว่าเงินที่เก็บได้จากลูกค้าความเสี่ยงต่ำคิดเป็นกี่ % ของพอร์ตทั้งหมด), เกรด B และ
+    // หนี้สงสัยจะสูญ ใช้ยอดค้างชำระของเกรดนั้นแทน (ความเสี่ยงที่ยังค้างอยู่คิดเป็นกี่ % ของพอร์ต) — ตัว
+    // หารเดียวกันทั้ง 3 การ์ด แต่ตัวตั้งต่างกัน จึงไม่จำเป็นต้องรวมกันได้ 100% (คนละคำถามกัน: "เก็บเงินได้
+    // เท่าไหร่" กับ "ยังค้างอยู่เท่าไหร่" ไม่ใช่สัดส่วนของก้อนเดียวกัน).
+    function gradeAmount(g) { return g === 'A' ? gradeBuckets[g].paid : gradeBuckets[g].overdue; }
+    function gradePct(g) { return totalContract > 0 ? (gradeAmount(g) / totalContract * 100) : 0; }
     var gradeCards = ['A', 'B', 'หนี้สงสัยจะสูญ'].map(function (g) {
       return {
         key: g, count: gradeBuckets[g].count, color: GRADE_COLORS[g],
-        pct: gradeTotal > 0 ? (gradeBuckets[g].count / gradeTotal * 100).toFixed(1) : '0.0',
+        pct: gradePct(g).toFixed(1),
         paidDisp: fmtMoney(gradeBuckets[g].paid), overdueDisp: fmtMoney(gradeBuckets[g].overdue),
-        barPct: gradeTotal > 0 ? (gradeBuckets[g].count / gradeTotal * 100) : 0
+        barPct: gradePct(g)
       };
     });
-    var gradeDonutSegs = ['A', 'B', 'หนี้สงสัยจะสูญ'].map(function (g) { return { label: g, color: GRADE_COLORS[g], count: gradeBuckets[g].count, pct: gradeTotal > 0 ? (gradeBuckets[g].count / gradeTotal * 100) : 0 }; });
+    var gradeDonutSegs = ['A', 'B', 'หนี้สงสัยจะสูญ'].map(function (g) { return { label: g, color: GRADE_COLORS[g], count: gradeBuckets[g].count, pct: gradePct(g) }; });
     var gradeDonut = { conic: buildConicGradient(gradeDonutSegs), segments: gradeDonutSegs.map(function (s) { return Object.assign({}, s, { pctDisp: s.pct.toFixed(1) }); }) };
 
     function buildAgeSummary(minLate) {
