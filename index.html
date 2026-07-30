@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.22';
+  var APP_BUILD = '2026-07-30.23';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -830,6 +830,7 @@
     filterDueStatus: 'all',
     filterPaymentStatuses: [], // statuses EXCLUDED from results; empty = show every status
     filterCrmStatus: 'all',
+    filterUnverifiedCRM: false, // "แสดงเฉพาะที่ยังตรวจสอบไม่ครบ" — unrelated to the (unused) filterCrmStatus dropdown above
     filterGrade: 'all',
     filterPurchaseTypes: [],
     dueFrom: '', dueTo: '', paidFrom: '', paidTo: '', contractFrom: '', contractTo: '',
@@ -848,6 +849,7 @@
     appliedAccountStatus: 'all',
     appliedDueStatus: 'all',
     appliedPaymentStatuses: [],
+    appliedUnverifiedCRM: false,
     appliedGrade: 'all',
     appliedPurchaseTypes: [], // types EXCLUDED from results; empty = show every purchase type
     appliedDueFrom: '', appliedDueTo: '', appliedPaidFrom: '', appliedPaidTo: '', appliedContractFrom: '', appliedContractTo: ''
@@ -922,6 +924,10 @@
       var trueOverdueInsts = allInstallments.filter(function (i) { return STATUS_TO_GROUP[i.effectiveStatus] === 'ค้างชำระ'; });
       var trueOverdueRaw = trueOverdueInsts.reduce(function (s, i) { return s + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0);
       var overdueCount = trueOverdueInsts.length;
+      // Only the currently-overdue (ค้างชำระ group) งวด need cross-checking against the CRM each
+      // month — already-paid/not-yet-due งวด aren't part of that manual QA process.
+      var crmVerifiedCount = trueOverdueInsts.filter(function (i) { return i.verifiedCRM; }).length;
+      var crmStatus = overdueCount === 0 ? 'none' : crmVerifiedCount === 0 ? 'pending' : crmVerifiedCount === overdueCount ? 'verified' : 'partial';
       var lateInsts = allInstallments.filter(function (i) { return LATE_STATUSES.indexOf(i.effectiveStatus) !== -1; });
       var lateOutstandingRaw = lateInsts.reduce(function (s, i) { return s + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0);
       return Object.assign({}, o, {
@@ -953,6 +959,7 @@
         overdueCount: overdueCount,
         trueOverdueRaw: trueOverdueRaw,
         trueOverdueDisp: fmtMoney(trueOverdueRaw),
+        crmVerifiedCount: crmVerifiedCount, crmStatus: crmStatus,
         isCancelled: isCancelled,
         isSold: isSold,
         lateCount: lateInsts.length,
@@ -1298,6 +1305,7 @@
       filterAccountStatus: state.appliedAccountStatus,
       filterDueStatus: state.appliedDueStatus,
       paymentStatusesExcluded: state.appliedPaymentStatuses,
+      unverifiedCRM: state.appliedUnverifiedCRM,
       filterGrade: state.appliedGrade,
       purchaseTypes: state.appliedPurchaseTypes,
       dueFrom: state.appliedDueFrom, dueTo: state.appliedDueTo,
@@ -1354,6 +1362,11 @@
         var g = o.lateCount === 0 ? 'A' : o.lateCount === 1 ? 'B' : 'หนี้สงสัยจะสูญ';
         return g === f.filterGrade;
       });
+    }
+    // "แสดงเฉพาะที่ยังตรวจสอบไม่ครบ" — monthly CRM cross-check QA step (2026-07-30): a customer
+    // whose every overdue งวด is already verifiedCRM doesn't need staff attention this round.
+    if (f.unverifiedCRM) {
+      filteredOrders = filteredOrders.filter(function (o) { return o.crmStatus === 'pending' || o.crmStatus === 'partial'; });
     }
     if (f.purchaseTypes.length) {
       filteredOrders = filteredOrders.filter(function (o) { return f.purchaseTypes.indexOf(o.purchaseType) === -1; });
@@ -1415,6 +1428,7 @@
       state.filterAccountStatus !== state.appliedAccountStatus ||
       state.filterDueStatus !== state.appliedDueStatus ||
       state.filterPaymentStatuses.join(',') !== state.appliedPaymentStatuses.join(',') ||
+      state.filterUnverifiedCRM !== state.appliedUnverifiedCRM ||
       state.filterGrade !== state.appliedGrade ||
       state.filterPurchaseTypes.join(',') !== state.appliedPurchaseTypes.join(',') ||
       state.dueFrom !== state.appliedDueFrom || state.dueTo !== state.appliedDueTo ||
@@ -1469,6 +1483,7 @@
     state.appliedAccountStatus = state.filterAccountStatus;
     state.appliedDueStatus = state.filterDueStatus;
     state.appliedPaymentStatuses = state.filterPaymentStatuses.slice();
+    state.appliedUnverifiedCRM = state.filterUnverifiedCRM;
     state.appliedGrade = state.filterGrade;
     state.appliedPurchaseTypes = state.filterPurchaseTypes.slice();
     state.appliedDueFrom = state.dueFrom; state.appliedDueTo = state.dueTo;
@@ -1500,8 +1515,8 @@
       page: 1,
       selectedCustomerId: null,
       query: '', filterAccountStatus: 'all', filterDueStatus: 'all', filterPaymentStatuses: [],
-      filterCrmStatus: 'all', filterGrade: 'all', filterPurchaseTypes: [], dueFrom: '', dueTo: '', paidFrom: '', paidTo: '', contractFrom: '', contractTo: '',
-      appliedQuery: '', appliedAccountStatus: 'all', appliedDueStatus: 'all', appliedPaymentStatuses: [],
+      filterCrmStatus: 'all', filterUnverifiedCRM: false, filterGrade: 'all', filterPurchaseTypes: [], dueFrom: '', dueTo: '', paidFrom: '', paidTo: '', contractFrom: '', contractTo: '',
+      appliedQuery: '', appliedAccountStatus: 'all', appliedDueStatus: 'all', appliedPaymentStatuses: [], appliedUnverifiedCRM: false,
       appliedGrade: 'all', appliedPurchaseTypes: [], appliedDueFrom: '', appliedDueTo: '', appliedPaidFrom: '', appliedPaidTo: '',
       appliedContractFrom: '', appliedContractTo: ''
     });
@@ -1602,6 +1617,30 @@
     return null;
   }
   function trackKey(track) { return track === 'accessory' ? 'accessoryInstallments' : 'installments'; }
+  function nowTimestamp() {
+    var d = new Date();
+    var pad = function (n) { return String(n).padStart(2, '0'); };
+    return pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + '/' + d.getFullYear() + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+  // Marks a single งวด as cross-checked against the reference CRM (or un-marks it) — a manual QA
+  // step staff run monthly per ครบกำหนด month, per user request 2026-07-30: without this, a
+  // customer still overdue next month gets re-verified from scratch instead of just checking the
+  // newly-due งวด. Stamps verifiedCRMAt with a real timestamp (not just a date) so staff can tell
+  // exactly when a figure was last confirmed, not only which day.
+  function toggleVerifiedCRM(orderId, no, track, checked) {
+    var key = trackKey(track);
+    state.orders = state.orders.map(function (o) {
+      if (o.orderId !== orderId) return o;
+      var patch2 = {};
+      patch2[key] = (o[key] || []).map(function (i) {
+        if (i.no !== no) return i;
+        return Object.assign({}, i, { verifiedCRM: checked, verifiedCRMAt: checked ? nowTimestamp() : i.verifiedCRMAt });
+      });
+      return Object.assign({}, o, patch2);
+    });
+    savePersisted();
+    render();
+  }
   // Statuses that mean "this whole order's account status changed", not just one งวด — setting
   // either on any งวด must cascade to every งวด on both tracks, or leftover
   // ค้างชำระ/ยังไม่ถึงกำหนดชำระ งวด on an order that's already cancelled/handed to a collections
@@ -1910,7 +1949,7 @@
     state.lastSavedAt = '';
     state.isSampleData = !!toSample;
     state.appliedQuery = ''; state.appliedAccountStatus = 'all'; state.appliedDueStatus = 'all';
-    state.appliedPaymentStatuses = []; state.appliedGrade = 'all';
+    state.appliedPaymentStatuses = []; state.appliedUnverifiedCRM = false; state.appliedGrade = 'all';
     state.appliedDueFrom = ''; state.appliedDueTo = ''; state.appliedPaidFrom = ''; state.appliedPaidTo = '';
     state.appliedContractFrom = ''; state.appliedContractTo = '';
     state.uploadMsgDebt = '';
@@ -1927,10 +1966,10 @@
     URL.revokeObjectURL(url);
   }
   function exportFilteredCsv(orders) {
-    var content = 'รหัสลูกค้า,ชื่อลูกค้า,คำสั่งซื้อ,งวดที่,วันครบกำหนดชำระ,ยอดผ่อนต่องวด,ยอดที่ชำระจริง,วันที่ชำระ,สถานะการชำระเงิน,ส่วนลด,หมายเหตุ\n';
+    var content = 'รหัสลูกค้า,ชื่อลูกค้า,คำสั่งซื้อ,งวดที่,วันครบกำหนดชำระ,ยอดผ่อนต่องวด,ยอดที่ชำระจริง,วันที่ชำระ,สถานะการชำระเงิน,ส่วนลด,หมายเหตุ,ตรวจสอบ CRM แล้ว,วันเวลาที่ตรวจสอบ\n';
     function addRows(customerId, customerName, orderId, list) {
       list.forEach(function (i) {
-        content += [customerId, customerName, orderId, i.no, i.dueDate, i.amountDue, i.amountPaid, i.paidDate, i.effectiveStatus, i.discount, i.note]
+        content += [customerId, customerName, orderId, i.no, i.dueDate, i.amountDue, i.amountPaid, i.paidDate, i.effectiveStatus, i.discount, i.note, i.verifiedCRM ? 'ใช่' : 'ไม่', i.verifiedCRM ? (i.verifiedCRMAt || '') : '']
           .map(function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; }).join(',') + '\n';
       });
     }
@@ -3100,6 +3139,15 @@
     if (order.totalOutstandingRaw <= 0.005) return '<span style="background:rgba(18,184,134,0.14); color:#12b886; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">✅ ปิดยอด</span>';
     return '<span style="background:rgba(43,37,64,0.06); color:#6b6785; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">ปกติ</span>';
   }
+  // Monthly manual QA step (2026-07-30): staff cross-check each ค้างชำระ งวด against the reference
+  // CRM once, so a customer still overdue next month only needs the newly-due งวด re-checked, not
+  // the whole history again. Nothing to check at all (order isn't overdue) shows no pill.
+  function crmStatusPill(order) {
+    if (order.crmStatus === 'none') return '<span style="color:#c3c0d6; font-size:12px;">—</span>';
+    if (order.crmStatus === 'verified') return '<span style="background:rgba(18,184,134,0.12); color:#12b886; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">✓ ตรวจครบ</span>';
+    if (order.crmStatus === 'partial') return '<span style="background:rgba(240,140,0,0.12); color:#f08c00; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">◐ บางส่วน ' + order.crmVerifiedCount + '/' + order.overdueCount + '</span>';
+    return '<span style="background:rgba(138,134,163,0.12); color:#8a86a3; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">○ ยังไม่ตรวจ</span>';
+  }
   // Aging report over each order's current (earliest unpaid) installment — mirrors the
   // reference site's "รายงานสินเชื่อที่ครบกำหนด" bucket row.
   function renderDueBuckets(orders) {
@@ -3180,6 +3228,10 @@
             '</select></div>' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">🛒 ประเภทการซื้อ</div>' + renderPurchaseTypeFilter() + '</div>' +
         '</div>' +
+        '<label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; color:#2b2540; font-weight:600; margin-bottom:14px; user-select:none;">' +
+          '<input type="checkbox" data-action="toggleUnverifiedCRM"' + (state.filterUnverifiedCRM ? ' checked' : '') + ' style="width:16px; height:16px; accent-color:#7c5cff; cursor:pointer;" />' +
+          '🔍 แสดงเฉพาะที่ยังตรวจสอบ CRM ไม่ครบ' +
+        '</label>' +
         '<div style="background:rgba(124,92,255,0.04); border:1px solid rgba(124,92,255,0.12); border-radius:14px; padding:16px; margin-bottom:4px;">' +
           '<div style="font-size:12.5px; color:#7c5cff; font-weight:700; margin-bottom:12px; display:flex; align-items:center; gap:6px;">📆 กรองตามช่วงวันที่</div>' +
           '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:14px;">' +
@@ -3219,7 +3271,7 @@
       var pageRows = CV.filteredOrders.slice(pageStart, pageStart + pageSize);
       html += '<div style="background:rgba(255,255,255,0.55); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.8); border-radius:20px; padding:6px; margin-bottom:28px; box-shadow:0 8px 30px rgba(124,92,255,0.08); overflow-x:auto;">' +
         '<table style="width:100%; border-collapse:collapse; min-width:920px;"><thead><tr style="text-align:left; font-size:12px; color:#6b6785;">' +
-          ['รหัสลูกค้า','ชื่อลูกค้า','สถานะบัญชี','คำสั่งซื้อ','สินค้า','วันที่ทำสัญญา','ยอดค้างชำระ','งวดค้าง'].map(function (h) { return '<th style="padding:14px 16px; font-weight:600;">' + h + '</th>'; }).join('') +
+          ['รหัสลูกค้า','ชื่อลูกค้า','สถานะบัญชี','คำสั่งซื้อ','สินค้า','วันที่ทำสัญญา','ยอดค้างชำระ','งวดค้าง','ตรวจสอบ CRM'].map(function (h) { return '<th style="padding:14px 16px; font-weight:600;">' + h + '</th>'; }).join('') +
         '</tr></thead><tbody>' +
           pageRows.map(function (order) {
             return '<tr data-action="selectCustomer" data-cid="' + esc(customerKey(order)) + '" style="cursor:pointer; font-size:14px; color:#2b2540; border-top:1px solid rgba(124,92,255,0.10);">' +
@@ -3231,6 +3283,7 @@
               '<td style="padding:14px 16px; color:#6b6785;">' + esc(order.contractDateDisp) + '</td>' +
               '<td style="padding:14px 16px; font-weight:600;">' + order.trueOverdueDisp + ' บาท</td>' +
               '<td style="padding:14px 16px;">' + (order.overdueCount ? '<span style="background:rgba(224,49,49,0.12); color:#e03131; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:600;">' + order.overdueCount + ' งวด</span>' : '') + '</td>' +
+              '<td style="padding:14px 16px;">' + crmStatusPill(order) + '</td>' +
             '</tr>';
           }).join('') +
         '</tbody></table>' +
@@ -3487,7 +3540,7 @@
       return '<div style="padding:32px 20px; text-align:center; color:#8a86a3; font-size:13px; background:rgba(124,92,255,0.03); border:1.5px dashed rgba(124,92,255,0.25); border-radius:16px;">📭 ยังไม่มีงวดชำระ — กด "+ เพิ่มงวด" ด้านบนเพื่อเริ่มกรอก</div>';
     }
     var inputBase = 'box-sizing:border-box; border-radius:9px; padding:7px 10px; font-size:12.5px; color:#2b2540; background:#fff; outline:none;';
-    var cols = ['งวด', 'วันครบกำหนด', 'ยอดผ่อนต่องวด', 'ชำระแล้ว / วันที่ชำระ', 'ขาด/เกิน', 'ค่าปรับ (แยกจากค่างวด)', 'ส่วนลด', 'สถานะ', 'หมายเหตุ'];
+    var cols = ['งวด', 'วันครบกำหนด', 'ยอดผ่อนต่องวด', 'ชำระแล้ว / วันที่ชำระ', 'ขาด/เกิน', 'ค่าปรับ (แยกจากค่างวด)', 'ส่วนลด', 'สถานะ', 'หมายเหตุ', 'ตรวจสอบ CRM'];
     var head = '<tr>' + cols.map(function (c) {
       return '<th style="text-align:left; padding:12px 14px; font-size:11px; letter-spacing:0.03em; color:#7c5cff; font-weight:700; white-space:nowrap; background:rgba(124,92,255,0.06); border-bottom:1.5px solid rgba(124,92,255,0.16);">' + c + '</th>';
     }).join('') + '</tr>';
@@ -3530,6 +3583,10 @@
           ((inst.postponeHistory && inst.postponeHistory.length) ? '<span style="color:#7c5cff; font-weight:700;">🔁×' + inst.postponeHistory.length + '</span> ' : '') +
           (inst.note ? esc(inst.note) : (inst.postponeHistory && inst.postponeHistory.length ? '' : '<span style="color:#a39dc2;">+ หมายเหตุ</span>')) +
         '</div></td>' +
+        '<td style="' + td + '"><label style="display:flex; align-items:center; gap:6px; cursor:pointer; white-space:nowrap;">' +
+          '<input type="checkbox" data-action="toggleVerifiedCRM"' + da + (inst.verifiedCRM ? ' checked' : '') + ' style="width:15px; height:15px; accent-color:#12b886; cursor:pointer;" />' +
+          '<span style="font-size:11.5px; color:' + (inst.verifiedCRM ? '#0b7a5b' : '#8a86a3') + '; font-weight:' + (inst.verifiedCRM ? '700' : '400') + ';">' + (inst.verifiedCRM ? ('ตรวจแล้ว · ' + esc(inst.verifiedCRMAt || '')) : 'ยังไม่ตรวจ') + '</span>' +
+        '</label></td>' +
       '</tr>';
     }).join('');
     return '<div style="overflow-x:auto; border:1px solid rgba(124,92,255,0.14); border-radius:16px; background:rgba(255,255,255,0.55); box-shadow:0 4px 16px rgba(124,92,255,0.06);">' +
@@ -3648,6 +3705,7 @@
         case 'toggleCancelledDetail': state.showCancelledDetail = !state.showCancelledDetail; render(); break;
         case 'toggleSoldDetail': state.showSoldDetail = !state.showSoldDetail; render(); break;
         case 'toggleMultiOrderDetail': state.showMultiOrderDetail = !state.showMultiOrderDetail; render(); break;
+        case 'toggleUnverifiedCRM': state.filterUnverifiedCRM = t.checked; render(); break;
         case 'selectCustomer': selectCustomer(t.getAttribute('data-cid')); break;
         case 'closeDetail': state.selectedCustomerId = null; render(); break;
         case 'saveNote': saveCustomerNote(); break;
@@ -3725,6 +3783,7 @@
         case 'customerNameDraft': state.customerNameDraft = t.value; break;
         case 'customerIdDraft': state.customerIdDraft = t.value; break;
         case 'orderIdDraft': state.orderIdDraft = t.value; break;
+        case 'toggleVerifiedCRM': toggleVerifiedCRM(t.getAttribute('data-order'), Number(t.getAttribute('data-no')), t.getAttribute('data-track'), t.checked); break;
         case 'postponeDate': state.postponeDate = t.value; break;
         case 'postponeReason': state.postponeReason = t.value; break;
         case 'postponeLateFee': state.postponeLateFee = toNumber(t.value); break;
