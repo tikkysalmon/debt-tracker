@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.23';
+  var APP_BUILD = '2026-07-30.24';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -347,6 +347,8 @@
         remaining = 0;
       }
     }
+    // A งวด's amountPaid just changed — any prior ตรวจสอบ CRM confirmation was for the old figure.
+    touched.forEach(function (inst) { if (inst.verifiedCRM) { inst.verifiedCRM = false; inst.verifiedCRMAt = ''; } });
     return touched;
   }
   // One-time self-heal for orders whose overpayment (a lump early-settlement payment recorded
@@ -1649,6 +1651,15 @@
   // PAYMENT_CLEARS_OVERRIDE_STATUSES, so a later payment-file import can never silently flip one
   // back to something else.
   var ACCOUNT_LEVEL_STATUSES = ['ยกเลิกสัญญา คืนเครื่อง', 'จำหน่ายชื่อให้บริษัทติดตามหนี้'];
+  // Fields that change what a งวด's ยอดค้างชำระ actually IS — if any of these change on a งวด
+  // already marked ตรวจสอบ CRM แล้ว, that confirmation was for the OLD figure and no longer applies
+  // (per user request 2026-07-30: a customer paying off a previously-verified ล็อคเครื่อง งวด the
+  // next day must not keep showing as "already confirmed" against an amount that's now wrong).
+  // Every place amountPaid/amountDue/discount/dueDate can change on an existing งวด — manual edit
+  // (updateInstallment), payment-file import (both the FIFO combined-payment splitter and the
+  // single-target/penalty paths), and the old-system status-history snapshot import — must clear
+  // verifiedCRM so the aggregate status correctly goes back to needing re-verification.
+  var CRM_INVALIDATING_FIELDS = { amountPaid: true, amountDue: true, discount: true, dueDate: true };
   function updateInstallment(orderId, no, field, value, track) {
     var key = trackKey(track);
     var cascadeAll = field === 'status' && ACCOUNT_LEVEL_STATUSES.indexOf(value) !== -1;
@@ -1665,6 +1676,7 @@
           if (i.no !== no) return i;
           var patch = {}; patch[field] = value;
           if (field === 'status') patch.statusOverride = true;
+          if (CRM_INVALIDATING_FIELDS[field] && i.verifiedCRM) { patch.verifiedCRM = false; patch.verifiedCRMAt = ''; }
           return Object.assign({}, i, patch);
         });
         // amountPaid/discount changing can create or clear an overpayment that needs to carry
@@ -2619,6 +2631,7 @@
           // Rows that only log a collections/device status (e.g. ล็อคเครื่อง, เกินกำหนดชำระ) carry
           // amount 0 — must not zero out a real amountPaid recorded from an earlier row/file.
           if (PAYMENT_STATUSES[status] || toNumber(amountPaid) > 0) {
+            if (inst.verifiedCRM) { inst.verifiedCRM = false; inst.verifiedCRMAt = ''; }
             inst.amountPaid = toNumber(amountPaid);
             if (paidDate !== '') inst.paidDate = toDateString(paidDate);
             setPaid++;
@@ -2730,6 +2743,9 @@
           updatedOnly++;
         }
         multiInsts.forEach(function (mi) {
+          // This row touched mi's amountPaid (or is about to touch discount below) — a prior
+          // ตรวจสอบ CRM confirmation was for the pre-payment figure and no longer applies.
+          if (mi.verifiedCRM && (amountPaid !== '' || discount !== '')) { mi.verifiedCRM = false; mi.verifiedCRMAt = ''; }
           if (paidDate !== '') mi.paidDate = toDateString(paidDate); // latest payment date wins
           if (discount !== '') mi.discount = toNumber(discount);
           if (note !== '') mi.note = String(note);
