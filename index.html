@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.15';
+  var APP_BUILD = '2026-07-30.16';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1277,16 +1277,23 @@
     // below — an overdue/due-date/status match on the accessory schedule must surface the order
     // too, not just matches on the main device's schedule.
     function allInstsOf(o) { return o.installments.concat(o.accessoryInstallments || []); }
-    if (f.filterDueStatus !== 'all') {
+    // สถานะวันครบกำหนด, สถานะการชำระ, ครบกำหนดตั้งแต่-ถึง, and วันที่รับชำระตั้งแต่-ถึง are all
+    // per-งวด attributes and must all be checked against the SAME งวด when combined — previously
+    // each ran as its own separate .some() pass over every งวด, so e.g. "สถานะการชำระ = ล็อคเครื่อง"
+    // + "ครบกำหนด เม.ย. 2026" matched an order if ANY งวด was ล็อคเครื่อง (regardless of its due
+    // date) AND separately ANY งวด (a different one) fell in April — surfacing customers where no
+    // single งวด actually satisfied both filters at once (user report, 2026-07-30). Merged into one
+    // .some() so a result only shows up when one งวด matches every active per-งวด filter together.
+    if (f.filterDueStatus !== 'all' || f.paymentStatusesExcluded.length || f.dueFrom || f.dueTo || f.paidFrom || f.paidTo) {
       filteredOrders = filteredOrders.filter(function (o) { return allInstsOf(o).some(function (i) {
-        if (f.filterDueStatus === 'notdue') return i.effectiveStatus === 'ยังไม่ถึงกำหนดชำระ';
-        if (f.filterDueStatus === 'due_today') return i.effectiveStatus === 'ถึงกำหนดชำระ';
-        if (f.filterDueStatus === 'overdue') return LATE_STATUSES.indexOf(i.effectiveStatus) !== -1;
+        if (f.filterDueStatus === 'notdue' && i.effectiveStatus !== 'ยังไม่ถึงกำหนดชำระ') return false;
+        if (f.filterDueStatus === 'due_today' && i.effectiveStatus !== 'ถึงกำหนดชำระ') return false;
+        if (f.filterDueStatus === 'overdue' && LATE_STATUSES.indexOf(i.effectiveStatus) === -1) return false;
+        if (f.paymentStatusesExcluded.length && f.paymentStatusesExcluded.indexOf(i.effectiveStatus) !== -1) return false;
+        if ((f.dueFrom || f.dueTo) && !inRange(i.dueDate, f.dueFrom, f.dueTo)) return false;
+        if ((f.paidFrom || f.paidTo) && !inRange(i.paidDate, f.paidFrom, f.paidTo)) return false;
         return true;
       }); });
-    }
-    if (f.paymentStatusesExcluded.length) {
-      filteredOrders = filteredOrders.filter(function (o) { return allInstsOf(o).some(function (i) { return f.paymentStatusesExcluded.indexOf(i.effectiveStatus) === -1; }); });
     }
     if (f.filterGrade !== 'all') {
       filteredOrders = filteredOrders.filter(function (o) {
@@ -1297,12 +1304,6 @@
     }
     if (f.purchaseTypes.length) {
       filteredOrders = filteredOrders.filter(function (o) { return f.purchaseTypes.indexOf(o.purchaseType) === -1; });
-    }
-    if (f.dueFrom || f.dueTo) {
-      filteredOrders = filteredOrders.filter(function (o) { return allInstsOf(o).some(function (i) { return inRange(i.dueDate, f.dueFrom, f.dueTo); }); });
-    }
-    if (f.paidFrom || f.paidTo) {
-      filteredOrders = filteredOrders.filter(function (o) { return allInstsOf(o).some(function (i) { return inRange(i.paidDate, f.paidFrom, f.paidTo); }); });
     }
     if (f.contractFrom || f.contractTo) {
       filteredOrders = filteredOrders.filter(function (o) { return inRange(o.contractDate, f.contractFrom, f.contractTo); });
