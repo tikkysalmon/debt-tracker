@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.26';
+  var APP_BUILD = '2026-07-30.27';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -964,6 +964,12 @@
       // month — already-paid/not-yet-due งวด aren't part of that manual QA process.
       var crmVerifiedCount = trueOverdueInsts.filter(function (i) { return i.verifiedCRM; }).length;
       var crmStatus = overdueCount === 0 ? 'none' : crmVerifiedCount === 0 ? 'pending' : crmVerifiedCount === overdueCount ? 'verified' : 'partial';
+      // Latest verifiedCRMAt among this order's checked งวด, so the report table can show staff
+      // when the CRM cross-check was last updated instead of just a pass/fail pill.
+      var crmVerifiedLatestAt = trueOverdueInsts.reduce(function (latest, i) {
+        if (!i.verifiedCRM || !i.verifiedCRMAt) return latest;
+        return (!latest || parseLogTimestamp(i.verifiedCRMAt) > parseLogTimestamp(latest)) ? i.verifiedCRMAt : latest;
+      }, '');
       var lateInsts = allInstallments.filter(function (i) { return LATE_STATUSES.indexOf(i.effectiveStatus) !== -1; });
       var lateOutstandingRaw = lateInsts.reduce(function (s, i) { return s + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0);
       return Object.assign({}, o, {
@@ -995,7 +1001,7 @@
         overdueCount: overdueCount,
         trueOverdueRaw: trueOverdueRaw,
         trueOverdueDisp: fmtMoney(trueOverdueRaw),
-        crmVerifiedCount: crmVerifiedCount, crmStatus: crmStatus,
+        crmVerifiedCount: crmVerifiedCount, crmStatus: crmStatus, crmVerifiedLatestAt: crmVerifiedLatestAt,
         isCancelled: isCancelled,
         isSold: isSold,
         lateCount: lateInsts.length,
@@ -3213,9 +3219,10 @@
   // CRM once, so a customer still overdue next month only needs the newly-due งวด re-checked, not
   // the whole history again. Nothing to check at all (order isn't overdue) shows no pill.
   function crmStatusPill(order) {
+    var stamp = order.crmVerifiedLatestAt ? '<div style="font-size:10.5px; color:#8a86a3; margin-top:3px; white-space:nowrap;">อัปเดตล่าสุด ' + esc(order.crmVerifiedLatestAt) + '</div>' : '';
     if (order.crmStatus === 'none') return '<span style="color:#c3c0d6; font-size:12px;">—</span>';
-    if (order.crmStatus === 'verified') return '<span style="background:rgba(18,184,134,0.12); color:#12b886; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">✓ ตรวจครบ</span>';
-    if (order.crmStatus === 'partial') return '<span style="background:rgba(240,140,0,0.12); color:#f08c00; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">◐ บางส่วน ' + order.crmVerifiedCount + '/' + order.overdueCount + '</span>';
+    if (order.crmStatus === 'verified') return '<span style="background:rgba(18,184,134,0.12); color:#12b886; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">✓ ตรวจครบ</span>' + stamp;
+    if (order.crmStatus === 'partial') return '<span style="background:rgba(240,140,0,0.12); color:#f08c00; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">◐ บางส่วน ' + order.crmVerifiedCount + '/' + order.overdueCount + '</span>' + stamp;
     return '<span style="background:rgba(138,134,163,0.12); color:#8a86a3; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">○ ยังไม่ตรวจ</span>';
   }
   // Aging report over each order's current (earliest unpaid) installment — mirrors the
