@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.13';
+  var APP_BUILD = '2026-07-30.14';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -838,6 +838,7 @@
     searched: false,
     storageError: '',
     customerNoteDraft: '',
+    editingCustomerName: false, customerNameDraft: '',
     postponeTarget: null, postponeDate: '', postponeReason: '', postponeLateFee: 0, postponeUnlockFee: 0,
     noteModalTarget: null, noteModalDraft: '',
     appliedQuery: '',
@@ -1404,7 +1405,45 @@
     });
     render();
   }
-  function selectCustomer(cid) { state.selectedCustomerId = cid; state.customerNoteDraft = ''; render(); }
+  function selectCustomer(cid) { state.selectedCustomerId = cid; state.customerNoteDraft = ''; state.editingCustomerName = false; render(); }
+  function startEditCustomerName() {
+    if (!state.selectedCustomerId || !CV) return;
+    state.customerNameDraft = CV.selectedCustomerName;
+    state.editingCustomerName = true;
+    render();
+  }
+  function cancelEditCustomerName() { state.editingCustomerName = false; render(); }
+  // Renames a customer across EVERY order/bill they have (customerKey is id+name compound, so a
+  // customer with several orders must all move together or they'd split into two different
+  // "customers" the moment one order's name changed but not the rest). Also moves their
+  // customerNotes entry (keyed on the same compound id) onto the new key so a note doesn't get
+  // silently orphaned under the old, now-unmatched key.
+  function saveCustomerName() {
+    if (!state.selectedCustomerId) { state.editingCustomerName = false; render(); return; }
+    var newName = state.customerNameDraft.trim();
+    var oldKey = state.selectedCustomerId;
+    var matching = state.orders.filter(function (o) { return customerKey(o) === oldKey; });
+    if (!newName || !matching.length || newName === matching[0].customerName) {
+      state.editingCustomerName = false;
+      render();
+      return;
+    }
+    var customerId = matching[0].customerId;
+    var newKey = customerId + '||' + newName;
+    state.orders = state.orders.map(function (o) {
+      return customerKey(o) === oldKey ? Object.assign({}, o, { customerName: newName }) : o;
+    });
+    if (Object.prototype.hasOwnProperty.call(state.customerNotes, oldKey)) {
+      var notesPatch = Object.assign({}, state.customerNotes);
+      notesPatch[newKey] = notesPatch[oldKey];
+      delete notesPatch[oldKey];
+      state.customerNotes = notesPatch;
+    }
+    state.selectedCustomerId = newKey;
+    state.editingCustomerName = false;
+    savePersisted();
+    render();
+  }
   function saveCustomerNote() {
     if (!state.selectedCustomerId) return;
     // Reassigns a fresh object (never mutates the old one in place) so cloudSaveNow's merge logic
@@ -3099,7 +3138,14 @@
       '<div style="max-width:1100px; width:100%; background:rgba(255,255,255,0.97); backdrop-filter:blur(24px); -webkit-backdrop-filter:blur(24px); border:1px solid rgba(255,255,255,0.85); border-radius:24px; padding:28px 30px; box-shadow:0 24px 60px rgba(43,37,64,0.3); margin-bottom:30px;">' +
       '<div style="display:flex; align-items:flex-start; gap:16px; margin-bottom:18px;">' +
         '<div style="width:48px; height:48px; border-radius:50%; background:rgba(124,92,255,0.14); display:flex; align-items:center; justify-content:center; font-size:20px; flex-shrink:0;">👤</div>' +
-        '<div style="flex:1; min-width:0;"><div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;"><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:19px; color:#2b2540;">' + esc(CV.selectedCustomerName) + '</div><div style="background:' + CV.selectedCustomerGradeColor + '1a; color:' + CV.selectedCustomerGradeColor + '; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700;">' + esc(CV.selectedCustomerGradeLabel) + '</div>' + (CV.selectedCustomerFullySettled ? '<div style="background:rgba(18,184,134,0.14); color:#12b886; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700;">✅ ปิดยอด</div>' : '') + '</div><div style="font-size:13px; color:#6b6785; margin-top:4px;">รหัสลูกค้า: ' + esc(CV.selectedCustomerIdDisp) + ' <span style="margin:0 6px;">·</span> พบ ' + CV.billCount + ' บิล</div></div>' +
+        '<div style="flex:1; min-width:0;"><div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">' +
+          (state.editingCustomerName
+            ? '<input type="text" value="' + esc(state.customerNameDraft) + '" data-action="customerNameDraft" style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:16px; color:#2b2540; border:1px solid rgba(124,92,255,0.35); border-radius:8px; padding:4px 10px; outline:none; min-width:160px;" />' +
+              '<button data-action="saveCustomerName" style="border:none; background:#12b886; color:#fff; padding:5px 12px; border-radius:8px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;">✓ บันทึก</button>' +
+              '<button data-action="cancelEditCustomerName" style="border:none; background:rgba(0,0,0,0.06); color:#6b6785; padding:5px 12px; border-radius:8px; font-size:12px; font-weight:600; cursor:pointer;">✕ ยกเลิก</button>'
+            : '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:19px; color:#2b2540;">' + esc(CV.selectedCustomerName) + '</div>' +
+              '<button data-action="startEditCustomerName" title="แก้ไขชื่อลูกค้า" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; width:26px; height:26px; border-radius:8px; font-size:12px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">✏️</button>') +
+          '<div style="background:' + CV.selectedCustomerGradeColor + '1a; color:' + CV.selectedCustomerGradeColor + '; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700;">' + esc(CV.selectedCustomerGradeLabel) + '</div>' + (CV.selectedCustomerFullySettled ? '<div style="background:rgba(18,184,134,0.14); color:#12b886; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700;">✅ ปิดยอด</div>' : '') + '</div><div style="font-size:13px; color:#6b6785; margin-top:4px;">รหัสลูกค้า: ' + esc(CV.selectedCustomerIdDisp) + ' <span style="margin:0 6px;">·</span> พบ ' + CV.billCount + ' บิล</div></div>' +
         '<button data-action="closeDetail" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; padding:8px 16px; border-radius:20px; font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap;">✕ ปิด</button>' +
       '</div>' +
       '<div style="border-top:1px solid rgba(124,92,255,0.10); padding-top:16px; margin-bottom:22px;">' +
@@ -3390,6 +3436,9 @@
         case 'selectCustomer': selectCustomer(t.getAttribute('data-cid')); break;
         case 'closeDetail': state.selectedCustomerId = null; render(); break;
         case 'saveNote': saveCustomerNote(); break;
+        case 'startEditCustomerName': startEditCustomerName(); break;
+        case 'cancelEditCustomerName': cancelEditCustomerName(); break;
+        case 'saveCustomerName': saveCustomerName(); break;
         case 'resetOverride': resetOverride(t.getAttribute('data-order'), Number(t.getAttribute('data-no')), t.getAttribute('data-track')); break;
         case 'addInstallment': addInstallment(t.getAttribute('data-order'), t.getAttribute('data-track')); break;
         case 'deleteInstallment': deleteInstallment(t.getAttribute('data-order'), Number(t.getAttribute('data-no')), t.getAttribute('data-track')); break;
@@ -3452,6 +3501,7 @@
       switch (a) {
         case 'queryInput': state.query = t.value; break;
         case 'noteDraft': state.customerNoteDraft = t.value; break;
+        case 'customerNameDraft': state.customerNameDraft = t.value; break;
         case 'postponeDate': state.postponeDate = t.value; break;
         case 'postponeReason': state.postponeReason = t.value; break;
         case 'postponeLateFee': state.postponeLateFee = toNumber(t.value); break;
