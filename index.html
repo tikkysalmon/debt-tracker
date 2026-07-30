@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.14';
+  var APP_BUILD = '2026-07-30.15';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -839,6 +839,8 @@
     storageError: '',
     customerNoteDraft: '',
     editingCustomerName: false, customerNameDraft: '',
+    editingCustomerId: false, customerIdDraft: '',
+    editingOrderIdFor: null, orderIdDraft: '',
     postponeTarget: null, postponeDate: '', postponeReason: '', postponeLateFee: 0, postponeUnlockFee: 0,
     noteModalTarget: null, noteModalDraft: '',
     appliedQuery: '',
@@ -1405,7 +1407,7 @@
     });
     render();
   }
-  function selectCustomer(cid) { state.selectedCustomerId = cid; state.customerNoteDraft = ''; state.editingCustomerName = false; render(); }
+  function selectCustomer(cid) { state.selectedCustomerId = cid; state.customerNoteDraft = ''; state.editingCustomerName = false; state.editingCustomerId = false; state.editingOrderIdFor = null; render(); }
   function startEditCustomerName() {
     if (!state.selectedCustomerId || !CV) return;
     state.customerNameDraft = CV.selectedCustomerName;
@@ -1413,26 +1415,29 @@
     render();
   }
   function cancelEditCustomerName() { state.editingCustomerName = false; render(); }
-  // Renames a customer across EVERY order/bill they have (customerKey is id+name compound, so a
-  // customer with several orders must all move together or they'd split into two different
-  // "customers" the moment one order's name changed but not the rest). Also moves their
-  // customerNotes entry (keyed on the same compound id) onto the new key so a note doesn't get
-  // silently orphaned under the old, now-unmatched key.
-  function saveCustomerName() {
-    if (!state.selectedCustomerId) { state.editingCustomerName = false; render(); return; }
-    var newName = state.customerNameDraft.trim();
+  function startEditCustomerId() {
+    if (!state.selectedCustomerId || !CV) return;
+    state.customerIdDraft = CV.selectedCustomerIdDisp;
+    state.editingCustomerId = true;
+    render();
+  }
+  function cancelEditCustomerId() { state.editingCustomerId = false; render(); }
+  // Renames a customer field (customerId or customerName) across EVERY order/bill they have —
+  // customerKey is an id+name compound, so a customer with several orders must all move together
+  // or they'd split into two different "customers" the moment only one order's field changed. Also
+  // moves their customerNotes entry (keyed on the same compound id) onto the new key so a note
+  // doesn't get silently orphaned under the old, now-unmatched key. Returns true if anything
+  // actually changed.
+  function renameCustomerField(field, newValue) {
+    if (!state.selectedCustomerId) return false;
     var oldKey = state.selectedCustomerId;
     var matching = state.orders.filter(function (o) { return customerKey(o) === oldKey; });
-    if (!newName || !matching.length || newName === matching[0].customerName) {
-      state.editingCustomerName = false;
-      render();
-      return;
-    }
-    var customerId = matching[0].customerId;
-    var newKey = customerId + '||' + newName;
+    if (!newValue || !matching.length || newValue === matching[0][field]) return false;
+    var patch = {}; patch[field] = newValue;
     state.orders = state.orders.map(function (o) {
-      return customerKey(o) === oldKey ? Object.assign({}, o, { customerName: newName }) : o;
+      return customerKey(o) === oldKey ? Object.assign({}, o, patch) : o;
     });
+    var newKey = customerKey(Object.assign({}, matching[0], patch));
     if (Object.prototype.hasOwnProperty.call(state.customerNotes, oldKey)) {
       var notesPatch = Object.assign({}, state.customerNotes);
       notesPatch[newKey] = notesPatch[oldKey];
@@ -1440,9 +1445,40 @@
       state.customerNotes = notesPatch;
     }
     state.selectedCustomerId = newKey;
+    return true;
+  }
+  function saveCustomerName() {
+    var changed = renameCustomerField('customerName', state.customerNameDraft.trim());
     state.editingCustomerName = false;
-    savePersisted();
+    if (changed) savePersisted();
     render();
+  }
+  function saveCustomerId() {
+    var changed = renameCustomerField('customerId', state.customerIdDraft.trim());
+    state.editingCustomerId = false;
+    if (changed) savePersisted();
+    render();
+  }
+  function startEditOrderId(orderId) {
+    state.orderIdDraft = orderId;
+    state.editingOrderIdFor = orderId;
+    render();
+  }
+  function cancelEditOrderId() { state.editingOrderIdFor = null; render(); }
+  // Unlike customerId/customerName (shared across a customer's whole account), orderId identifies
+  // ONE specific bill — renaming it only ever touches that single order, via the same
+  // updateOrderField() path every other order-level field edit already goes through.
+  function saveOrderId() {
+    var oldId = state.editingOrderIdFor;
+    var newId = state.orderIdDraft.trim();
+    state.editingOrderIdFor = null;
+    if (!oldId || !newId || newId === oldId) { render(); return; }
+    if (state.orders.some(function (o) { return o.orderId === newId; })) {
+      window.alert('มีเลขคำสั่งซื้อ "' + newId + '" อยู่แล้วในระบบ — กรุณาใช้เลขอื่น');
+      render();
+      return;
+    }
+    updateOrderField(oldId, 'orderId', newId);
   }
   function saveCustomerNote() {
     if (!state.selectedCustomerId) return;
@@ -2354,6 +2390,7 @@
     if (!window.XLSX) { state.uploadMsgPayment = 'ไม่พบไลบรารีอ่านไฟล์ กรุณาลองใหม่'; render(); return; }
     var ALIASES = {
       orderId: ['คำสั่งซื้อ', 'orderid', 'order id', 'order no', 'orderno', 'เลขที่คำสั่งซื้อ', 'หมายเลขคำสั่งซื้อ', 'เลขคำสั่งซื้อ', 'so', 'so number', 'sonumber', 'เลขที่ so', 'เลขที่เอกสาร', 'เลขที่ใบสั่งขาย', 'เลขที่สัญญา', 'เลขสัญญา', 'เลขที่บิล'],
+      customerId: ['รหัสลูกค้า', 'customerid', 'customer id', 'รหัส', 'รหัสสมาชิก', 'รหัสลูกค้า crm'],
       installmentNo: ['งวดที่', 'installmentno', 'installment', 'installment no', 'งวด', 'งวดที่ชำระ', 'เลขงวด', 'งวดที่รับชำระ'],
       amountPaid: ['ยอดที่ชำระจริง', 'amountpaid', 'amount paid', 'ยอดชำระจริง', 'ยอดชำระ', 'ยอดที่ชำระ', 'จำนวนเงินที่ชำระ', 'ยอดรับชำระ', 'รับชำระ', 'จำนวนเงินที่รับชำระ'],
       paidDate: ['วันที่ชำระ', 'paiddate', 'paid date', 'วันชำระ', 'วันที่รับชำระ', 'วันรับชำระ'],
@@ -2379,11 +2416,20 @@
       // Matches a payment row's SO against either the main order OR (ดาวน์+อุปกรณ์เสริม orders
       // only) its separately-billed accessory SO — CRM exports payments under whichever SO the
       // customer actually paid, and the two schedules must never get each other's payments.
-      function findOrderAndTrack(orderId) {
+      // Falls back to รหัสลูกค้า (per user request 2026-07-30) only when no orderId match exists AT
+      // ALL and the customerId resolves to EXACTLY ONE order — a customer with several bills has no
+      // reliable way to tell which one a row belongs to from customerId alone (no งวดที่/amount
+      // combination proves it), so guessing would risk crediting real money to the wrong bill;
+      // safer to leave those rows unmatched ("missed") for staff to check by hand.
+      function findOrderAndTrack(orderId, customerId) {
         var order = orders.find(function (o) { return o.orderId === orderId; });
         if (order) return { order: order, track: 'main', list: order.installments };
         order = orders.find(function (o) { return o.accessoryOrderId && o.accessoryOrderId === orderId; });
         if (order) return { order: order, track: 'accessory', list: order.accessoryInstallments };
+        if (customerId) {
+          var candidates = orders.filter(function (o) { return o.customerId === customerId; });
+          if (candidates.length === 1) return { order: candidates[0], track: 'main', list: candidates[0].installments };
+        }
         return null;
       }
 
@@ -2404,7 +2450,7 @@
         rows.forEach(function (r) {
           var orderId = String(resolveField(r, ALIASES.orderId) || '').trim();
           var no = Number(resolveField(r, ALIASES.installmentNo) || 0);
-          var match = findOrderAndTrack(orderId);
+          var match = findOrderAndTrack(orderId, String(resolveField(r, ALIASES.customerId) || '').trim());
           if (!match) { missedSnap++; return; }
           var order = match.order;
           var inst = match.list.find(function (i) { return i.no === no; });
@@ -2462,7 +2508,7 @@
         var orderId = String(resolveField(r, ALIASES.orderId) || '').trim();
         var noRaw = resolveField(r, ALIASES.installmentNo);
         var no = Number(noRaw || 0);
-        var match = findOrderAndTrack(orderId);
+        var match = findOrderAndTrack(orderId, String(resolveField(r, ALIASES.customerId) || '').trim());
         if (!match) { missed++; return; }
         var order = match.order, trackList = match.list;
         var amountPaid = resolveField(r, ALIASES.amountPaid);
@@ -3145,7 +3191,15 @@
               '<button data-action="cancelEditCustomerName" style="border:none; background:rgba(0,0,0,0.06); color:#6b6785; padding:5px 12px; border-radius:8px; font-size:12px; font-weight:600; cursor:pointer;">✕ ยกเลิก</button>'
             : '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:19px; color:#2b2540;">' + esc(CV.selectedCustomerName) + '</div>' +
               '<button data-action="startEditCustomerName" title="แก้ไขชื่อลูกค้า" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; width:26px; height:26px; border-radius:8px; font-size:12px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">✏️</button>') +
-          '<div style="background:' + CV.selectedCustomerGradeColor + '1a; color:' + CV.selectedCustomerGradeColor + '; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700;">' + esc(CV.selectedCustomerGradeLabel) + '</div>' + (CV.selectedCustomerFullySettled ? '<div style="background:rgba(18,184,134,0.14); color:#12b886; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700;">✅ ปิดยอด</div>' : '') + '</div><div style="font-size:13px; color:#6b6785; margin-top:4px;">รหัสลูกค้า: ' + esc(CV.selectedCustomerIdDisp) + ' <span style="margin:0 6px;">·</span> พบ ' + CV.billCount + ' บิล</div></div>' +
+          '<div style="background:' + CV.selectedCustomerGradeColor + '1a; color:' + CV.selectedCustomerGradeColor + '; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700;">' + esc(CV.selectedCustomerGradeLabel) + '</div>' + (CV.selectedCustomerFullySettled ? '<div style="background:rgba(18,184,134,0.14); color:#12b886; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700;">✅ ปิดยอด</div>' : '') + '</div>' +
+          '<div style="font-size:13px; color:#6b6785; margin-top:4px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">รหัสลูกค้า: ' +
+          (state.editingCustomerId
+            ? '<input type="text" value="' + esc(state.customerIdDraft) + '" data-action="customerIdDraft" style="font-size:13px; color:#2b2540; border:1px solid rgba(124,92,255,0.35); border-radius:6px; padding:2px 8px; outline:none; min-width:120px;" />' +
+              '<button data-action="saveCustomerId" style="border:none; background:#12b886; color:#fff; padding:3px 10px; border-radius:6px; font-size:11.5px; font-weight:600; cursor:pointer; white-space:nowrap;">✓</button>' +
+              '<button data-action="cancelEditCustomerId" style="border:none; background:rgba(0,0,0,0.06); color:#6b6785; padding:3px 10px; border-radius:6px; font-size:11.5px; font-weight:600; cursor:pointer;">✕</button>'
+            : '<span style="color:#2b2540; font-weight:600;">' + esc(CV.selectedCustomerIdDisp) + '</span>' +
+              '<button data-action="startEditCustomerId" title="แก้ไขรหัสลูกค้า" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; width:20px; height:20px; border-radius:5px; font-size:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">✏️</button>') +
+          ' <span style="margin:0 6px;">·</span> พบ ' + CV.billCount + ' บิล</div></div>' +
         '<button data-action="closeDetail" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; padding:8px 16px; border-radius:20px; font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap;">✕ ปิด</button>' +
       '</div>' +
       '<div style="border-top:1px solid rgba(124,92,255,0.10); padding-top:16px; margin-bottom:22px;">' +
@@ -3172,7 +3226,12 @@
     html += CV.selectedCustomerOrders.map(function (ord) {
       return '<div style="border:1px solid rgba(124,92,255,0.14); border-radius:20px; padding:22px 24px; margin-bottom:20px; background:rgba(255,255,255,0.4);">' +
         '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px;">' +
-          '<div style="font-size:13px; color:#6b6785;">🔗 SO: <span style="color:#2b2540; font-weight:600;">' + esc(ord.soDisplay) + '</span></div>' +
+          (state.editingOrderIdFor === ord.orderId
+            ? '<div style="display:flex; align-items:center; gap:6px; font-size:13px; color:#6b6785;">🔗 SO: <input type="text" value="' + esc(state.orderIdDraft) + '" data-action="orderIdDraft" style="font-size:13px; font-weight:600; color:#2b2540; border:1px solid rgba(124,92,255,0.35); border-radius:6px; padding:2px 8px; outline:none; min-width:140px;" />' +
+                '<button data-action="saveOrderId" style="border:none; background:#12b886; color:#fff; padding:3px 10px; border-radius:6px; font-size:11.5px; font-weight:600; cursor:pointer;">✓</button>' +
+                '<button data-action="cancelEditOrderId" style="border:none; background:rgba(0,0,0,0.06); color:#6b6785; padding:3px 10px; border-radius:6px; font-size:11.5px; font-weight:600; cursor:pointer;">✕</button></div>'
+            : '<div style="font-size:13px; color:#6b6785; display:flex; align-items:center; gap:6px;">🔗 SO: <span style="color:#2b2540; font-weight:600;">' + esc(ord.soDisplay) + '</span>' +
+                '<button data-action="startEditOrderId" data-order="' + esc(ord.orderId) + '" title="แก้ไขเลขคำสั่งซื้อ" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; width:20px; height:20px; border-radius:5px; font-size:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">✏️</button></div>') +
           '<div style="font-size:13px; color:#6b6785;">🗓 วันที่ออกสัญญา: <span style="color:#2b2540; font-weight:600;">' + esc(ord.contractDateDisp) + '</span></div>' +
           '<div style="background:rgba(240,140,0,0.12); color:#c2650a; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">' + esc(ord.purchaseType) + '</div>' +
           (ord.isSold ? '<div style="background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">📤 จำหน่ายชื่อให้บริษัทติดตามหนี้</div>' : '') +
@@ -3439,6 +3498,12 @@
         case 'startEditCustomerName': startEditCustomerName(); break;
         case 'cancelEditCustomerName': cancelEditCustomerName(); break;
         case 'saveCustomerName': saveCustomerName(); break;
+        case 'startEditCustomerId': startEditCustomerId(); break;
+        case 'cancelEditCustomerId': cancelEditCustomerId(); break;
+        case 'saveCustomerId': saveCustomerId(); break;
+        case 'startEditOrderId': startEditOrderId(t.getAttribute('data-order')); break;
+        case 'cancelEditOrderId': cancelEditOrderId(); break;
+        case 'saveOrderId': saveOrderId(); break;
         case 'resetOverride': resetOverride(t.getAttribute('data-order'), Number(t.getAttribute('data-no')), t.getAttribute('data-track')); break;
         case 'addInstallment': addInstallment(t.getAttribute('data-order'), t.getAttribute('data-track')); break;
         case 'deleteInstallment': deleteInstallment(t.getAttribute('data-order'), Number(t.getAttribute('data-no')), t.getAttribute('data-track')); break;
@@ -3502,6 +3567,8 @@
         case 'queryInput': state.query = t.value; break;
         case 'noteDraft': state.customerNoteDraft = t.value; break;
         case 'customerNameDraft': state.customerNameDraft = t.value; break;
+        case 'customerIdDraft': state.customerIdDraft = t.value; break;
+        case 'orderIdDraft': state.orderIdDraft = t.value; break;
         case 'postponeDate': state.postponeDate = t.value; break;
         case 'postponeReason': state.postponeReason = t.value; break;
         case 'postponeLateFee': state.postponeLateFee = toNumber(t.value); break;
