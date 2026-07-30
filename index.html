@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.18';
+  var APP_BUILD = '2026-07-30.19';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1342,6 +1342,20 @@
         });
       });
     }
+    // Group a customer's multiple matching บิล together instead of leaving them scattered wherever
+    // they happened to land in state.orders (usually far apart — different bills are often created
+    // months apart) — across a paginated result list that made it easy to miss that a customer had
+    // more than one matching SO, since the 2nd one could be several pages away (user report,
+    // 2026-07-30). Stable sort: same customer's rows stay adjacent, ordered by contract date within
+    // that customer; unrelated customers keep their existing relative order.
+    filteredOrders = filteredOrders.map(function (o, idx) { return { o: o, idx: idx }; })
+      .sort(function (a, b) {
+        var byCustomer = customerKey(a.o).localeCompare(customerKey(b.o));
+        if (byCustomer !== 0) return byCustomer;
+        var byContract = String(a.o.contractDate || '').localeCompare(String(b.o.contractDate || ''));
+        return byContract !== 0 ? byContract : a.idx - b.idx;
+      })
+      .map(function (x) { return x.o; });
     // Once the user presses ค้นหา we always show the result table — even with no criteria,
     // where it simply lists every order.
     var hasSearched = state.searched;
