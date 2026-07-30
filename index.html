@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.20';
+  var APP_BUILD = '2026-07-30.21';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1264,13 +1264,14 @@
       .sort(function (a, b) { return b.contractRaw - a.contractRaw; });
     var multiOrderTotalContract = multiOrderCustomers.reduce(function (s, c) { return s + c.contractRaw; }, 0);
     var multiOrderTotalPaid = multiOrderCustomers.reduce(function (s, c) { return s + c.paidRaw; }, 0);
+    var multiOrderTotalOrders = multiOrderCustomers.reduce(function (s, c) { return s + c.orderCount; }, 0);
     var multiOrderRemainingRaw = Math.max(0, multiOrderTotalContract - multiOrderTotalPaid);
     var multiOrderSegs = [
       { label: 'ชำระแล้ว', color: '#4f7cff', amount: multiOrderTotalPaid },
       { label: 'คงเหลือ', color: '#e03131', amount: multiOrderRemainingRaw }
     ].map(function (s) { return Object.assign({}, s, { pct: multiOrderTotalContract > 0 ? (s.amount / multiOrderTotalContract * 100) : 0 }); });
     var multiOrderSummary = {
-      count: multiOrderCustomers.length,
+      count: multiOrderCustomers.length, totalOrderCount: multiOrderTotalOrders,
       contractDisp: fmtMoney(multiOrderTotalContract), paidDisp: fmtMoney(multiOrderTotalPaid), remainingDisp: fmtMoney(multiOrderRemainingRaw),
       donut: { conic: buildConicGradient(multiOrderSegs), segments: multiOrderSegs.map(function (s) { return Object.assign({}, s, { pctDisp: s.pct.toFixed(1), amountDisp: fmtMoney(s.amount) }); }) },
       customers: multiOrderCustomers
@@ -2970,6 +2971,7 @@
       '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;"><div style="font-weight:600; font-size:14.5px; color:#2b2540; display:flex; align-items:center; gap:8px;">👥 ลูกค้าที่มีคำสั่งซื้อมากกว่า 1 คำสั่งซื้อ</div><div style="background:' + badgeBg + '; color:' + accent + '; padding:4px 12px; border-radius:20px; font-size:12px; font-weight:600;">' + sm.count + ' ราย</div></div>' +
       '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:18px;">' +
         '<div style="border-left:3px solid ' + accent + '; background:rgba(255,255,255,0.5); border-radius:12px; padding:12px 14px;"><div style="font-size:11.5px; color:#6b6785;">จำนวนลูกค้า</div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#2b2540;">' + sm.count + ' ราย</div></div>' +
+        '<div style="border-left:3px solid #7c5cff; background:rgba(255,255,255,0.5); border-radius:12px; padding:12px 14px;"><div style="font-size:11.5px; color:#6b6785;">จำนวนคำสั่งซื้อทั้งหมด</div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#2b2540;">' + sm.totalOrderCount + ' คำสั่งซื้อ</div></div>' +
         '<div style="border-left:3px solid #4f46e5; background:rgba(255,255,255,0.5); border-radius:12px; padding:12px 14px;"><div style="font-size:11.5px; color:#6b6785;">ยอดรวมสัญญา</div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#4f46e5;">฿' + sm.contractDisp + '</div></div>' +
         '<div style="border-left:3px solid #12b886; background:rgba(255,255,255,0.5); border-radius:12px; padding:12px 14px;"><div style="font-size:11.5px; color:#6b6785;">ยอดชำระแล้ว</div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#12b886;">฿' + sm.paidDisp + '</div></div>' +
         '<div style="border-left:3px solid #f08c00; background:rgba(255,255,255,0.5); border-radius:12px; padding:12px 14px;"><div style="font-size:11.5px; color:#6b6785;">ยอดคงเหลือ</div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#f08c00;">฿' + sm.remainingDisp + '</div></div>' +
@@ -2987,11 +2989,12 @@
     if (state.showMultiOrderDetail) {
       html += '<div style="margin-top:14px; overflow-x:auto;">' +
         '<table style="width:100%; border-collapse:collapse; min-width:640px;"><thead><tr style="text-align:left; font-size:12px; color:#6b6785;">' +
-          ['ชื่อลูกค้า', 'จำนวนคำสั่งซื้อ', 'ยอดรวมทั้งสิ้น', 'ยอดที่ชำระแล้ว', 'ยอดที่ค้างชำระ', 'ยอดที่ยังไม่ถึงกำหนด'].map(function (h) { return '<th style="padding:10px 12px; font-weight:600;">' + h + '</th>'; }).join('') +
+          ['รหัสลูกค้า', 'ชื่อลูกค้า', 'จำนวนคำสั่งซื้อ', 'ยอดรวมทั้งสิ้น', 'ยอดที่ชำระแล้ว', 'ยอดที่ค้างชำระ', 'ยอดที่ยังไม่ถึงกำหนด'].map(function (h) { return '<th style="padding:10px 12px; font-weight:600;">' + h + '</th>'; }).join('') +
         '</tr></thead><tbody>' +
           sm.customers.map(function (c) {
             return '<tr style="font-size:13px; color:#2b2540; border-top:1px solid rgba(124,92,255,0.10);">' +
-              '<td style="padding:10px 12px; font-weight:600;">' + esc(c.customerName) + '</td>' +
+              '<td style="padding:10px 12px; font-weight:600;">' + esc(c.customerId) + '</td>' +
+              '<td style="padding:10px 12px;">' + esc(c.customerName) + '</td>' +
               '<td style="padding:10px 12px;">' + c.orderCount + ' คำสั่งซื้อ</td>' +
               '<td style="padding:10px 12px;">฿' + c.contractDisp + '</td>' +
               '<td style="padding:10px 12px; color:#12b886;">฿' + c.paidDisp + '</td>' +
