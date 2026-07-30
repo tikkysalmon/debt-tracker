@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.16';
+  var APP_BUILD = '2026-07-30.17';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1283,17 +1283,19 @@
     // + "ครบกำหนด เม.ย. 2026" matched an order if ANY งวด was ล็อคเครื่อง (regardless of its due
     // date) AND separately ANY งวด (a different one) fell in April — surfacing customers where no
     // single งวด actually satisfied both filters at once (user report, 2026-07-30). Merged into one
-    // .some() so a result only shows up when one งวด matches every active per-งวด filter together.
-    if (f.filterDueStatus !== 'all' || f.paymentStatusesExcluded.length || f.dueFrom || f.dueTo || f.paidFrom || f.paidTo) {
-      filteredOrders = filteredOrders.filter(function (o) { return allInstsOf(o).some(function (i) {
-        if (f.filterDueStatus === 'notdue' && i.effectiveStatus !== 'ยังไม่ถึงกำหนดชำระ') return false;
-        if (f.filterDueStatus === 'due_today' && i.effectiveStatus !== 'ถึงกำหนดชำระ') return false;
-        if (f.filterDueStatus === 'overdue' && LATE_STATUSES.indexOf(i.effectiveStatus) === -1) return false;
-        if (f.paymentStatusesExcluded.length && f.paymentStatusesExcluded.indexOf(i.effectiveStatus) !== -1) return false;
-        if ((f.dueFrom || f.dueTo) && !inRange(i.dueDate, f.dueFrom, f.dueTo)) return false;
-        if ((f.paidFrom || f.paidTo) && !inRange(i.paidDate, f.paidFrom, f.paidTo)) return false;
-        return true;
-      }); });
+    // predicate so a result only shows up when one งวด matches every active per-งวด filter together.
+    function instMatchesPerInstFilters(i) {
+      if (f.filterDueStatus === 'notdue' && i.effectiveStatus !== 'ยังไม่ถึงกำหนดชำระ') return false;
+      if (f.filterDueStatus === 'due_today' && i.effectiveStatus !== 'ถึงกำหนดชำระ') return false;
+      if (f.filterDueStatus === 'overdue' && LATE_STATUSES.indexOf(i.effectiveStatus) === -1) return false;
+      if (f.paymentStatusesExcluded.length && f.paymentStatusesExcluded.indexOf(i.effectiveStatus) !== -1) return false;
+      if ((f.dueFrom || f.dueTo) && !inRange(i.dueDate, f.dueFrom, f.dueTo)) return false;
+      if ((f.paidFrom || f.paidTo) && !inRange(i.paidDate, f.paidFrom, f.paidTo)) return false;
+      return true;
+    }
+    var hasPerInstFilter = f.filterDueStatus !== 'all' || f.paymentStatusesExcluded.length || f.dueFrom || f.dueTo || f.paidFrom || f.paidTo;
+    if (hasPerInstFilter) {
+      filteredOrders = filteredOrders.filter(function (o) { return allInstsOf(o).some(instMatchesPerInstFilters); });
     }
     if (f.filterGrade !== 'all') {
       filteredOrders = filteredOrders.filter(function (o) {
@@ -1307,6 +1309,21 @@
     }
     if (f.contractFrom || f.contractTo) {
       filteredOrders = filteredOrders.filter(function (o) { return inRange(o.contractDate, f.contractFrom, f.contractTo); });
+    }
+    // ยอดค้างชำระ/งวดค้าง in the results table normally show the order's WHOLE ค้างชำระ total
+    // (trueOverdueRaw/overdueCount from computeOrdersUncached) — but once a per-งวด filter narrows
+    // which งวด actually matched, staff expect the column to reflect just that filtered slice, not
+    // every ค้างชำระ งวด the order has regardless of the filter (per user request 2026-07-30 — e.g.
+    // filtering "ล็อคเครื่อง" + "ครบกำหนด เม.ย. 2026" should show only the April ล็อคเครื่อง amount,
+    // not the customer's total ค้างชำระ across all months). Recomputed only on this locally-scoped
+    // copy of the filtered rows — never mutates the cached computeOrders() result other views rely
+    // on — and only when a per-งวด filter is actually active; otherwise the unfiltered totals stand.
+    if (hasPerInstFilter) {
+      filteredOrders = filteredOrders.map(function (o) {
+        var matches = allInstsOf(o).filter(function (i) { return STATUS_TO_GROUP[i.effectiveStatus] === 'ค้างชำระ' && instMatchesPerInstFilters(i); });
+        var raw = matches.reduce(function (s, i) { return s + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0);
+        return Object.assign({}, o, { trueOverdueRaw: raw, trueOverdueDisp: fmtMoney(raw), overdueCount: matches.length });
+      });
     }
     // Once the user presses ค้นหา we always show the result table — even with no criteria,
     // where it simply lists every order.
