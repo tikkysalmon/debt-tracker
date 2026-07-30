@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.25';
+  var APP_BUILD = '2026-07-30.26';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -3608,20 +3608,24 @@
       (short ? '<div style="color:#e03131;">ขาด ฿' + fmtMoney(charged - paid) + '</div>' : '') +
     '</div>';
   }
+  // งวด label-above-value field, shared styling across every card field below.
+  function instField(label, inputHtml, spanFull) {
+    return '<div style="' + (spanFull ? 'grid-column:1/-1;' : '') + '"><div style="font-size:10.5px; color:#8a86a3; margin-bottom:4px; letter-spacing:0.02em;">' + label + '</div>' + inputHtml + '</div>';
+  }
+  // One card per งวด instead of a wide table row — the old table needed horizontal scrolling to
+  // see every field at once, making it awkward to review (user report, 2026-07-30). Cards wrap in a
+  // responsive grid (1-3 per row depending on width) so every field is visible without scrolling
+  // sideways; every data-field/data-action/data-order/data-no/data-track attribute is unchanged
+  // from the table version, so all the existing edit/click handlers keep working as-is.
   function renderInstallmentTable(orderId, installments, track) {
     if (!installments.length) {
       return '<div style="padding:32px 20px; text-align:center; color:#8a86a3; font-size:13px; background:rgba(124,92,255,0.03); border:1.5px dashed rgba(124,92,255,0.25); border-radius:16px;">📭 ยังไม่มีงวดชำระ — กด "+ เพิ่มงวด" ด้านบนเพื่อเริ่มกรอก</div>';
     }
-    var inputBase = 'box-sizing:border-box; border-radius:9px; padding:7px 10px; font-size:12.5px; color:#2b2540; background:#fff; outline:none;';
-    var cols = ['งวด', 'วันครบกำหนด', 'ยอดผ่อนต่องวด', 'ชำระแล้ว / วันที่ชำระ', 'ขาด/เกิน', 'ค่าปรับ (แยกจากค่างวด)', 'ส่วนลด', 'สถานะ', 'หมายเหตุ', 'ตรวจสอบ CRM'];
-    var head = '<tr>' + cols.map(function (c) {
-      return '<th style="text-align:left; padding:12px 14px; font-size:11px; letter-spacing:0.03em; color:#7c5cff; font-weight:700; white-space:nowrap; background:rgba(124,92,255,0.06); border-bottom:1.5px solid rgba(124,92,255,0.16);">' + c + '</th>';
-    }).join('') + '</tr>';
-    var rows = installments.map(function (inst) {
+    var inputBase = 'box-sizing:border-box; width:100%; border-radius:9px; padding:7px 10px; font-size:12.5px; color:#2b2540; background:#fff; outline:none;';
+    var cards = installments.map(function (inst) {
       var da = ' data-order="' + esc(orderId) + '" data-no="' + inst.no + '" data-track="' + track + '"';
       var dd = LATE_STATUSES.indexOf(inst.effectiveStatus) !== -1 ? dueDiffDays(inst) : null;
       var overdue = (dd !== null && dd > 0) ? dd : 0;
-      var td = 'padding:12px 14px; border-bottom:1px solid rgba(124,92,255,0.08); vertical-align:middle;';
       var paidNum = toNumber(inst.amountPaid);
       var diff = paidNum - (toNumber(inst.amountDue) - toNumber(inst.discount));
       var diffBadge = '';
@@ -3630,41 +3634,51 @@
         else if (diff < 0) diffBadge = '<span style="background:rgba(224,49,49,0.10); color:#e03131; padding:3px 10px; border-radius:20px; font-size:11px; font-weight:700; white-space:nowrap;">ขาด ฿' + fmtMoney(Math.abs(diff)) + '</span>';
         else diffBadge = '<span style="background:rgba(79,124,255,0.10); color:#4f7cff; padding:3px 10px; border-radius:20px; font-size:11px; font-weight:700; white-space:nowrap;">เกิน ฿' + fmtMoney(diff) + '</span>';
       }
-      return '<tr data-inst-row style="border-left:3px solid ' + inst.statusColor + ';">' +
-        '<td style="' + td + '"><div style="width:26px; height:26px; border-radius:50%; background:' + inst.statusSoft + '; color:' + inst.statusColor + '; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:12.5px;">' + inst.no + '</div></td>' +
-        '<td style="' + td + '"><div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">' +
-          '<input type="date" value="' + esc(inst.dueDate) + '" data-field="dueDate"' + da + ' style="' + inputBase + ' border:1px solid rgba(124,92,255,0.2);" />' +
+      return '<div data-inst-row style="background:#fff; border:1px solid rgba(124,92,255,0.14); border-left:4px solid ' + inst.statusColor + '; border-radius:16px; padding:16px 18px; box-shadow:0 4px 14px rgba(124,92,255,0.06); display:flex; flex-direction:column; gap:12px;">' +
+        // Header: งวด badge + due date + overdue flag, delete on the far right.
+        '<div style="display:flex; align-items:flex-start; justify-content:space-between; gap:10px;">' +
+          '<div style="display:flex; align-items:center; gap:10px;">' +
+            '<div style="width:30px; height:30px; border-radius:50%; background:' + inst.statusSoft + '; color:' + inst.statusColor + '; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:13px; flex-shrink:0;">' + inst.no + '</div>' +
+            '<div>' +
+              '<div style="font-size:10.5px; color:#8a86a3; margin-bottom:3px;">วันครบกำหนด</div>' +
+              '<input type="date" value="' + esc(inst.dueDate) + '" data-field="dueDate"' + da + ' style="' + inputBase + ' width:auto; border:1px solid rgba(124,92,255,0.2);" />' +
+            '</div>' +
+          '</div>' +
+          '<button data-action="deleteInstallment"' + da + ' title="ลบงวดนี้" style="border:none; background:transparent; cursor:pointer; font-size:15px; color:#e03131; flex-shrink:0; padding:4px;">🗑</button>' +
+        '</div>' +
+        '<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">' +
           '<button data-action="openPostpone"' + da + ' style="border:1px solid rgba(124,92,255,0.3); background:#fff; color:#7c5cff; border-radius:8px; padding:6px 10px; font-size:11.5px; font-weight:600; cursor:pointer; white-space:nowrap;">🔁 เลื่อนวันชำระ</button>' +
           (overdue > 0 ? '<span style="background:rgba(224,49,49,0.10); color:#e03131; padding:3px 10px; border-radius:20px; font-size:11px; font-weight:700; white-space:nowrap;">⏰ เกิน ' + overdue + ' วัน</span>' : '') +
-        '</div></td>' +
-        '<td style="' + td + '"><input type="text" inputmode="decimal" value="' + esc(fmtMoney(inst.amountDue)) + '" data-field="amountDue"' + da + ' style="' + inputBase + ' width:92px; text-align:right; font-weight:600; border:1px solid rgba(124,92,255,0.2);" /></td>' +
-        '<td style="' + td + '"><div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">' +
-          '<input type="text" inputmode="decimal" value="' + esc(fmtMoney(inst.amountPaid)) + '" data-field="amountPaid"' + da + ' style="' + inputBase + ' width:84px; text-align:right; font-weight:700; color:#0b7a5b; border:1px solid rgba(18,184,134,0.3); background:rgba(18,184,134,0.06);" />' +
-          '<input type="date" value="' + esc(inst.paidDate) + '" data-field="paidDate"' + da + ' style="' + inputBase + ' font-size:11.5px; color:#6b6785; border:1px solid rgba(124,92,255,0.15);" />' +
-        '</div></td>' +
-        '<td style="' + td + '">' + diffBadge + '</td>' +
-        '<td style="' + td + '">' + renderFeeCell(inst, da) + '</td>' +
-        '<td style="' + td + '"><input type="text" inputmode="decimal" value="' + esc(fmtMoney(inst.discount)) + '" data-field="discount"' + da + ' style="' + inputBase + ' width:70px; text-align:right; border:1px solid rgba(255,159,67,0.3);" /></td>' +
-        '<td style="' + td + '"><div style="display:flex; align-items:center; gap:6px;">' +
+        '</div>' +
+        // Money fields — 2-col grid, no horizontal scroll needed at any width.
+        '<div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; padding-top:4px; border-top:1px solid rgba(124,92,255,0.08);">' +
+          instField('ยอดผ่อนต่องวด', '<input type="text" inputmode="decimal" value="' + esc(fmtMoney(inst.amountDue)) + '" data-field="amountDue"' + da + ' style="' + inputBase + ' text-align:right; font-weight:600; border:1px solid rgba(124,92,255,0.2);" />') +
+          instField('ส่วนลด', '<input type="text" inputmode="decimal" value="' + esc(fmtMoney(inst.discount)) + '" data-field="discount"' + da + ' style="' + inputBase + ' text-align:right; border:1px solid rgba(255,159,67,0.3);" />') +
+          instField('ชำระแล้ว / วันที่ชำระ', '<div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">' +
+            '<input type="text" inputmode="decimal" value="' + esc(fmtMoney(inst.amountPaid)) + '" data-field="amountPaid"' + da + ' style="' + inputBase + ' width:96px; flex:1; text-align:right; font-weight:700; color:#0b7a5b; border:1px solid rgba(18,184,134,0.3); background:rgba(18,184,134,0.06);" />' +
+            '<input type="date" value="' + esc(inst.paidDate) + '" data-field="paidDate"' + da + ' style="' + inputBase + ' width:auto; flex:1; font-size:11.5px; color:#6b6785; border:1px solid rgba(124,92,255,0.15);" />' +
+            (diffBadge ? '<div>' + diffBadge + '</div>' : '') +
+          '</div>', true) +
+          instField('ค่าปรับ (แยกจากค่างวด)', renderFeeCell(inst, da), true) +
+        '</div>' +
+        // Status + CRM verification + note — footer strip.
+        '<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding-top:4px; border-top:1px solid rgba(124,92,255,0.08);">' +
           '<select data-field="status"' + da + ' style="padding:7px 10px; border-radius:10px; border:1px solid ' + inst.statusBorder + '; background:' + inst.statusSoft + '; color:' + inst.statusColor + '; font-size:12px; font-weight:700; outline:none; cursor:pointer;">' +
             STATUS_OPTIONS.map(function (opt) { return '<option value="' + esc(opt) + '"' + (opt === inst.effectiveStatus ? ' selected' : '') + ' style="color:#000; background:#fff;">' + esc(opt) + '</option>'; }).join('') +
           '</select>' +
-          (inst.statusOverride ? '<button data-action="resetOverride"' + da + ' title="รีเซ็ตสถานะเป็นอัตโนมัติ" style="border:none; background:transparent; cursor:pointer; font-size:14px; color:#7c5cff; flex-shrink:0;">⟲</button>' : '') +
-          '<button data-action="deleteInstallment"' + da + ' title="ลบงวดนี้" style="border:none; background:transparent; cursor:pointer; font-size:14px; color:#e03131; flex-shrink:0;">🗑</button>' +
-        '</div></td>' +
-        '<td style="' + td + '"><div data-action="openNoteModal"' + da + ' title="คลิกเพื่อดู/แก้ไขหมายเหตุเต็ม" style="' + inputBase + ' width:150px; max-width:150px; border:1px dashed rgba(124,92,255,0.25); background:transparent; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' +
+          (inst.statusOverride ? '<button data-action="resetOverride"' + da + ' title="รีเซ็ตสถานะเป็นอัตโนมัติ" style="border:none; background:rgba(124,92,255,0.08); border-radius:8px; cursor:pointer; font-size:14px; color:#7c5cff; flex-shrink:0; padding:5px 8px;">⟲</button>' : '') +
+          '<label style="display:flex; align-items:center; gap:6px; cursor:pointer; white-space:nowrap; margin-left:auto;">' +
+            '<input type="checkbox" data-action="toggleVerifiedCRM"' + da + (inst.verifiedCRM ? ' checked' : '') + ' style="width:15px; height:15px; accent-color:#12b886; cursor:pointer;" />' +
+            '<span style="font-size:11.5px; color:' + (inst.verifiedCRM ? '#0b7a5b' : '#8a86a3') + '; font-weight:' + (inst.verifiedCRM ? '700' : '400') + ';">' + (inst.verifiedCRM ? ('ตรวจแล้ว · ' + esc(inst.verifiedCRMAt || '')) : 'ตรวจสอบ CRM') + '</span>' +
+          '</label>' +
+        '</div>' +
+        '<div data-action="openNoteModal"' + da + ' title="คลิกเพื่อดู/แก้ไขหมายเหตุเต็ม" style="' + inputBase + ' border:1px dashed rgba(124,92,255,0.25); background:transparent; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding:8px 10px;">' +
           ((inst.postponeHistory && inst.postponeHistory.length) ? '<span style="color:#7c5cff; font-weight:700;">🔁×' + inst.postponeHistory.length + '</span> ' : '') +
           (inst.note ? esc(inst.note) : (inst.postponeHistory && inst.postponeHistory.length ? '' : '<span style="color:#a39dc2;">+ หมายเหตุ</span>')) +
-        '</div></td>' +
-        '<td style="' + td + '"><label style="display:flex; align-items:center; gap:6px; cursor:pointer; white-space:nowrap;">' +
-          '<input type="checkbox" data-action="toggleVerifiedCRM"' + da + (inst.verifiedCRM ? ' checked' : '') + ' style="width:15px; height:15px; accent-color:#12b886; cursor:pointer;" />' +
-          '<span style="font-size:11.5px; color:' + (inst.verifiedCRM ? '#0b7a5b' : '#8a86a3') + '; font-weight:' + (inst.verifiedCRM ? '700' : '400') + ';">' + (inst.verifiedCRM ? ('ตรวจแล้ว · ' + esc(inst.verifiedCRMAt || '')) : 'ยังไม่ตรวจ') + '</span>' +
-        '</label></td>' +
-      '</tr>';
+        '</div>' +
+      '</div>';
     }).join('');
-    return '<div style="overflow-x:auto; border:1px solid rgba(124,92,255,0.14); border-radius:16px; background:rgba(255,255,255,0.55); box-shadow:0 4px 16px rgba(124,92,255,0.06);">' +
-      '<table style="width:100%; border-collapse:collapse; min-width:840px;"><thead>' + head + '</thead><tbody>' + rows + '</tbody></table>' +
-    '</div>';
+    return '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:14px;">' + cards + '</div>';
   }
 
   // ลูกหนี้ปัจจุบัน/เก่า — plain <a> navigation (full reload), not a JS click handler, so switching
