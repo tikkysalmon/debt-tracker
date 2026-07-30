@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.2';
+  var APP_BUILD = '2026-07-30.3';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1338,23 +1338,25 @@
     return null;
   }
   function trackKey(track) { return track === 'accessory' ? 'accessoryInstallments' : 'installments'; }
+  // Statuses that mean "this whole order's account status changed", not just one งวด — setting
+  // either on any งวด must cascade to every งวด on both tracks, or leftover
+  // ค้างชำระ/ยังไม่ถึงกำหนดชำระ งวด on an order that's already cancelled/handed to a collections
+  // agency keep polluting the ค้างชำระ totals (see [[project-debt-tracker-site]] memory,
+  // 2026-07-30). statusOverride:true on every งวด keeps them pinned — neither status is in
+  // PAYMENT_CLEARS_OVERRIDE_STATUSES, so a later payment-file import can never silently flip one
+  // back to something else.
+  var ACCOUNT_LEVEL_STATUSES = ['ยกเลิกสัญญา คืนเครื่อง', 'จำหน่ายชื่อให้บริษัทติดตามหนี้'];
   function updateInstallment(orderId, no, field, value, track) {
     var key = trackKey(track);
-    // ยกเลิกสัญญา คืนเครื่อง cancels the WHOLE order, not just the งวด staff happened to click —
-    // every งวด on both tracks (main + อุปกรณ์เสริม) must flip to it too, or leftover
-    // ค้างชำระ/ยังไม่ถึงกำหนดชำระ งวด on an already-returned device keep polluting the ค้างชำระ
-    // totals (see [[project-debt-tracker-site]] memory, 2026-07-30). statusOverride:true on every
-    // งวด keeps them pinned — ยกเลิกสัญญา คืนเครื่อง isn't in PAYMENT_CLEARS_OVERRIDE_STATUSES, so a
-    // later payment-file import can never silently flip a cancelled งวด to some other status.
-    var cancelAll = field === 'status' && value === 'ยกเลิกสัญญา คืนเครื่อง';
+    var cascadeAll = field === 'status' && ACCOUNT_LEVEL_STATUSES.indexOf(value) !== -1;
     state.orders = state.orders.map(function (o) {
       if (o.orderId !== orderId) return o;
       var orderPatch = field === 'status' ? (stickyAccountStatusPatch(value) || {}) : {};
       var patch2 = {};
-      if (cancelAll) {
-        var cancelInst = function (i) { return Object.assign({}, i, { status: 'ยกเลิกสัญญา คืนเครื่อง', statusOverride: true }); };
-        patch2.installments = (o.installments || []).map(cancelInst);
-        patch2.accessoryInstallments = (o.accessoryInstallments || []).map(cancelInst);
+      if (cascadeAll) {
+        var cascadeInst = function (i) { return Object.assign({}, i, { status: value, statusOverride: true }); };
+        patch2.installments = (o.installments || []).map(cascadeInst);
+        patch2.accessoryInstallments = (o.accessoryInstallments || []).map(cascadeInst);
       } else {
         var updatedList = (o[key] || []).map(function (i) {
           if (i.no !== no) return i;
