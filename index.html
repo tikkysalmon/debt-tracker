@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.7';
+  var APP_BUILD = '2026-07-30.8';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1094,7 +1094,11 @@
       gradeBuckets[g].paid += o.totalPaidFullRaw;
       gradeBuckets[g].overdue += o.lateOutstandingRaw;
     });
-    var gradeTotal = activeOrders.length;
+    // % ต่อเกรดต้องคำนวณจากยอดรวมสัญญาทั้งหมด (orders.length, ทุกสถานะ) ไม่ใช่แค่ active — เดิมใช้
+    // activeOrders.length ทำให้ทั้งตัวเลข "สัญญาทั้งหมด" ที่แสดงและ % ต่อการ์ดไม่ตรงกับยอดรวมสัญญาจริง
+    // (ไม่รวมยกเลิกสัญญา/จำหน่ายชื่อ) ตามที่ผู้ใช้ท้วงติง 2026-07-30 — การจัดกลุ่มเกรด (บรรทัดด้านบน)
+    // ยังคงนับเฉพาะ activeOrders เหมือนเดิม (สัญญาที่ยกเลิก/จำหน่ายชื่อไม่ควรมีเกรด) เปลี่ยนแค่ตัวหาร.
+    var gradeTotal = orders.length;
     var gradeCards = ['A', 'B', 'หนี้สงสัยจะสูญ'].map(function (g) {
       return {
         key: g, count: gradeBuckets[g].count, color: GRADE_COLORS[g],
