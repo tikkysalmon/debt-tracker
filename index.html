@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.24';
+  var APP_BUILD = '2026-07-30.25';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -445,6 +445,31 @@
     try { window.localStorage.removeItem(STORAGE_KEY); } catch (e) {}
     appliedPaymentKeys = {};
   }
+  // Manual-save entry point — the only place any edit (งวด/order fields, customer name/id, notes,
+  // ตรวจสอบ CRM) actually reaches localStorage/cloud now. Every edit function just flips
+  // hasUnsavedChanges and re-renders; this is what a staff member's บันทึก click calls.
+  function commitChanges() {
+    if (!state.hasUnsavedChanges) return;
+    state.hasUnsavedChanges = false;
+    savePersisted();
+    render();
+  }
+  // Guards navigation (switching tabs, closing the customer detail, picking a different customer)
+  // against silently discarding unsaved edits — returns true if it's OK to proceed (nothing
+  // pending, or the user confirmed they want to discard). Confirming actually REVERTS state.orders/
+  // customerNotes back to lastServerSnapshot (the last state we know is really on the server) rather
+  // than just silencing the warning — otherwise the abandoned edits would keep sitting in memory and
+  // could accidentally ride along on some LATER, unrelated บันทึก click for a different customer.
+  function confirmDiscardIfDirty() {
+    if (!state.hasUnsavedChanges) return true;
+    var ok = window.confirm('มีการเปลี่ยนแปลงที่ยังไม่ได้บันทึก ต้องการออกโดยไม่บันทึกหรือไม่?\n(ข้อมูลที่ยังไม่บันทึกจะหายไปทันที)');
+    if (ok) {
+      state.orders = lastServerSnapshot.orders;
+      state.customerNotes = lastServerSnapshot.customerNotes;
+      state.hasUnsavedChanges = false;
+    }
+    return ok;
+  }
   var persisted = loadPersisted();
 
   // ========================================================================
@@ -785,11 +810,14 @@
         updateCloudStatus();
         return;
       }
-      // A local edit is still queued/uploading — never overwrite it with whatever's on the server
-      // right now. Our own pending save will supersede it shortly; applying an older/unrelated
-      // snapshot here would silently discard the in-progress edit (e.g. a status change quietly
-      // reverting once this poll's applySnapshot() replaced state.orders wholesale).
-      if (cloudDirty) {
+      // A local edit is still queued/uploading (cloudDirty) OR sitting uncommitted in manual-save
+      // mode (hasUnsavedChanges, 2026-07-30) — either way, never overwrite it with whatever's on
+      // the server right now. Our own pending/future save will supersede it shortly; applying an
+      // older/unrelated snapshot here would silently discard the in-progress edit (e.g. a status
+      // change quietly reverting once this poll's applySnapshot() replaced state.orders wholesale) —
+      // and in manual-save mode that window can be minutes long, not just a 600ms debounce, so this
+      // guard matters far more than it used to.
+      if (cloudDirty || state.hasUnsavedChanges) {
         if (cloudStatus === 'offline') cloudStatus = 'online';
         updateCloudStatus();
         return;
@@ -839,6 +867,12 @@
     customerNotes: (persisted && persisted.customerNotes) || {},
     lastSavedAt: (persisted && persisted.savedAt) || '',
     isSampleData: !(persisted && persisted.orders && persisted.orders.length),
+    // Manual-save mode (2026-07-30, per user request): edits to งวด/order fields, customer name/id,
+    // notes, และ ตรวจสอบ CRM stay LOCAL (state.orders only) until staff explicitly clicks บันทึก —
+    // this flag drives the save button's highlighted state, the beforeunload warning, and the
+    // confirm-before-navigate guard. File uploads (debt/payment files) are UNCHANGED — those still
+    // save immediately, since a bulk import isn't the kind of in-place editing this is about.
+    hasUnsavedChanges: false,
     searched: false,
     storageError: '',
     customerNoteDraft: '',
@@ -1524,7 +1558,10 @@
     });
     render();
   }
-  function selectCustomer(cid) { state.selectedCustomerId = cid; state.customerNoteDraft = ''; state.editingCustomerName = false; state.editingCustomerId = false; state.editingOrderIdFor = null; render(); }
+  function selectCustomer(cid) {
+    if (!confirmDiscardIfDirty()) return;
+    state.selectedCustomerId = cid; state.customerNoteDraft = ''; state.editingCustomerName = false; state.editingCustomerId = false; state.editingOrderIdFor = null; render();
+  }
   function startEditCustomerName() {
     if (!state.selectedCustomerId || !CV) return;
     state.customerNameDraft = CV.selectedCustomerName;
@@ -1567,13 +1604,13 @@
   function saveCustomerName() {
     var changed = renameCustomerField('customerName', state.customerNameDraft.trim());
     state.editingCustomerName = false;
-    if (changed) savePersisted();
+    if (changed) state.hasUnsavedChanges = true;
     render();
   }
   function saveCustomerId() {
     var changed = renameCustomerField('customerId', state.customerIdDraft.trim());
     state.editingCustomerId = false;
-    if (changed) savePersisted();
+    if (changed) state.hasUnsavedChanges = true;
     render();
   }
   function startEditOrderId(orderId) {
@@ -1605,7 +1642,7 @@
     var patch = {}; patch[state.selectedCustomerId] = state.customerNoteDraft;
     state.customerNotes = Object.assign({}, state.customerNotes, patch);
     state.customerNoteDraft = '';
-    savePersisted();
+    state.hasUnsavedChanges = true;
     render();
   }
   // Once an order has ever been flagged จำหน่ายชื่อให้บริษัทติดตามหนี้/ยกเลิกสัญญา คืนเครื่อง, the
@@ -1640,7 +1677,7 @@
       });
       return Object.assign({}, o, patch2);
     });
-    savePersisted();
+    state.hasUnsavedChanges = true;
     render();
   }
   // Statuses that mean "this whole order's account status changed", not just one งวด — setting
@@ -1685,7 +1722,7 @@
       }
       return Object.assign({}, o, orderPatch, patch2);
     });
-    savePersisted();
+    state.hasUnsavedChanges = true;
     render();
   }
   function updateOrderField(orderId, field, value) {
@@ -1720,7 +1757,7 @@
     });
     maybeApplySchedule(orderId, 'main');
     maybeApplySchedule(orderId, 'accessory');
-    savePersisted();
+    state.hasUnsavedChanges = true;
     render();
   }
   // Recomputes due dates for a track only if its วันครบกำหนดชำระงวดแรก + ชำระทุกวันที่ are both set —
@@ -1820,7 +1857,7 @@
       });
       return Object.assign({}, o, patch);
     });
-    savePersisted();
+    state.hasUnsavedChanges = true;
     render();
   }
   // ---------- Postpone (เลื่อนวันที่ชำระ) ----------
@@ -1854,13 +1891,16 @@
           dueDate: state.postponeDate,
           postponeHistory: (i.postponeHistory || []).concat([entry]),
           lateFee: toNumber(i.lateFee || 0) + lateFee,
-          unlockFee: toNumber(i.unlockFee || 0) + unlockFee
+          unlockFee: toNumber(i.unlockFee || 0) + unlockFee,
+          // dueDate just moved — any ตรวจสอบ CRM confirmation was tied to the OLD due month.
+          verifiedCRM: i.verifiedCRM ? false : i.verifiedCRM,
+          verifiedCRMAt: i.verifiedCRM ? '' : i.verifiedCRMAt
         });
       });
       return Object.assign({}, o, patch);
     });
     state.postponeTarget = null;
-    savePersisted();
+    state.hasUnsavedChanges = true;
     render();
   }
   // ---------- Note popup (the table cell is too narrow to read a long note in place) ----------
@@ -1910,7 +1950,7 @@
       return Object.assign({}, o, patch);
     });
     maybeApplySchedule(orderId, track);
-    savePersisted();
+    state.hasUnsavedChanges = true;
     render();
   }
   // Lets staff fill in orders the source file left with zero installment rows (e.g. missing
@@ -1926,7 +1966,7 @@
       return Object.assign({}, o, patch);
     });
     maybeApplySchedule(orderId, track);
-    savePersisted();
+    state.hasUnsavedChanges = true;
     render();
   }
   function deleteInstallment(orderId, no, track) {
@@ -1937,7 +1977,7 @@
       var patch = {}; patch[key] = (o[key] || []).filter(function (i) { return i.no !== no; });
       return Object.assign({}, o, patch);
     });
-    savePersisted();
+    state.hasUnsavedChanges = true;
     render();
   }
   function resetOverride(orderId, no, track) {
@@ -1950,7 +1990,7 @@
       });
       return Object.assign({}, o, patch);
     });
-    savePersisted();
+    state.hasUnsavedChanges = true;
     render();
   }
   function resetAllData(toSample) {
@@ -1966,6 +2006,7 @@
     state.appliedContractFrom = ''; state.appliedContractTo = '';
     state.uploadMsgDebt = '';
     state.uploadMsgPayment = toSample ? 'ล้างข้อมูลแล้ว — กลับไปเป็นข้อมูลตัวอย่าง' : 'ล้างข้อมูลแล้ว — พร้อมอัปโหลดข้อมูลจริง (เริ่มจากว่างเปล่า)';
+    state.hasUnsavedChanges = false;
     render();
   }
 
@@ -3149,6 +3190,19 @@
   }
   // Same badge semantics as the customer-detail card (isSold/isCancelled/ปิดยอด) — reused here
   // so the due-report table row matches what staff see after clicking into the customer.
+  // Manual-save mode: every edit surface (order fields, installment tables, customer name/id,
+  // notes, ตรวจสอบ CRM) gets one of these — highlighted purple + clickable while dirty, a quiet
+  // "✓ บันทึกแล้ว" label once committed. All instances share the same commitChanges() action, since
+  // the underlying storage is one shared file — there's no such thing as saving just one table in
+  // isolation, only "save everything pending right now."
+  function renderSaveButton(compact) {
+    var pad = compact ? '7px 14px' : '9px 20px';
+    var fs = compact ? '12.5px' : '13.5px';
+    if (state.hasUnsavedChanges) {
+      return '<button data-action="commitChanges" style="border:none; background:linear-gradient(135deg,#7c5cff,#6647e0); color:#fff; padding:' + pad + '; border-radius:20px; font-size:' + fs + '; font-weight:700; cursor:pointer; white-space:nowrap; box-shadow:0 6px 16px rgba(124,92,255,0.35);">💾 บันทึกการเปลี่ยนแปลง</button>';
+    }
+    return '<span style="color:#8a86a3; font-size:' + fs + '; font-weight:600; white-space:nowrap;">✓ บันทึกแล้ว</span>';
+  }
   function orderAccountStatusBadge(order) {
     if (order.isSold) return '<span style="background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">📤 จำหน่ายชื่อฯ</span>';
     if (order.isCancelled) return '<span style="background:' + hexToRgba('#4b5563', 0.14) + '; color:#4b5563; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">↩️ ยกเลิกสัญญา</span>';
@@ -3411,7 +3465,7 @@
         '<div style="flex:1; min-width:0;"><div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">' +
           (state.editingCustomerName
             ? '<input type="text" value="' + esc(state.customerNameDraft) + '" data-action="customerNameDraft" style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:16px; color:#2b2540; border:1px solid rgba(124,92,255,0.35); border-radius:8px; padding:4px 10px; outline:none; min-width:160px;" />' +
-              '<button data-action="saveCustomerName" style="border:none; background:#12b886; color:#fff; padding:5px 12px; border-radius:8px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;">✓ บันทึก</button>' +
+              '<button data-action="saveCustomerName" title="ยืนยันชื่อใหม่ — ยังต้องกดปุ่ม 💾 บันทึกการเปลี่ยนแปลง ด้วยเพื่อบันทึกจริง" style="border:none; background:#12b886; color:#fff; padding:5px 12px; border-radius:8px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;">✓ ยืนยัน</button>' +
               '<button data-action="cancelEditCustomerName" style="border:none; background:rgba(0,0,0,0.06); color:#6b6785; padding:5px 12px; border-radius:8px; font-size:12px; font-weight:600; cursor:pointer;">✕ ยกเลิก</button>'
             : '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:19px; color:#2b2540;">' + esc(CV.selectedCustomerName) + '</div>' +
               '<button data-action="startEditCustomerName" title="แก้ไขชื่อลูกค้า" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; width:26px; height:26px; border-radius:8px; font-size:12px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">✏️</button>') +
@@ -3419,17 +3473,18 @@
           '<div style="font-size:13px; color:#6b6785; margin-top:4px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">รหัสลูกค้า: ' +
           (state.editingCustomerId
             ? '<input type="text" value="' + esc(state.customerIdDraft) + '" data-action="customerIdDraft" style="font-size:13px; color:#2b2540; border:1px solid rgba(124,92,255,0.35); border-radius:6px; padding:2px 8px; outline:none; min-width:120px;" />' +
-              '<button data-action="saveCustomerId" style="border:none; background:#12b886; color:#fff; padding:3px 10px; border-radius:6px; font-size:11.5px; font-weight:600; cursor:pointer; white-space:nowrap;">✓</button>' +
+              '<button data-action="saveCustomerId" title="ยืนยันรหัสใหม่ — ยังต้องกดปุ่ม 💾 บันทึกการเปลี่ยนแปลง ด้วยเพื่อบันทึกจริง" style="border:none; background:#12b886; color:#fff; padding:3px 10px; border-radius:6px; font-size:11.5px; font-weight:600; cursor:pointer; white-space:nowrap;">✓</button>' +
               '<button data-action="cancelEditCustomerId" style="border:none; background:rgba(0,0,0,0.06); color:#6b6785; padding:3px 10px; border-radius:6px; font-size:11.5px; font-weight:600; cursor:pointer;">✕</button>'
             : '<span style="color:#2b2540; font-weight:600;">' + esc(CV.selectedCustomerIdDisp) + '</span>' +
               '<button data-action="startEditCustomerId" title="แก้ไขรหัสลูกค้า" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; width:20px; height:20px; border-radius:5px; font-size:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">✏️</button>') +
           ' <span style="margin:0 6px;">·</span> พบ ' + CV.billCount + ' บิล</div></div>' +
-        '<button data-action="closeDetail" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; padding:8px 16px; border-radius:20px; font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap;">✕ ปิด</button>' +
+        '<div style="display:flex; align-items:center; gap:10px; flex-shrink:0;">' + renderSaveButton(false) +
+        '<button data-action="closeDetail" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; padding:8px 16px; border-radius:20px; font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap;">✕ ปิด</button></div>' +
       '</div>' +
       '<div style="border-top:1px solid rgba(124,92,255,0.10); padding-top:16px; margin-bottom:22px;">' +
         '<div style="font-size:12.5px; color:#6b6785; font-weight:600; margin-bottom:6px; display:flex; align-items:center; gap:6px;">📝 หมายเหตุ</div>' +
         (CV.customerNoteSaved ? '<div style="font-size:13.5px; color:#2b2540; margin-bottom:8px; background:rgba(124,92,255,0.05); padding:8px 12px; border-radius:10px;">' + esc(CV.customerNoteSaved) + '</div>' : '') +
-        '<div style="display:flex; gap:8px;"><input type="text" value="' + esc(state.customerNoteDraft) + '" data-action="noteDraft" placeholder="เพิ่มหมายเหตุใหม่..." style="flex:1; box-sizing:border-box; padding:10px 14px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13.5px; color:#2b2540; outline:none;" /><button data-action="saveNote" style="background:linear-gradient(135deg,#7c5cff,#6647e0); color:#fff; border:none; padding:10px 18px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer; white-space:nowrap;">💾 บันทึก</button></div>' +
+        '<div style="display:flex; gap:8px;"><input type="text" value="' + esc(state.customerNoteDraft) + '" data-action="noteDraft" placeholder="เพิ่มหมายเหตุใหม่..." style="flex:1; box-sizing:border-box; padding:10px 14px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13.5px; color:#2b2540; outline:none;" /><button data-action="saveNote" title="ยืนยันหมายเหตุ — ยังต้องกดปุ่ม 💾 บันทึกการเปลี่ยนแปลง ด้วยเพื่อบันทึกจริง" style="background:linear-gradient(135deg,#7c5cff,#6647e0); color:#fff; border:none; padding:10px 18px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer; white-space:nowrap;">✓ ยืนยัน</button></div>' +
       '</div>';
 
     // "ยอดผ่อนต่องวด" input calls setInstallmentAmount, which only ever touches NOT-YET-PAID งวด
@@ -3452,7 +3507,7 @@
         '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px;">' +
           (state.editingOrderIdFor === ord.orderId
             ? '<div style="display:flex; align-items:center; gap:6px; font-size:13px; color:#6b6785;">🔗 SO: <input type="text" value="' + esc(state.orderIdDraft) + '" data-action="orderIdDraft" style="font-size:13px; font-weight:600; color:#2b2540; border:1px solid rgba(124,92,255,0.35); border-radius:6px; padding:2px 8px; outline:none; min-width:140px;" />' +
-                '<button data-action="saveOrderId" style="border:none; background:#12b886; color:#fff; padding:3px 10px; border-radius:6px; font-size:11.5px; font-weight:600; cursor:pointer;">✓</button>' +
+                '<button data-action="saveOrderId" title="ยืนยันเลข SO ใหม่ — ยังต้องกดปุ่ม 💾 บันทึกการเปลี่ยนแปลง ด้วยเพื่อบันทึกจริง" style="border:none; background:#12b886; color:#fff; padding:3px 10px; border-radius:6px; font-size:11.5px; font-weight:600; cursor:pointer;">✓</button>' +
                 '<button data-action="cancelEditOrderId" style="border:none; background:rgba(0,0,0,0.06); color:#6b6785; padding:3px 10px; border-radius:6px; font-size:11.5px; font-weight:600; cursor:pointer;">✕</button></div>'
             : '<div style="font-size:13px; color:#6b6785; display:flex; align-items:center; gap:6px;">🔗 SO: <span style="color:#2b2540; font-weight:600;">' + esc(ord.soDisplay) + '</span>' +
                 '<button data-action="startEditOrderId" data-order="' + esc(ord.orderId) + '" title="แก้ไขเลขคำสั่งซื้อ" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; width:20px; height:20px; border-radius:5px; font-size:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">✏️</button></div>') +
@@ -3487,7 +3542,8 @@
         (ord.firstDueDate && ord.payDay ? '<div style="font-size:11.5px; color:#0b7a5b; margin-bottom:10px;">✓ กรอกครบแล้ว — ตารางงวดด้านล่างคำนวณวันครบกำหนดอัตโนมัติจาก 2 ช่องนี้ (มีผลตั้งแต่งวดแรก รวมงวดที่จ่ายแล้ว)</div>' : '') +
         '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:14px;">' +
           '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540; display:flex; align-items:center; gap:8px;">🗓️ รายละเอียดงวดชำระ' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + (ord.installments.length === 0 ? ' <span style="font-size:12px; font-weight:500; color:#e03131;">(ไฟล์ต้นฉบับไม่มีงวด — เพิ่มเองได้)</span>' : '') + '</div>' +
-          '<button data-action="addInstallment" data-order="' + esc(ord.orderId) + '" data-track="main" style="border:1px dashed rgba(124,92,255,0.4); background:transparent; color:#7c5cff; font-size:12.5px; padding:6px 14px; border-radius:20px; cursor:pointer; white-space:nowrap;">+ เพิ่มงวด</button>' +
+          '<div style="display:flex; align-items:center; gap:10px;">' + renderSaveButton(true) +
+          '<button data-action="addInstallment" data-order="' + esc(ord.orderId) + '" data-track="main" style="border:1px dashed rgba(124,92,255,0.4); background:transparent; color:#7c5cff; font-size:12.5px; padding:6px 14px; border-radius:20px; cursor:pointer; white-space:nowrap;">+ เพิ่มงวด</button></div>' +
         '</div>' +
         renderInstallmentTable(ord.orderId, ord.installments, 'main') +
         (ord.hasAccessory ? (
@@ -3520,7 +3576,8 @@
             (ord.accessoryFirstDueDate && ord.accessoryPayDay ? '<div style="font-size:11.5px; color:#0b7a5b; margin-bottom:10px;">✓ กรอกครบแล้ว — ตารางงวดด้านล่างคำนวณวันครบกำหนดอัตโนมัติจาก 2 ช่องนี้ (มีผลตั้งแต่งวดแรก รวมงวดที่จ่ายแล้ว)</div>' : '') +
             '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:14px;">' +
               '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540; display:flex; align-items:center; gap:8px;">🗓️ รายละเอียดงวดชำระ (อุปกรณ์เสริม)' + (ord.accessoryInstallments.length === 0 ? ' <span style="font-size:12px; font-weight:500; color:#e03131;">(ยังไม่มีงวด — ตั้งจำนวนงวดด้านบนหรือเพิ่มเอง)</span>' : '') + '</div>' +
-              '<button data-action="addInstallment" data-order="' + esc(ord.orderId) + '" data-track="accessory" style="border:1px dashed rgba(124,92,255,0.4); background:transparent; color:#7c5cff; font-size:12.5px; padding:6px 14px; border-radius:20px; cursor:pointer; white-space:nowrap;">+ เพิ่มงวด</button>' +
+              '<div style="display:flex; align-items:center; gap:10px;">' + renderSaveButton(true) +
+              '<button data-action="addInstallment" data-order="' + esc(ord.orderId) + '" data-track="accessory" style="border:1px dashed rgba(124,92,255,0.4); background:transparent; color:#7c5cff; font-size:12.5px; padding:6px 14px; border-radius:20px; cursor:pointer; white-space:nowrap;">+ เพิ่มงวด</button></div>' +
             '</div>' +
             renderInstallmentTable(ord.orderId, ord.accessoryInstallments, 'accessory') +
           '</div>'
@@ -3706,9 +3763,9 @@
       if (!t) return;
       var a = t.getAttribute('data-action');
       switch (a) {
-        case 'goDashboard': state.view = 'dashboard'; render(); break;
-        case 'goTracking': state.view = 'tracking'; render(); break;
-        case 'goUpload': state.view = 'upload'; render(); break;
+        case 'goDashboard': if (confirmDiscardIfDirty()) { state.view = 'dashboard'; render(); } break;
+        case 'goTracking': if (confirmDiscardIfDirty()) { state.view = 'tracking'; render(); } break;
+        case 'goUpload': if (confirmDiscardIfDirty()) { state.view = 'upload'; render(); } break;
         case 'toggleFilters': state.showFilters = !state.showFilters; render(); break;
         case 'performSearch': performSearch(); break;
         case 'clearAllFilters': clearAllFilters(); break;
@@ -3722,8 +3779,9 @@
         case 'toggleSoldDetail': state.showSoldDetail = !state.showSoldDetail; render(); break;
         case 'toggleMultiOrderDetail': state.showMultiOrderDetail = !state.showMultiOrderDetail; render(); break;
         case 'toggleUnverifiedCRM': state.filterUnverifiedCRM = t.checked; render(); break;
+        case 'commitChanges': commitChanges(); break;
         case 'selectCustomer': selectCustomer(t.getAttribute('data-cid')); break;
-        case 'closeDetail': state.selectedCustomerId = null; render(); break;
+        case 'closeDetail': if (confirmDiscardIfDirty()) { state.selectedCustomerId = null; render(); } break;
         case 'saveNote': saveCustomerNote(); break;
         case 'startEditCustomerName': startEditCustomerName(); break;
         case 'cancelEditCustomerName': cancelEditCustomerName(); break;
@@ -3870,6 +3928,15 @@
   function startBuildCheckPolling() {
     setInterval(checkForNewBuild, BUILD_CHECK_MS);
   }
+
+  // Manual-save mode: warn before closing/reloading the tab with unsaved edits still pending —
+  // browsers ignore the custom message and show their own generic prompt, but the warning itself
+  // still fires. This is the only backstop once an edit is only in state.orders, not yet persisted.
+  window.addEventListener('beforeunload', function (e) {
+    if (!state.hasUnsavedChanges) return;
+    e.preventDefault();
+    e.returnValue = '';
+  });
 
   // ---------- Boot ----------
   if (IS_OLD_DATASET) document.title = 'ลูกหนี้เก่า (ก่อน 1/10/2025) — ระบบติดตามหนี้และผ่อนชำระ';
