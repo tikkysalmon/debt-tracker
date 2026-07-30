@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.3';
+  var APP_BUILD = '2026-07-30.4';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -972,9 +972,19 @@
     ].map(function (s) { return Object.assign({}, s, { pct: donutTotal > 0 ? (s.amount / donutTotal * 100) : 0, amountDisp: fmtMoney(s.amount) }); });
     var paymentDonut = { conic: buildConicGradient(rawSegs), segments: rawSegs.map(function (s) { return Object.assign({}, s, { pctDisp: s.pct.toFixed(1) }); }), totalDisp: fmtMoney(donutTotal) };
 
+    // "แนวโน้มยอดค้างชำระรายเดือน" is a look-back trend (how much became overdue each past month) —
+    // a งวด whose dueDate hasn't arrived yet can never be genuinely overdue, no matter what its
+    // effectiveStatus says. That can still happen: เปลี่ยนภาพพักหน้าจอ/ค้างชำระ ล็อคเครื่องไม่ได้ are
+    // MANUAL_ONLY_STATUSES, so staff can (and do — e.g. "device can't be locked, applies to every
+    // remaining งวด on this order") set them on a future-dated งวด on purpose. That's a legitimate
+    // current risk for the KPI/report totals, but showing it under an upcoming month on a "trend so
+    // far" chart reads as nonsensical future data — user caught this 2026-07-30. Scoped to just this
+    // chart; the KPI/report totals intentionally still count these installments as ค้างชำระ.
+    var todayNow = new Date();
+    var todayStr = todayNow.getFullYear() + '-' + String(todayNow.getMonth() + 1).padStart(2, '0') + '-' + String(todayNow.getDate()).padStart(2, '0');
     var trendMap = {};
     activeOrders.forEach(function (o) { o.installments.concat(o.accessoryInstallments || []).forEach(function (i) {
-      if (STATUS_TO_GROUP[i.effectiveStatus] !== 'ค้างชำระ' || !i.dueDate) return;
+      if (STATUS_TO_GROUP[i.effectiveStatus] !== 'ค้างชำระ' || !i.dueDate || i.dueDate > todayStr) return;
       var key = i.dueDate.slice(0, 7);
       var outstanding = Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0));
       trendMap[key] = (trendMap[key] || 0) + outstanding;
