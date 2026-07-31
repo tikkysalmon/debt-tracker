@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-31.15';
+  var APP_BUILD = '2026-07-31.17';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -961,6 +961,7 @@
     noteModalTarget: null, noteModalDraft: '',
     smsTemplates: (persisted && Array.isArray(persisted.smsTemplates) && persisted.smsTemplates.length) ? persisted.smsTemplates : DEFAULT_SMS_TEMPLATES,
     smsModalTarget: null, smsModalPhone: '', smsModalTemplateId: '', smsModalDraft: '', smsModalManaging: false, smsModalSending: false,
+    callDraft: '', callHistoryOpen: false,
     appliedQuery: '',
     appliedAccountStatus: 'all',
     appliedDueStatus: 'all',
@@ -1062,6 +1063,19 @@
         if (!i.verifiedCRM || !i.verifiedCRMAt) return latest;
         return (!latest || parseLogTimestamp(i.verifiedCRMAt) > parseLogTimestamp(latest)) ? i.verifiedCRMAt : latest;
       }, '');
+      // Latest call-log/SMS entries for the "สถานะการโทร"/"สถานะส่ง SMS" report columns — call log
+      // only ever lives on the order (see saveCallLog/pickContactOrder), but SMS can be sent either
+      // at order level (general button) or per-งวด, so all three sources get compared by parsed
+      // timestamp (append order alone doesn't guarantee cross-source recency) to find the true latest.
+      var callLatest = (o.callHistory || []).reduce(function (latest, h) {
+        return (!latest || parseLogTimestamp(h.at) > parseLogTimestamp(latest.at)) ? h : latest;
+      }, null);
+      var smsHistoryAll = (o.smsHistory || [])
+        .concat(installments.reduce(function (acc, i) { return acc.concat(i.smsHistory || []); }, []))
+        .concat(accessoryInstallments.reduce(function (acc, i) { return acc.concat(i.smsHistory || []); }, []));
+      var smsLatest = smsHistoryAll.reduce(function (latest, h) {
+        return (!latest || parseLogTimestamp(h.at) > parseLogTimestamp(latest.at)) ? h : latest;
+      }, null);
       var lateInsts = allInstallments.filter(function (i) { return LATE_STATUSES.indexOf(i.effectiveStatus) !== -1; });
       var lateOutstandingRaw = lateInsts.reduce(function (s, i) { return s + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0);
       return Object.assign({}, o, {
@@ -1094,6 +1108,8 @@
         trueOverdueRaw: trueOverdueRaw,
         trueOverdueDisp: fmtMoney(trueOverdueRaw),
         crmVerifiedCount: crmVerifiedCount, crmStatus: crmStatus, crmVerifiedLatestAt: crmVerifiedLatestAt,
+        callLatestAt: callLatest ? callLatest.at : '', callLatestNote: callLatest ? callLatest.note : '',
+        smsLatestAt: smsLatest ? smsLatest.at : '', smsLatestTemplate: smsLatest ? smsLatest.template : '', smsLatestPhone: smsLatest ? smsLatest.phone : '',
         isCancelled: isCancelled,
         isSold: isSold,
         lateCount: lateInsts.length,
@@ -1659,7 +1675,7 @@
   }
   function selectCustomer(cid) {
     if (!confirmDiscardIfDirty()) return;
-    state.selectedCustomerId = cid; state.customerNoteDraft = ''; state.editingCustomerName = false; state.editingCustomerId = false; state.editingOrderIdFor = null; render();
+    state.selectedCustomerId = cid; state.customerNoteDraft = ''; state.editingCustomerName = false; state.editingCustomerId = false; state.editingOrderIdFor = null; state.callDraft = ''; state.callHistoryOpen = false; render();
   }
   function startEditCustomerName() {
     if (!state.selectedCustomerId || !CV) return;
@@ -1925,6 +1941,26 @@
         window.alert('เกิดข้อผิดพลาดขณะส่ง SMS: ' + err.message);
         render();
       });
+  }
+  // Same "which order actually carries the customer-header contact fields" pick used for the
+  // เลขที่สัญญา/เบอร์โทร/บุคคลอ้างอิง block and the general ส่ง SMS button — shared here so the
+  // call-log button below writes to the exact same order those fields are edited on.
+  function pickContactOrder() {
+    var orders = CV.selectedCustomerOrders || [];
+    return orders.find(function (o) { return o.contractNo || o.phone || o.shippedAt || o.referenceName || o.referencePhone; }) || orders[0];
+  }
+  // Append-only call log (never overwritten — same rule as smsHistory, per user request) so staff
+  // can see every past call attempt/outcome, not just the latest one.
+  function saveCallLog() {
+    var text = (state.callDraft || '').trim();
+    if (!text) return;
+    var contactOrder = pickContactOrder();
+    if (!contactOrder) return;
+    var order = state.orders.find(function (o) { return o.orderId === contactOrder.orderId; });
+    var history = (order && order.callHistory) || [];
+    var entry = { at: nowTimestamp(), note: text };
+    updateOrderField(contactOrder.orderId, 'callHistory', history.concat([entry]));
+    state.callDraft = '';
   }
   // Marks a single งวด as cross-checked against the reference CRM (or un-marks it) — a manual QA
   // step staff run monthly per ครบกำหนด month, per user request 2026-07-30: without this, a
@@ -3630,6 +3666,18 @@
     if (order.crmStatus === 'partial') return '<span style="background:rgba(240,140,0,0.12); color:#f08c00; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">◐ บางส่วน ' + order.crmVerifiedCount + '/' + order.overdueCount + '</span>' + stamp;
     return '<span style="background:rgba(138,134,163,0.12); color:#8a86a3; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">○ ยังไม่ตรวจ</span>';
   }
+  // "สถานะการโทร"/"สถานะส่ง SMS" report columns — latest entry only (see callLatestAt/smsLatestAt
+  // in computeOrdersUncached); full history stays in the customer detail modal, not this table.
+  function callStatusPill(order) {
+    if (!order.callLatestAt) return '<span style="color:#c3c0d6; font-size:12px;">—</span>';
+    return '<div style="font-size:12px; color:#2b2540; font-weight:600; white-space:nowrap;">📞 ' + esc(order.callLatestAt) + '</div>' +
+      (order.callLatestNote ? '<div style="font-size:10.5px; color:#8a86a3; margin-top:2px; max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + esc(order.callLatestNote) + '</div>' : '');
+  }
+  function smsStatusPill(order) {
+    if (!order.smsLatestAt) return '<span style="color:#c3c0d6; font-size:12px;">—</span>';
+    return '<div style="font-size:12px; color:#2b2540; font-weight:600; white-space:nowrap;">📱 ' + esc(order.smsLatestAt) + '</div>' +
+      (order.smsLatestTemplate ? '<div style="font-size:10.5px; color:#8a86a3; margin-top:2px;">' + esc(order.smsLatestTemplate) + '</div>' : '');
+  }
   // Aging report over each order's current (earliest unpaid) installment — mirrors the
   // reference site's "รายงานสินเชื่อที่ครบกำหนด" bucket row.
   function renderDueBuckets(orders) {
@@ -3760,8 +3808,8 @@
       var pageStart = (page - 1) * pageSize;
       var pageRows = CV.filteredOrders.slice(pageStart, pageStart + pageSize);
       html += '<div style="background:rgba(255,255,255,0.55); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.8); border-radius:20px; padding:6px; margin-bottom:28px; box-shadow:0 8px 30px rgba(124,92,255,0.08); overflow-x:auto;">' +
-        '<table style="width:100%; border-collapse:collapse; min-width:920px;"><thead><tr style="text-align:left; font-size:12px; color:#6b6785;">' +
-          ['รหัสลูกค้า','ชื่อลูกค้า','สถานะบัญชี','คำสั่งซื้อ','สินค้า','วันที่ทำสัญญา','ยอดค้างชำระ','งวดค้าง','ตรวจสอบ CRM'].map(function (h) { return '<th style="padding:14px 16px; font-weight:600;">' + h + '</th>'; }).join('') +
+        '<table style="width:100%; border-collapse:collapse; min-width:1180px;"><thead><tr style="text-align:left; font-size:12px; color:#6b6785;">' +
+          ['รหัสลูกค้า','ชื่อลูกค้า','สถานะบัญชี','คำสั่งซื้อ','สินค้า','วันที่ทำสัญญา','ยอดค้างชำระ','งวดค้าง','ตรวจสอบ CRM','สถานะการโทร','สถานะส่ง SMS'].map(function (h) { return '<th style="padding:14px 16px; font-weight:600;">' + h + '</th>'; }).join('') +
         '</tr></thead><tbody>' +
           pageRows.map(function (order) {
             return '<tr data-action="selectCustomer" data-cid="' + esc(customerKey(order)) + '" style="cursor:pointer; font-size:14px; color:#2b2540; border-top:1px solid rgba(124,92,255,0.10);">' +
@@ -3774,6 +3822,8 @@
               '<td style="padding:14px 16px; font-weight:600;">' + order.trueOverdueDisp + ' บาท</td>' +
               '<td style="padding:14px 16px;">' + (order.overdueCount ? '<span style="background:rgba(224,49,49,0.12); color:#e03131; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:600;">' + order.overdueCount + ' งวด</span>' : '') + '</td>' +
               '<td style="padding:14px 16px;">' + crmStatusPill(order) + '</td>' +
+              '<td style="padding:14px 16px;">' + callStatusPill(order) + '</td>' +
+              '<td style="padding:14px 16px;">' + smsStatusPill(order) + '</td>' +
             '</tr>';
           }).join('') +
         '</tbody></table>' +
@@ -3955,8 +4005,29 @@
     // เครื่อง/บุคคลอ้างอิง) — edited here at customer-header level only (per user request, moved out
     // of the per-order/SO card below); the fields still live on a specific order underneath, so
     // picks whichever order actually has data (falling back to the first order) to edit.
-    var contactOrders = CV.selectedCustomerOrders || [];
-    var contactOrder = contactOrders.find(function (o) { return o.contractNo || o.phone || o.shippedAt || o.referenceName || o.referencePhone; }) || contactOrders[0];
+    var contactOrder = pickContactOrder();
+    var callHistory = (contactOrder && contactOrder.callHistory) || [];
+    var callHistoryHtml = !state.callHistoryOpen || !callHistory.length ? '' :
+      '<div style="display:flex; flex-direction:column; gap:6px; margin:8px 0; max-height:160px; overflow-y:auto;">' +
+        callHistory.slice().reverse().map(function (h) {
+          return '<div style="background:rgba(124,92,255,0.05); border:1px solid rgba(124,92,255,0.12); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' +
+            '<div style="font-weight:700; color:#4f46e5; margin-bottom:2px;">' + esc(h.at) + '</div>' +
+            '<div style="color:#6b6785;">' + esc(h.note) + '</div>' +
+          '</div>';
+        }).join('') +
+      '</div>';
+    var callLogHtml = !contactOrder ? '' :
+      '<div style="border-top:1px dashed rgba(124,92,255,0.15); margin-top:14px; padding-top:14px;">' +
+        '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">' +
+          '<div style="font-size:11.5px; color:#6b6785; font-weight:600; display:flex; align-items:center; gap:6px;">📞 อัพเดทการโทรหาลูกค้า' + (callHistory.length ? ' · ล่าสุด ' + esc(callHistory[callHistory.length - 1].at) : '') + '</div>' +
+          (callHistory.length ? '<div data-action="toggleCallHistory" style="font-size:11px; color:#7c5cff; font-weight:600; cursor:pointer;">' + (state.callHistoryOpen ? 'ซ่อนประวัติ' : 'ดูประวัติทั้งหมด (' + callHistory.length + ')') + '</div>' : '') +
+        '</div>' +
+        callHistoryHtml +
+        '<div style="display:flex; gap:8px;">' +
+          '<input type="text" value="' + esc(state.callDraft) + '" data-action="callDraft" placeholder="พิมพ์ผลการโทร เช่น รับสาย/ไม่รับสาย/นัดชำระ..." style="flex:1; box-sizing:border-box; padding:8px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13px; color:#2b2540; outline:none;" />' +
+          '<button data-action="saveCallLog" style="border:none; background:linear-gradient(135deg,#4f46e5,#4338ca); color:#fff; padding:8px 16px; border-radius:10px; font-size:12.5px; font-weight:600; cursor:pointer; white-space:nowrap;">📞 บันทึกการโทร</button>' +
+        '</div>' +
+      '</div>';
     var contactFieldHtml = !contactOrder ? '' :
       '<div style="border-top:1px solid rgba(124,92,255,0.10); padding-top:14px; margin-top:14px;">' +
         '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:14px;">' +
@@ -3967,6 +4038,7 @@
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">👤 ชื่อบุคคลอ้างอิง</div><input type="text" value="' + esc(contactOrder.referenceName || '') + '" data-order-field="referenceName" data-order="' + esc(contactOrder.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">📱 เบอร์ติดต่อบุคคลอ้างอิง</div><input type="text" value="' + esc(contactOrder.referencePhone || '') + '" data-order-field="referencePhone" data-order="' + esc(contactOrder.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
         '</div>' +
+        callLogHtml +
       '</div>';
     var html = '<div id="customerDetailModal" style="position:fixed; inset:0; z-index:9999; background:rgba(43,37,64,0.35); display:flex; align-items:flex-start; justify-content:center; padding:30px 20px; overflow-y:auto;">' +
       '<div style="max-width:1100px; width:100%; background:rgba(255,255,255,0.97); backdrop-filter:blur(24px); -webkit-backdrop-filter:blur(24px); border:1px solid rgba(255,255,255,0.85); border-radius:24px; padding:28px 30px; box-shadow:0 24px 60px rgba(43,37,64,0.3); margin-bottom:30px;">' +
@@ -4364,6 +4436,8 @@
         case 'toggleSmsManaging': state.smsModalManaging = !state.smsModalManaging; render(); break;
         case 'addSmsTemplate': addSmsTemplate(); break;
         case 'deleteSmsTemplate': deleteSmsTemplate(t.getAttribute('data-tpl')); break;
+        case 'saveCallLog': saveCallLog(); break;
+        case 'toggleCallHistory': state.callHistoryOpen = !state.callHistoryOpen; render(); break;
       }
     });
 
@@ -4426,6 +4500,7 @@
         case 'smsModalTemplate': selectSmsTemplate(t.value); break;
         case 'smsTemplateName': updateSmsTemplateField(t.getAttribute('data-tpl'), 'name', t.value); break;
         case 'smsTemplateBody': updateSmsTemplateField(t.getAttribute('data-tpl'), 'body', t.value); break;
+        case 'callDraft': state.callDraft = t.value; break;
       }
     });
   }
