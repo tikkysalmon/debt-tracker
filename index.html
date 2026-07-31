@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-31.26';
+  var APP_BUILD = '2026-07-31.27';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -2130,7 +2130,7 @@
       '<div style="text-align:center; font-size:16px; font-weight:700; margin-bottom:3px;">หนังสือทวงถามให้ชำระหนี้ค้างชำระ</div>' +
       '<div style="text-align:center; font-size:12.5px; color:#5b5750; margin-bottom:18px;">(ครั้งที่ ' + letterNo + ')</div>' +
       '<div style="margin-bottom:14px;">เรียน คุณ' + esc(order.customerName) + '</div>' +
-      '<p style="margin:0 0 12px; text-align:justify; text-indent:2em;">ตามที่ท่านได้ทำสัญญาซื้อสินค้าแบบผ่อนชำระกับบริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด ("บริษัทฯ") ตามคำสั่งซื้อเลขที่ ' + esc(order.orderId) + ' ลงวันที่ ' + esc(order.contractDateDisp) + ' รายการสินค้า ' + esc(order.productList) + ' โดยตกลงผ่อนชำระเป็นรายงวดตามที่ระบุในสัญญานั้น</p>' +
+      '<p style="margin:0 0 12px; text-align:justify; text-indent:2em;">ตามที่ท่านได้ทำสัญญาซื้อสินค้าแบบผ่อนชำระกับบริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด ("บริษัทฯ") ตามคำสั่งซื้อเลขที่ ' + esc(order.orderId) + (order.contractNo ? ' เลขที่สัญญา ' + esc(order.contractNo) : '') + ' ลงวันที่ ' + esc(order.contractDateDisp) + ' รายการสินค้า ' + esc(order.productList) + ' โดยตกลงผ่อนชำระเป็นรายงวดตามที่ระบุในสัญญานั้น</p>' +
       '<p style="margin:0 0 10px;">บัดนี้ปรากฏว่าท่านได้ค้างชำระค่างวดดังกล่าว โดยมีรายละเอียดยอดค้างชำระ ดังนี้</p>' +
       '<table style="width:100%; border-collapse:collapse; margin:0 0 16px; font-size:13.5px;">' +
         '<tr><td style="padding:6px 10px; border:1px solid #efece3; width:38%; color:#5b5750;">จำนวนงวดที่ค้างชำระ</td><td style="padding:6px 10px; border:1px solid #efece3; font-weight:700;">' + snapshot.overdueCount + ' งวด</td></tr>' +
