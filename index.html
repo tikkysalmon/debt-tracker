@@ -64,10 +64,10 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-31.8';
+  var APP_BUILD = '2026-07-31.9';
 
   // ---------- Constants ----------
-  var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
+  var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
   var NOTDUE_STATUSES = ['ยังไม่ถึงกำหนดชำระ', 'ถึงกำหนดชำระ'];
   var AGE_BUCKETS = [[12, 14], [15, 17], [18, 25], [26, 30], [31, 35], [36, 40], [41, 45], [46, 50], [51, 55], [56, 60], [61, 200]];
   var MONTH_LABELS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
@@ -81,18 +81,19 @@
     'เปลี่ยนภาพพักหน้าจอ': { color: '#e0562f', order: 6 },
     'เปลี่ยนภาพพักหน้าจอ (ระบบ)': { color: '#f76707', order: 7 },
     'ล็อคเครื่อง': { color: '#e03131', order: 8 },
-    'หนี้สงสัยจะสูญ': { color: '#9c1f4a', order: 9 },
-    'จำหน่ายชื่อให้บริษัทติดตามหนี้': { color: '#7c5cff', order: 10 },
-    'ยกเลิกสัญญา คืนเครื่อง': { color: '#4b5563', order: 11 },
-    'ค้างชำระ ล็อคเครื่องไม่ได้': { color: '#9a4b1f', order: 12 }
+    'ล็อคเครื่อง (ระบบ)': { color: '#a61e1e', order: 9 },
+    'หนี้สงสัยจะสูญ': { color: '#9c1f4a', order: 10 },
+    'จำหน่ายชื่อให้บริษัทติดตามหนี้': { color: '#7c5cff', order: 11 },
+    'ยกเลิกสัญญา คืนเครื่อง': { color: '#4b5563', order: 12 },
+    'ค้างชำระ ล็อคเครื่องไม่ได้': { color: '#9a4b1f', order: 13 }
   };
   var STATUS_OPTIONS = Object.keys(STATUS_META).sort(function (a, b) { return STATUS_META[a].order - STATUS_META[b].order; });
-  // เปลี่ยนภาพพักหน้าจอ (ระบบ) is never staff-pickable — it exists purely as computeStatus()'s own
-  // auto-assigned output (see below) so staff can tell "the system flagged this automatically" apart
-  // from "a staff member manually chose this" (เปลี่ยนภาพพักหน้าจอ, no suffix), per user request
-  // 2026-07-31. Excluded from the per-งวด edit dropdown (EDITABLE_STATUS_OPTIONS) but left in
-  // STATUS_OPTIONS so it's still filterable/exportable like every other status.
-  var SYSTEM_ONLY_STATUSES = { 'เปลี่ยนภาพพักหน้าจอ (ระบบ)': true };
+  // เปลี่ยนภาพพักหน้าจอ (ระบบ)/ล็อคเครื่อง (ระบบ) are never staff-pickable — they exist purely as
+  // computeStatus()'s own auto-assigned output (see below) so staff can tell "the system flagged
+  // this automatically" apart from "a staff member manually chose this" (the no-suffix versions),
+  // per user request 2026-07-31. Excluded from the per-งวด edit dropdown (EDITABLE_STATUS_OPTIONS)
+  // but left in STATUS_OPTIONS so they're still filterable/exportable like every other status.
+  var SYSTEM_ONLY_STATUSES = { 'เปลี่ยนภาพพักหน้าจอ (ระบบ)': true, 'ล็อคเครื่อง (ระบบ)': true };
   var EDITABLE_STATUS_OPTIONS = STATUS_OPTIONS.filter(function (s) { return !SYSTEM_ONLY_STATUSES[s]; });
   // Grouping for the dashboard's "แยกสถานะการชำระ" widget only — every other place in the app
   // (filters, tables, exports) still uses the raw STATUS_META statuses untouched.
@@ -100,7 +101,7 @@
     { label: 'ยังไม่ถึงกำหนดชำระ', color: '#748199', icon: '⏳', statuses: ['ยังไม่ถึงกำหนดชำระ'] },
     { label: 'ถึงกำหนดชำระ', color: '#4f7cff', icon: '📅', statuses: ['ถึงกำหนดชำระ'] },
     { label: 'ชำระแล้ว', color: '#12b886', icon: '✅', statuses: ['ชำระแล้ว', 'ชำระบางส่วน'] },
-    { label: 'ค้างชำระ', color: '#e03131', icon: '⚠️', statuses: ['ค้างชำระ', 'เกินกำหนดชำระ', 'ล็อคเครื่อง', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้'] },
+    { label: 'ค้างชำระ', color: '#e03131', icon: '⚠️', statuses: ['ค้างชำระ', 'เกินกำหนดชำระ', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้'] },
     { label: 'หนี้สงสัยจะสูญ', color: '#9c1f4a', icon: '🚫', statuses: ['หนี้สงสัยจะสูญ'] },
     { label: 'จำหน่ายชื่อให้บริษัทติดตามหนี้', color: '#7c5cff', icon: '📤', statuses: ['จำหน่ายชื่อให้บริษัทติดตามหนี้'] },
     { label: 'ยกเลิกสัญญา คืนเครื่อง', color: '#4b5563', icon: '↩️', statuses: ['ยกเลิกสัญญา คืนเครื่อง'] }
@@ -229,8 +230,11 @@
     // two were indistinguishable once frozen, both just showing "เปลี่ยนภาพพักหน้าจอ" with no way to
     // tell whether a person made that call or the system did. Both feed into the same "ค้างชำระ"
     // STATUS_GROUP_META bucket total (see there) and both count as LATE_STATUSES, so no KPI/grading
-    // total changes — this only splits the single label into two distinguishable ones.
-    if (diffDays > cfg.lockDays) return 'ล็อคเครื่อง';
+    // total changes — this only splits the single label into two distinguishable ones. Same
+    // reasoning applied to ล็อคเครื่อง (ระบบ) per user request 2026-07-31 — this branch is likewise
+    // pure diffDays math with no i.statusOverride/i.status read, so it must be visibly distinct from
+    // a staff member's deliberate ล็อคเครื่อง pick.
+    if (diffDays > cfg.lockDays) return 'ล็อคเครื่อง (ระบบ)';
     if (diffDays > cfg.screenDays) return 'เปลี่ยนภาพพักหน้าจอ (ระบบ)';
     return 'เกินกำหนดชำระ';
   }
@@ -3142,7 +3146,7 @@
           }).join('') + '</div>') : '<div style="padding:8px 0; color:#8a86a3; font-size:13px;">ไม่มีข้อมูล</div>') +
       '</div>';
     };
-    html += ageSummary('👥 สรุปช่วงอายุลูกค้า "ค้างชำระ"', 'รวมสถานะ: ค้างชำระ, เกินกำหนดชำระ, เปลี่ยนภาพพักหน้าจอ, เปลี่ยนภาพพักหน้าจอ (ระบบ), ล็อคเครื่อง, ค้างชำระ ล็อคเครื่องไม่ได้, หนี้สงสัยจะสูญ', d.ageOverdueSummary, '#e03131');
+    html += ageSummary('👥 สรุปช่วงอายุลูกค้า "ค้างชำระ"', 'รวมสถานะ: ค้างชำระ, เกินกำหนดชำระ, เปลี่ยนภาพพักหน้าจอ, เปลี่ยนภาพพักหน้าจอ (ระบบ), ล็อคเครื่อง, ล็อคเครื่อง (ระบบ), ค้างชำระ ล็อคเครื่องไม่ได้, หนี้สงสัยจะสูญ', d.ageOverdueSummary, '#e03131');
     html += ageSummary('👥 สรุปช่วงอายุลูกค้า "หนี้สงสัยจะสูญ"', 'ค้างชำระตั้งแต่ 2 งวดขึ้นไป', d.ageBadDebtSummary, '#9c1f4a');
 
     // Purchase type groups
