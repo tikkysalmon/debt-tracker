@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-31.17';
+  var APP_BUILD = '2026-07-31.18';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -912,9 +912,16 @@
   // resolved to plain text client-side before being sent through /api/send-sms's "message" field —
   // staff should edit these to match whatever wording is actually approved/used on the Thaibulksms
   // console. {ชื่อ}/{ยอดค้าง}/{วันครบกำหนด}/{งวดที่}/{เลขที่สัญญา} are substituted per-งวด at send time.
+  // "stage" (1-4) ties a template to a step in the ติดตามหนี้ escalation notification (see
+  // computePendingSmsReminders) — independent of the editable display name, since staff renaming a
+  // template must never silently break which stage it represents. null/undefined = not part of the
+  // automatic sequence (e.g. a one-off template like "แจ้งเลขพัสดุ"). If two templates ever share
+  // the same stage number, computePendingSmsReminders just uses whichever comes first in the array.
   var DEFAULT_SMS_TEMPLATES = [
-    { id: 'tpl1', name: 'ติดตามหนี้ 1', body: 'เรียน คุณ{ชื่อ} ท่านมียอดค้างชำระ งวดที่ {งวดที่} จำนวน {ยอดค้าง} บาท ครบกำหนดวันที่ {วันครบกำหนด} กรุณาชำระโดยเร็วที่สุด ขอบคุณค่ะ' },
-    { id: 'tpl2', name: 'ติดตามหนี้ 2', body: 'เรียน คุณ{ชื่อ} ท่านค้างชำระเกินกำหนดแล้ว งวดที่ {งวดที่} จำนวน {ยอดค้าง} บาท กรุณาติดต่อชำระโดยด่วนที่สุด ขอบคุณค่ะ' }
+    { id: 'tpl1', name: 'ติดตามหนี้ 1', stage: 1, body: 'เรียน คุณ{ชื่อ} ท่านมียอดค้างชำระ งวดที่ {งวดที่} จำนวน {ยอดค้าง} บาท ครบกำหนดวันที่ {วันครบกำหนด} กรุณาชำระโดยเร็วที่สุด ขอบคุณค่ะ' },
+    { id: 'tpl2', name: 'ติดตามหนี้ 2', stage: 2, body: 'เรียน คุณ{ชื่อ} ท่านค้างชำระเกินกำหนดแล้ว งวดที่ {งวดที่} จำนวน {ยอดค้าง} บาท กรุณาติดต่อชำระโดยด่วนที่สุด ขอบคุณค่ะ' },
+    { id: 'tpl3', name: 'ติดตามหนี้ 3', stage: 3, body: 'เรียน คุณ{ชื่อ} ท่านยังค้างชำระ งวดที่ {งวดที่} จำนวน {ยอดค้าง} บาท กรุณาติดต่อชำระโดยด่วนที่สุด มิฉะนั้นบริษัทอาจดำเนินการตามขั้นตอนต่อไป ขอบคุณค่ะ' },
+    { id: 'tpl4', name: 'ติดตามหนี้ 4', stage: 4, body: 'แจ้งเตือนครั้งสุดท้าย ท่านยังค้างชำระ งวดที่ {งวดที่} จำนวน {ยอดค้าง} บาท กรุณาชำระภายใน 3 วัน ก่อนดำเนินคดีทางกฎหมาย ขอบคุณค่ะ' }
   ];
   // ---------- State ----------
   var state = {
@@ -1620,6 +1627,9 @@
       selectedCustomerFullySettled: selectedCustomerFullySettled,
       billCount: selectedCustomerOrders.length,
       customerNoteSaved: hasSelectedCustomer ? (state.customerNotes[state.selectedCustomerId] || '') : '',
+      // Scans ALL orders (computedOrders), not filteredOrders — must surface regardless of the
+      // current search/filter state, and only actually costs anything when the tracking view reads it.
+      pendingSmsReminders: computePendingSmsReminders(computedOrders),
       dashboard: dashboard
     };
   }
@@ -1848,13 +1858,16 @@
       contractNo: ord.contractNo || ord.soDisplay, phone: ord.phone, history: ord.smsHistory || []
     };
   }
-  function openSendSmsModal(level, orderId, no, track) {
+  function openSendSmsModal(level, orderId, no, track, preferredTemplateId) {
     var ctx = smsContextFor(level, orderId, no, track);
     if (!ctx) return;
     state.smsModalTarget = { level: level, orderId: orderId, no: no, track: track };
     var nums = extractPhoneNumbers(ctx.phone);
     state.smsModalPhone = nums[0] || '';
-    var tpl = state.smsTemplates.find(function (t) { return t.id === state.smsModalTemplateId; }) || state.smsTemplates[0];
+    // A ติดตามหนี้ escalation row (see computePendingSmsReminders) passes preferredTemplateId so the
+    // modal opens pre-selected to the exact stage staff clicked, instead of always defaulting to
+    // whichever template was last picked in a previous, unrelated send.
+    var tpl = state.smsTemplates.find(function (t) { return t.id === (preferredTemplateId || state.smsModalTemplateId); }) || state.smsTemplates[0];
     state.smsModalTemplateId = tpl ? tpl.id : '';
     state.smsModalDraft = tpl ? resolveSmsTemplate(tpl.body, ctx) : '';
     state.smsModalManaging = false;
@@ -1922,14 +1935,18 @@
           render();
           return;
         }
-        var entry = { at: nowTimestamp(), phone: phone, template: tpl ? tpl.name : '', message: message };
         if (target.level === 'installment') {
           var order = state.orders.find(function (o) { return o.orderId === target.orderId; });
           var list = order && (order[trackKey(target.track)] || []);
           var inst = list && list.find(function (i) { return i.no === target.no; });
+          // amountPaidAtSend snapshots what this งวด had paid at send time, so the ติดตามหนี้
+          // escalation notification (computePendingSmsReminders) can later tell "customer paid
+          // something since this send" (blocks the next stage) apart from "still unchanged".
+          var entry = { at: nowTimestamp(), phone: phone, template: tpl ? tpl.name : '', stage: tpl ? tpl.stage || null : null, message: message, amountPaidAtSend: inst ? toNumber(inst.amountPaid) : null };
           var history = (inst && inst.smsHistory) || [];
           updateInstallment(target.orderId, target.no, 'smsHistory', history.concat([entry]), target.track);
         } else {
+          var entry = { at: nowTimestamp(), phone: phone, template: tpl ? tpl.name : '', stage: tpl ? tpl.stage || null : null, message: message };
           var ord2 = state.orders.find(function (o) { return o.orderId === target.orderId; });
           var history2 = (ord2 && ord2.smsHistory) || [];
           updateOrderField(target.orderId, 'smsHistory', history2.concat([entry]));
@@ -1961,6 +1978,102 @@
     var entry = { at: nowTimestamp(), note: text };
     updateOrderField(contactOrder.orderId, 'callHistory', history.concat([entry]));
     state.callDraft = '';
+  }
+  // ---------- ติดตามหนี้ escalation notification ----------
+  // Adds n business days (Sat/Sun skipped only — no Thai public-holiday calendar exists in this
+  // app; user's explicit choice 2026-07-31) to a 'YYYY-MM-DD' string. dateStr itself is day 0 and
+  // never counted, so "1 วันทำการ หลัง X" on a Friday lands Monday, never Saturday.
+  function addBusinessDays(dateStr, n) {
+    var p = dateStr.split('-').map(Number);
+    var d = new Date(p[0], p[1] - 1, p[2]);
+    var added = 0;
+    while (added < n) {
+      d.setDate(d.getDate() + 1);
+      var dow = d.getDay();
+      if (dow !== 0 && dow !== 6) added++;
+    }
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+  function addCalendarDays(dateStr, n) {
+    var p = dateStr.split('-').map(Number);
+    var d = new Date(p[0], p[1] - 1, p[2] + n);
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+  // nowTimestamp() is 'DD/MM/YYYY HH:MM' — smsHistory's own format — converted to 'YYYY-MM-DD' so
+  // addBusinessDays can work on it.
+  function dmyToIso(s) {
+    var m = String(s || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    return m ? (m[3] + '-' + m[2] + '-' + m[1]) : '';
+  }
+  // How many business days after entering/sending the previous step each ติดตามหนี้ stage fires —
+  // matches the escalation the user specified 2026-07-31.
+  var SMS_ESCALATION_BUSINESS_DAYS = { 1: 1, 2: 3, 3: 3, 4: 7 };
+  // Pure notification, never sends anything itself — per explicit user request, staff review this
+  // list and click ส่ง SMS themselves (reuses the same modal/button as every other send). Computed
+  // live on every render from existing data (dueDate, effectiveStatus, smsHistory) rather than a
+  // cron/background job, since the notification only ever needs to be correct at the moment a staff
+  // member has the page open anyway — see [[project-debt-tracker-site]] memory for why a
+  // Vercel-Cron-writes-state.json approach was deliberately rejected (staler data, extra risk to the
+  // existing 3-way merge system, for zero benefit over live computation here).
+  // Stage 1 fires businessDaysAfter(dueDate + CFG.lockDays + 1 calendar day, 1) — the calendar date
+  // a งวด entered ล็อคเครื่อง (ระบบ), since that status has no stored transition timestamp of its
+  // own (computeStatus recomputes it live every render — see CFG.lockDays, line ~49).
+  // Stages 2-4 fire N business days after the PREVIOUS stage's smsHistory entry — found via that
+  // entry's own `stage` number (not the editable template name, so renaming a template later can
+  // never silently break which stage an old send represents) — and only while amountPaid on this
+  // งวด hasn't grown since that send (compared against amountPaidAtSend, set in confirmSendSms): a
+  // customer who's paid something is presumed to already be engaging, so escalation pauses there for
+  // staff to judge manually rather than auto-continuing past a partial payment.
+  function computePendingSmsReminders(computedOrders) {
+    var todayNow = new Date();
+    var todayStr = todayNow.getFullYear() + '-' + String(todayNow.getMonth() + 1).padStart(2, '0') + '-' + String(todayNow.getDate()).padStart(2, '0');
+    var templatesByStage = {};
+    state.smsTemplates.forEach(function (t) { if (t.stage && !templatesByStage[t.stage]) templatesByStage[t.stage] = t; });
+    var out = [];
+    computedOrders.forEach(function (o) {
+      if (o.isCancelled || o.isSold) return;
+      (o.installments || []).concat(o.accessoryInstallments || []).forEach(function (inst) {
+        if (inst.effectiveStatus !== 'ล็อคเครื่อง (ระบบ)') return;
+        var sentStages = {};
+        (inst.smsHistory || []).forEach(function (h) {
+          if (!h.stage) return;
+          if (!sentStages[h.stage] || parseLogTimestamp(h.at) > parseLogTimestamp(sentStages[h.stage].at)) sentStages[h.stage] = h;
+        });
+        for (var stage = 1; stage <= 4; stage++) {
+          if (sentStages[stage]) continue; // already sent — check the next stage instead
+          // First not-yet-sent stage found — this is the ONE gating stage for this งวด; resolve
+          // it (eligible or not) and stop, never skip ahead to a later stage number.
+          var tpl = templatesByStage[stage];
+          if (!tpl) return; // no template configured for this stage yet — nothing to recommend
+          var triggerDate, eligible;
+          if (stage === 1) {
+            var lockEnteredDate = addCalendarDays(inst.dueDate, CFG.lockDays + 1);
+            triggerDate = addBusinessDays(lockEnteredDate, SMS_ESCALATION_BUSINESS_DAYS[1]);
+            eligible = todayStr >= triggerDate;
+          } else {
+            var prev = sentStages[stage - 1];
+            if (!prev) return; // previous stage never sent — can't escalate past it
+            var paymentOk = prev.amountPaidAtSend == null || toNumber(inst.amountPaid) <= prev.amountPaidAtSend + 0.01;
+            if (!paymentOk) return; // customer paid something since — pause for staff review
+            triggerDate = addBusinessDays(dmyToIso(prev.at), SMS_ESCALATION_BUSINESS_DAYS[stage]);
+            eligible = todayStr >= triggerDate;
+          }
+          if (eligible) {
+            out.push({
+              orderId: o.orderId, no: inst.no, track: (o.accessoryInstallments || []).indexOf(inst) !== -1 ? 'accessory' : 'main',
+              customerId: o.customerId, customerName: o.customerName, soDisplay: o.soDisplay,
+              stage: stage, templateId: tpl.id, templateName: tpl.name,
+              triggerDateIso: triggerDate, dueSinceDisp: fmtDate(triggerDate), phone: o.phone
+            });
+          }
+          return;
+        }
+      });
+    });
+    // Sorted by the raw ISO trigger date, NOT dueSinceDisp — fmtDate() renders 'DD/MM/YYYY', which
+    // does not sort lexicographically in date order.
+    out.sort(function (a, b) { return a.triggerDateIso < b.triggerDateIso ? -1 : a.triggerDateIso > b.triggerDateIso ? 1 : 0; });
+    return out;
   }
   // Marks a single งวด as cross-checked against the reference CRM (or un-marks it) — a manual QA
   // step staff run monthly per ครบกำหนด month, per user request 2026-07-30: without this, a
@@ -3728,8 +3841,32 @@
       '</div>' +
     '</div>';
   }
+  // ติดตามหนี้ escalation notification banner — see computePendingSmsReminders. Every row's button
+  // opens the normal ส่ง SMS modal pre-selected to the recommended stage; nothing sends on its own.
+  function renderPendingSmsBanner() {
+    var list = CV.pendingSmsReminders || [];
+    if (!list.length) return '';
+    return '<div style="background:rgba(240,140,0,0.08); border:1px solid rgba(240,140,0,0.3); border-radius:20px; padding:18px 22px; margin-bottom:20px;">' +
+      '<div style="display:flex; align-items:center; gap:8px; margin-bottom:12px; font-family:\'Prompt\',sans-serif; font-weight:700; font-size:15px; color:#8a4b00;">🔔 มีลูกหนี้ที่ต้องส่ง SMS ทวงหนี้วันนี้ (' + list.length + ' รายการ)</div>' +
+      '<div style="display:flex; flex-direction:column; gap:8px; max-height:340px; overflow-y:auto;">' +
+        list.map(function (r) {
+          return '<div style="background:#fff; border:1px solid rgba(240,140,0,0.2); border-radius:12px; padding:10px 14px; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">' +
+            '<div style="font-size:13px; color:#2b2540;">' +
+              '<span style="font-weight:700;">' + esc(r.customerName) + '</span>' +
+              ' <span style="color:#8a86a3;">(' + esc(r.customerId) + ')</span>' +
+              ' · 🔗 ' + esc(r.soDisplay) +
+              ' · งวดที่ ' + r.no +
+              ' · <span style="color:#c2650a; font-weight:600;">' + esc(r.templateName) + '</span>' +
+              ' <span style="color:#8a86a3;">(ครบกำหนดส่งตั้งแต่ ' + esc(r.dueSinceDisp) + ')</span>' +
+            '</div>' +
+            '<button data-action="openSendSms" data-level="installment" data-order="' + esc(r.orderId) + '" data-no="' + r.no + '" data-track="' + r.track + '" data-template="' + esc(r.templateId) + '" style="border:none; background:linear-gradient(135deg,#0ca678,#0b7a5b); color:#fff; padding:6px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:pointer; white-space:nowrap;">📱 ส่ง ' + esc(r.templateName) + '</button>' +
+          '</div>';
+        }).join('') +
+      '</div>' +
+    '</div>';
+  }
   function renderTracking() {
-    var html = '<div>';
+    var html = '<div>' + renderPendingSmsBanner();
 
     // Search card
     html += '<div style="background:rgba(255,255,255,0.6); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.85); border-radius:20px; padding:24px 26px; margin-bottom:20px; box-shadow:0 8px 30px rgba(124,92,255,0.08);">' +
@@ -3917,12 +4054,17 @@
           return '<div style="border-bottom:1px dashed rgba(124,92,255,0.2); padding-bottom:10px;">' +
             '<div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">' +
               '<input type="text" value="' + esc(t.name) + '" data-action="smsTemplateName" data-tpl="' + esc(t.id) + '" style="flex:1; box-sizing:border-box; padding:6px 8px; border-radius:8px; border:1px solid rgba(124,92,255,0.2); font-size:12.5px; font-weight:600; color:#2b2540; outline:none;" />' +
+              '<select data-action="smsTemplateStage" data-tpl="' + esc(t.id) + '" title="ลำดับในระบบแจ้งเตือนติดตามหนี้อัตโนมัติ" style="flex-shrink:0; padding:5px 6px; border-radius:8px; border:1px solid rgba(124,92,255,0.2); font-size:11.5px; color:#2b2540; outline:none;">' +
+                '<option value=""' + (!t.stage ? ' selected' : '') + '>— (ไม่ใช้แจ้งเตือน)</option>' +
+                [1, 2, 3, 4].map(function (n) { return '<option value="' + n + '"' + (t.stage === n ? ' selected' : '') + '>ลำดับ ' + n + '</option>'; }).join('') +
+              '</select>' +
               '<button data-action="deleteSmsTemplate" data-tpl="' + esc(t.id) + '" title="ลบ template นี้" style="border:none; background:transparent; color:#e03131; cursor:pointer; font-size:14px; flex-shrink:0;">🗑</button>' +
             '</div>' +
             '<textarea data-action="smsTemplateBody" data-tpl="' + esc(t.id) + '" rows="2" style="width:100%; box-sizing:border-box; padding:6px 8px; border-radius:8px; border:1px solid rgba(124,92,255,0.2); font-size:12px; color:#2b2540; outline:none; font-family:inherit; resize:vertical;">' + esc(t.body) + '</textarea>' +
           '</div>';
         }).join('') +
         '<div data-action="addSmsTemplate" style="color:#7c5cff; font-size:12.5px; font-weight:600; cursor:pointer;">+ เพิ่ม template ใหม่</div>' +
+        '<div style="font-size:11px; color:#8a86a3;">"ลำดับ" กำหนดว่า template นี้คือขั้นไหนของระบบแจ้งเตือนติดตามหนี้อัตโนมัติ (🔔 บนแท็บติดตามหนี้) — ต้องตั้งครบ 4 ลำดับ ระบบถึงจะแจ้งเตือนครบทุกขั้น</div>' +
         '<div style="font-size:11px; color:#8a86a3;">ตัวแปรที่ใช้ได้: {ชื่อ} {ยอดค้าง} {วันครบกำหนด} {งวดที่} {เลขที่สัญญา} · ต้องกด "บันทึกการเปลี่ยนแปลง" ที่หน้าหลักด้วยเพื่อบันทึก template ถาวร</div>' +
       '</div>';
     var historyHtml = '';
@@ -4428,7 +4570,7 @@
         case 'nextPage': state.page = (state.page || 1) + 1; render(); break;
         case 'openSendSms': {
           var smsNo = t.getAttribute('data-no');
-          openSendSmsModal(t.getAttribute('data-level'), t.getAttribute('data-order'), smsNo !== null ? Number(smsNo) : null, t.getAttribute('data-track'));
+          openSendSmsModal(t.getAttribute('data-level'), t.getAttribute('data-order'), smsNo !== null ? Number(smsNo) : null, t.getAttribute('data-track'), t.getAttribute('data-template'));
           break;
         }
         case 'closeSendSmsModal': closeSendSmsModal(); break;
@@ -4500,6 +4642,7 @@
         case 'smsModalTemplate': selectSmsTemplate(t.value); break;
         case 'smsTemplateName': updateSmsTemplateField(t.getAttribute('data-tpl'), 'name', t.value); break;
         case 'smsTemplateBody': updateSmsTemplateField(t.getAttribute('data-tpl'), 'body', t.value); break;
+        case 'smsTemplateStage': updateSmsTemplateField(t.getAttribute('data-tpl'), 'stage', t.value ? Number(t.value) : null); break;
         case 'callDraft': state.callDraft = t.value; break;
       }
     });
