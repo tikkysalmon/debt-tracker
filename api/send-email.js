@@ -50,19 +50,15 @@ module.exports = async function handler(req, res) {
       template_uuid: templateId,
       mail_from: senderName,
       subject: subject,
-      mail_to: [
-        {
-          email: mailTo,
-          payload: {
-            CUSTOMER_NAME: customerName || '',
-            AMOUNT: amount || '',
-            DUE_DATE: dueDate || '',
-            PDF_LINK: pdfLink,
-            LETTER_NO: String(letterNo || ''),
-            ORDER_ID: orderId || ''
-          }
-        }
-      ]
+      mail_to: [{ email: mailTo }],
+      payload: {
+        CUSTOMER_NAME: customerName || '',
+        AMOUNT: amount || '',
+        DUE_DATE: dueDate || '',
+        PDF_LINK: pdfLink,
+        LETTER_NO: String(letterNo || ''),
+        ORDER_ID: orderId || ''
+      }
     };
     const emailRes = await fetch('https://tbs-email-api-gateway.omb.to/email/v1/send_template', {
       method: 'POST',
