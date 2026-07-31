@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-31.1';
+  var APP_BUILD = '2026-07-31.2';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -460,12 +460,25 @@
   // customerNotes back to lastServerSnapshot (the last state we know is really on the server) rather
   // than just silencing the warning — otherwise the abandoned edits would keep sitting in memory and
   // could accidentally ride along on some LATER, unrelated บันทึก click for a different customer.
+  // Also reverts appliedPaymentKeys (2026-07-31 fix) — it's a module-level variable, not part of
+  // state, so it used to survive this revert untouched. If a payment import had just run (adding
+  // this row's dedup signature and calling savePersisted(), which writes appliedPaymentKeys to
+  // localStorage synchronously) and THEN this discard fired before the import's own debounced cloud
+  // save (600ms+ round trip for a ~20MB payload) landed, state.orders reverted back to pre-import
+  // data but the signature stayed marked "already applied" — permanently poisoning that exact
+  // payment row so re-uploading the same file afterward silently skips it as a duplicate forever
+  // (appliedPaymentKeys is a write-only union, see unionKeys — nothing else ever removes a key).
+  // Root-caused via a live customer report where the order's orderId matched and the file was
+  // re-uploaded, but the amount still never updated — traced to exactly this stuck signature in the
+  // live state.json's appliedPaymentKeys array.
   function confirmDiscardIfDirty() {
     if (!state.hasUnsavedChanges) return true;
     var ok = window.confirm('มีการเปลี่ยนแปลงที่ยังไม่ได้บันทึก ต้องการออกโดยไม่บันทึกหรือไม่?\n(ข้อมูลที่ยังไม่บันทึกจะหายไปทันที)');
     if (ok) {
       state.orders = lastServerSnapshot.orders;
       state.customerNotes = lastServerSnapshot.customerNotes;
+      appliedPaymentKeys = {};
+      (lastServerSnapshot.appliedPaymentKeys || []).forEach(function (k) { appliedPaymentKeys[k] = true; });
       state.hasUnsavedChanges = false;
     }
     return ok;
