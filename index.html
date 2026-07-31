@@ -64,10 +64,10 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-31.4';
+  var APP_BUILD = '2026-07-31.5';
 
   // ---------- Constants ----------
-  var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
+  var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
   var NOTDUE_STATUSES = ['ยังไม่ถึงกำหนดชำระ', 'ถึงกำหนดชำระ'];
   var AGE_BUCKETS = [[12, 14], [15, 17], [18, 25], [26, 30], [31, 35], [36, 40], [41, 45], [46, 50], [51, 55], [56, 60], [61, 200]];
   var MONTH_LABELS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
@@ -79,21 +79,29 @@
     'ชำระแล้ว': { color: '#12b886', order: 4 },
     'ชำระบางส่วน': { color: '#0f9c8f', order: 5 },
     'เปลี่ยนภาพพักหน้าจอ': { color: '#e0562f', order: 6 },
-    'ล็อคเครื่อง': { color: '#e03131', order: 7 },
-    'หนี้สงสัยจะสูญ': { color: '#9c1f4a', order: 8 },
-    'จำหน่ายชื่อให้บริษัทติดตามหนี้': { color: '#7c5cff', order: 9 },
-    'ยกเลิกสัญญา คืนเครื่อง': { color: '#4b5563', order: 10 },
-    'ติดตามเครื่องคืน': { color: '#0b7285', order: 11 },
-    'ค้างชำระ ล็อคเครื่องไม่ได้': { color: '#9a4b1f', order: 12 }
+    'เปลี่ยนภาพพักหน้าจอ (ระบบ)': { color: '#f76707', order: 7 },
+    'ล็อคเครื่อง': { color: '#e03131', order: 8 },
+    'หนี้สงสัยจะสูญ': { color: '#9c1f4a', order: 9 },
+    'จำหน่ายชื่อให้บริษัทติดตามหนี้': { color: '#7c5cff', order: 10 },
+    'ยกเลิกสัญญา คืนเครื่อง': { color: '#4b5563', order: 11 },
+    'ติดตามเครื่องคืน': { color: '#0b7285', order: 12 },
+    'ค้างชำระ ล็อคเครื่องไม่ได้': { color: '#9a4b1f', order: 13 }
   };
   var STATUS_OPTIONS = Object.keys(STATUS_META).sort(function (a, b) { return STATUS_META[a].order - STATUS_META[b].order; });
+  // เปลี่ยนภาพพักหน้าจอ (ระบบ) is never staff-pickable — it exists purely as computeStatus()'s own
+  // auto-assigned output (see below) so staff can tell "the system flagged this automatically" apart
+  // from "a staff member manually chose this" (เปลี่ยนภาพพักหน้าจอ, no suffix), per user request
+  // 2026-07-31. Excluded from the per-งวด edit dropdown (EDITABLE_STATUS_OPTIONS) but left in
+  // STATUS_OPTIONS so it's still filterable/exportable like every other status.
+  var SYSTEM_ONLY_STATUSES = { 'เปลี่ยนภาพพักหน้าจอ (ระบบ)': true };
+  var EDITABLE_STATUS_OPTIONS = STATUS_OPTIONS.filter(function (s) { return !SYSTEM_ONLY_STATUSES[s]; });
   // Grouping for the dashboard's "แยกสถานะการชำระ" widget only — every other place in the app
   // (filters, tables, exports) still uses the raw STATUS_META statuses untouched.
   var STATUS_GROUP_META = [
     { label: 'ยังไม่ถึงกำหนดชำระ', color: '#748199', icon: '⏳', statuses: ['ยังไม่ถึงกำหนดชำระ'] },
     { label: 'ถึงกำหนดชำระ', color: '#4f7cff', icon: '📅', statuses: ['ถึงกำหนดชำระ'] },
     { label: 'ชำระแล้ว', color: '#12b886', icon: '✅', statuses: ['ชำระแล้ว', 'ชำระบางส่วน'] },
-    { label: 'ค้างชำระ', color: '#e03131', icon: '⚠️', statuses: ['ค้างชำระ', 'เกินกำหนดชำระ', 'ล็อคเครื่อง', 'เปลี่ยนภาพพักหน้าจอ', 'ค้างชำระ ล็อคเครื่องไม่ได้'] },
+    { label: 'ค้างชำระ', color: '#e03131', icon: '⚠️', statuses: ['ค้างชำระ', 'เกินกำหนดชำระ', 'ล็อคเครื่อง', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้'] },
     { label: 'หนี้สงสัยจะสูญ', color: '#9c1f4a', icon: '🚫', statuses: ['หนี้สงสัยจะสูญ'] },
     { label: 'จำหน่ายชื่อให้บริษัทติดตามหนี้', color: '#7c5cff', icon: '📤', statuses: ['จำหน่ายชื่อให้บริษัทติดตามหนี้'] },
     { label: 'ยกเลิกสัญญา คืนเครื่อง', color: '#4b5563', icon: '↩️', statuses: ['ยกเลิกสัญญา คืนเครื่อง'] }
@@ -208,13 +216,18 @@
     // cfg.lockDays/screenDays days are a grace COUNT after the due date (เช่น ครบกำหนด 15, นับ 16-20
     // เป็น 5 วัน) — the status only changes on the day AFTER that count finishes (วันที่ 21), hence
     // strictly-greater-than here rather than >=, which would have flipped the status a day early
-    // (on the last day still being counted, วันที่ 20). ล็อคเครื่อง/เปลี่ยนภาพพักหน้าจอ thresholds are
-    // unchanged per user request 2026-07-31 — only day 1 changed, from ค้างชำระ to เกินกำหนดชำระ (per
-    // user request 2026-07-31: the very next day after the due date should already read as เกิน
-    // กำหนดชำระ). Both statuses already share the same "ค้างชำระ" STATUS_GROUP_META bucket, so this
-    // is purely a label/color change on day 1 — no KPI/total is affected.
+    // (on the last day still being counted, วันที่ 20). ล็อคเครื่อง threshold is unchanged; day 1
+    // reads as เกินกำหนดชำระ (2026-07-31 fix, see comment further up in this function's history).
+    // เปลี่ยนภาพพักหน้าจอ (ระบบ) — not plain เปลี่ยนภาพพักหน้าจอ — per user request 2026-07-31: this
+    // branch is the SYSTEM's own automatic call (nothing here reads i.statusOverride/i.status, it's
+    // pure diffDays math), so it must carry a visibly different label from the plain
+    // เปลี่ยนภาพพักหน้าจอ a staff member deliberately picks from the status dropdown — otherwise the
+    // two were indistinguishable once frozen, both just showing "เปลี่ยนภาพพักหน้าจอ" with no way to
+    // tell whether a person made that call or the system did. Both feed into the same "ค้างชำระ"
+    // STATUS_GROUP_META bucket total (see there) and both count as LATE_STATUSES, so no KPI/grading
+    // total changes — this only splits the single label into two distinguishable ones.
     if (diffDays > cfg.lockDays) return 'ล็อคเครื่อง';
-    if (diffDays > cfg.screenDays) return 'เปลี่ยนภาพพักหน้าจอ';
+    if (diffDays > cfg.screenDays) return 'เปลี่ยนภาพพักหน้าจอ (ระบบ)';
     return 'เกินกำหนดชำระ';
   }
   // One-time self-heal for data already corrupted by an earlier bug: regular payment-file imports
@@ -3052,7 +3065,7 @@
           }).join('') + '</div>') : '<div style="padding:8px 0; color:#8a86a3; font-size:13px;">ไม่มีข้อมูล</div>') +
       '</div>';
     };
-    html += ageSummary('👥 สรุปช่วงอายุลูกค้า "ค้างชำระ"', 'รวมสถานะ: ค้างชำระ, เกินกำหนดชำระ, เปลี่ยนภาพพักหน้าจอ, ล็อคเครื่อง, ค้างชำระ ล็อคเครื่องไม่ได้, หนี้สงสัยจะสูญ', d.ageOverdueSummary, '#e03131');
+    html += ageSummary('👥 สรุปช่วงอายุลูกค้า "ค้างชำระ"', 'รวมสถานะ: ค้างชำระ, เกินกำหนดชำระ, เปลี่ยนภาพพักหน้าจอ, เปลี่ยนภาพพักหน้าจอ (ระบบ), ล็อคเครื่อง, ค้างชำระ ล็อคเครื่องไม่ได้, หนี้สงสัยจะสูญ', d.ageOverdueSummary, '#e03131');
     html += ageSummary('👥 สรุปช่วงอายุลูกค้า "หนี้สงสัยจะสูญ"', 'ค้างชำระตั้งแต่ 2 งวดขึ้นไป', d.ageBadDebtSummary, '#9c1f4a');
 
     // Purchase type groups
@@ -3717,7 +3730,13 @@
         // Status + CRM verification + note — footer strip.
         '<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding-top:4px; border-top:1px solid rgba(124,92,255,0.08);">' +
           '<select data-field="status"' + da + ' style="padding:7px 10px; border-radius:10px; border:1px solid ' + inst.statusBorder + '; background:' + inst.statusSoft + '; color:' + inst.statusColor + '; font-size:12px; font-weight:700; outline:none; cursor:pointer;">' +
-            STATUS_OPTIONS.map(function (opt) { return '<option value="' + esc(opt) + '"' + (opt === inst.effectiveStatus ? ' selected' : '') + ' style="color:#000; background:#fff;">' + esc(opt) + '</option>'; }).join('') +
+            // เปลี่ยนภาพพักหน้าจอ (ระบบ) isn't staff-pickable (SYSTEM_ONLY_STATUSES/EDITABLE_STATUS_OPTIONS
+            // above) — but if that's the งวด's CURRENT effectiveStatus, it still needs to appear here
+            // as the selected option, or the closed <select> would silently show whatever option
+            // happens to be first in the list instead of the truth (⟲ already covers "go back to
+            // auto" so it doesn't also need to be a normal pickable target).
+            (EDITABLE_STATUS_OPTIONS.indexOf(inst.effectiveStatus) === -1 ? [inst.effectiveStatus] : []).concat(EDITABLE_STATUS_OPTIONS)
+              .map(function (opt) { return '<option value="' + esc(opt) + '"' + (opt === inst.effectiveStatus ? ' selected' : '') + ' style="color:#000; background:#fff;">' + esc(opt) + '</option>'; }).join('') +
           '</select>' +
           (inst.statusOverride ? '<button data-action="resetOverride"' + da + ' title="รีเซ็ตสถานะเป็นอัตโนมัติ" style="border:none; background:rgba(124,92,255,0.08); border-radius:8px; cursor:pointer; font-size:14px; color:#7c5cff; flex-shrink:0; padding:5px 8px;">⟲</button>' : '') +
           '<label style="display:flex; align-items:center; gap:6px; cursor:pointer; white-space:nowrap; margin-left:auto;">' +
