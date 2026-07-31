@@ -32,7 +32,11 @@ module.exports = async function handler(req, res) {
   const apiKey = process.env.THAIBULKSMS_API_KEY;
   const apiSecret = process.env.THAIBULKSMS_API_SECRET;
   const templateId = process.env.THAIBULKSMS_EMAIL_TEMPLATE_ID;
-  const senderName = process.env.THAIBULKSMS_EMAIL_SENDER_NAME;
+  // Thaibulksms's sender list stores/verifies the address lowercase (confirmed 2026-08-01 — the
+  // console shows "debtcollection@salmonphone.com" while the env var was originally typed with
+  // mixed case); lowercasing here means an exact-match lookup on their end can never miss just
+  // because of how this got typed into Vercel.
+  const senderName = (process.env.THAIBULKSMS_EMAIL_SENDER_NAME || '').trim().toLowerCase();
   if (!apiKey || !apiSecret || !templateId || !senderName) {
     res.status(500).json({ error: 'Thaibulksms Email API ยังไม่ได้ตั้งค่าบน server (THAIBULKSMS_API_KEY / THAIBULKSMS_API_SECRET / THAIBULKSMS_EMAIL_TEMPLATE_ID / THAIBULKSMS_EMAIL_SENDER_NAME)' });
     return;
