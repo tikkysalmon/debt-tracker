@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-31.30';
+  var APP_BUILD = '2026-08-01.1';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -979,6 +979,7 @@
     letterheadImageUrl: (persisted && persisted.letterheadImageUrl) || '',
     letterIssuing: null, // orderId currently being generated, or null — disables the button mid-generate
     uploadMsgLetterhead: '',
+    emailModalTarget: null, emailModalTo: '', emailModalLetterNo: null, emailModalSending: false,
     appliedQuery: '',
     appliedAccountStatus: 'all',
     appliedDueStatus: 'all',
@@ -2277,6 +2278,72 @@
         render();
       });
   }
+  // ---------- ส่งเมลล์จดหมายทวงถามหนี้ (Thaibulksms Email API) ----------
+  // Thaibulksms's Email API (confirmed from their official developer PDF, 2026-07-31) is
+  // TEMPLATE-based only: POST https://tbs-email-api-gateway.omb.to/email/v1/send_template with
+  // {template_id, mail_from, mail_to, subject, Payload}, Basic-Auth'd with a SEPARATE Email
+  // API Key/Secret pair (different from the SMS ones). There is no file-attachment parameter
+  // documented at all, so this sends a DOWNLOAD LINK to the PDF (already public on Supabase
+  // Storage) via a merge tag, not a real attachment — per explicit user decision 2026-07-31. Staff
+  // must first build the Template in the Thaibulksms Email console (thaibulkmail.com) with these
+  // merge tags: {{CUSTOMER_NAME}} {{AMOUNT}} {{DUE_DATE}} {{PDF_LINK}} {{LETTER_NO}} {{ORDER_ID}}.
+  // Only an EXISTING letterHistory entry can be emailed (nothing to link to otherwise) — contrast
+  // with issueLetter's "existing or next-new" choice, which doesn't apply here.
+  function openSendEmailModal(orderId) {
+    var order = state.orders.find(function (o) { return o.orderId === orderId; });
+    if (!order) return;
+    var history = (order.letterHistory || []).slice().sort(function (a, b) { return b.no - a.no; });
+    if (!history.length) { window.alert('ยังไม่เคยออกจดหมายทวงถามหนี้ให้ SO นี้ — กรุณาออกเอกสารก่อน แล้วจึงส่งอีเมลได้'); return; }
+    state.emailModalTarget = orderId;
+    state.emailModalTo = order.email || '';
+    state.emailModalLetterNo = history[0].no;
+    render();
+  }
+  function closeSendEmailModal() {
+    state.emailModalTarget = null;
+    render();
+  }
+  function confirmSendEmail() {
+    if (!state.emailModalTarget || state.emailModalSending) return;
+    var orderId = state.emailModalTarget;
+    var order = state.orders.find(function (o) { return o.orderId === orderId; });
+    if (!order) return;
+    var to = (state.emailModalTo || '').trim();
+    if (!to) { window.alert('กรุณากรอกอีเมลผู้รับ'); return; }
+    var entry = (order.letterHistory || []).find(function (h) { return h.no === state.emailModalLetterNo; });
+    if (!entry) { window.alert('ไม่พบจดหมายครั้งที่เลือก'); return; }
+    state.emailModalSending = true;
+    render();
+    fetch('/api/send-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        to: to, orderId: orderId, letterNo: entry.no, pdfLink: entry.url,
+        customerName: order.customerName, amount: entry.amountDisp, dueDate: fmtDate(entry.dueDate)
+      })
+    })
+      .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+      .then(function (r) {
+        state.emailModalSending = false;
+        if (!r.ok || !r.data || r.data.error) {
+          var errText = r.data && r.data.error;
+          if (errText && typeof errText !== 'string') errText = JSON.stringify(errText);
+          window.alert('ส่งอีเมลไม่สำเร็จ: ' + (errText || 'unknown error'));
+          render();
+          return;
+        }
+        var emailHistory = (order.emailHistory || []).concat([{ at: nowTimestamp(), to: to, letterNo: entry.no }]);
+        updateOrderField(orderId, 'emailHistory', emailHistory);
+        state.emailModalTarget = null;
+        render();
+        window.alert('ส่งอีเมลสำเร็จ (ครั้งที่ ' + entry.no + ')');
+      })
+      .catch(function (err) {
+        state.emailModalSending = false;
+        window.alert('เกิดข้อผิดพลาดขณะส่งอีเมล: ' + err.message);
+        render();
+      });
+  }
   // Marks a single งวด as cross-checked against the reference CRM (or un-marks it) — a manual QA
   // step staff run monthly per ครบกำหนด month, per user request 2026-07-30: without this, a
   // customer still overdue next month gets re-verified from scratch instead of just checking the
@@ -2674,8 +2741,8 @@
       'C001,สมชาย ใจดี,O-2026-001,2026-01-09,iPhone 15 128GB,3000,500,ผ่อนชำระรายเดือน,1,2026-02-09,1500\n';
     var paymentContent = 'คำสั่งซื้อ,งวดที่,ยอดที่ชำระจริง,วันที่ชำระ,สถานะการชำระเงิน,ส่วนลด,หมายเหตุ\n' +
       'O-2026-001,1,1500,2026-02-08,ชำระแล้ว,0,ชำระตรงเวลา\n';
-    var customerInfoContent = 'เลขที่สัญญา,ชื่อ-นามสกุลลูกค้า,เลข SO,รหัสลูกค้า,เบอร์ติดต่อลูกค้า,วันเวลาที่ส่งเครื่อง,ชื่อบุคคลอ้างอิง,เบอร์ติดต่อบุคคลอ้างอิง\n' +
-      'SALMON202606010010,สมชาย ใจดี,O-2026-001,C001,081-234-5678,2026-06-01,วรรณา ใจดี,089-876-5432\n';
+    var customerInfoContent = 'เลขที่สัญญา,ชื่อ-นามสกุลลูกค้า,เลข SO,รหัสลูกค้า,เบอร์ติดต่อลูกค้า,อีเมลลูกค้า,วันเวลาที่ส่งเครื่อง,ชื่อบุคคลอ้างอิง,เบอร์ติดต่อบุคคลอ้างอิง\n' +
+      'SALMON202606010010,สมชาย ใจดี,O-2026-001,C001,081-234-5678,somchai@example.com,2026-06-01,วรรณา ใจดี,089-876-5432\n';
     var content = type === 'debt' ? debtContent : type === 'customerinfo' ? customerInfoContent : paymentContent;
     var name = type === 'debt' ? 'template_ลูกหนี้.csv' : type === 'customerinfo' ? 'template_ข้อมูลลูกค้าเพิ่มเติม.csv' : 'template_ยอดชำระ.csv';
     downloadBlob(content, name);
@@ -2725,6 +2792,20 @@
     if (!history || !history.length) return '';
     var last = history[history.length - 1];
     return '<span style="font-size:11px; color:#0b7a5b; font-weight:600; white-space:nowrap;">📩 ส่งล่าสุด ' + esc(last.at) + (history.length > 1 ? ' (×' + history.length + ')' : '') + '</span>';
+  }
+  // Disabled until at least one จดหมายทวงถามหนี้ ครั้งที่ has actually been issued — nothing to link
+  // to via email otherwise (see openSendEmailModal).
+  function renderSendEmailButton(order) {
+    var disabled = !(order.letterHistory && order.letterHistory.length);
+    return '<button data-action="openSendEmail" data-order="' + esc(order.orderId) + '"' + (disabled ? ' disabled' : '') +
+      ' title="' + (disabled ? 'ต้องออกจดหมายทวงถามหนี้ก่อน ถึงจะส่งอีเมลได้' : 'ส่งอีเมลจดหมายทวงถามหนี้ (แนบลิงก์ดาวน์โหลด PDF)') + '"' +
+      ' style="border:none; background:' + (disabled ? '#c3c0d6' : 'linear-gradient(135deg,#2563eb,#1d4ed8)') + '; color:#fff; padding:6px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:' + (disabled ? 'not-allowed' : 'pointer') + '; white-space:nowrap;">📧 ส่งเมลล์จดหมาย</button>' +
+      emailLastSentBadge(order.emailHistory);
+  }
+  function emailLastSentBadge(history) {
+    if (!history || !history.length) return '';
+    var last = history[history.length - 1];
+    return '<span style="font-size:11px; color:#1d4ed8; font-weight:600; white-space:nowrap;">📧 ส่งล่าสุด ' + esc(last.at) + (history.length > 1 ? ' (×' + history.length + ')' : '') + '</span>';
   }
   // "สถานะจดหมายทวงถามหนี้" report-table pill — mirrors callStatusPill/smsStatusPill's visual
   // language. Shows the HIGHEST ครั้งที่ (most escalated), not just whichever entry was touched most
@@ -3553,6 +3634,7 @@
       soNumber: ['เลข so', 'so', 'so number', 'เลขที่ so', 'orderid', 'order id'],
       contractNo: ['เลขที่สัญญา', 'contract no', 'contractno', 'contract number'],
       phone: ['เบอร์ติดต่อลูกค้า', 'เบอร์โทรศัพท์', 'เบอร์โทร', 'เบอร์มือถือ', 'เบอร์ติดต่อ', 'โทรศัพท์', 'เบอร์', 'phone', 'tel', 'mobile'],
+      email: ['อีเมลลูกค้า', 'อีเมล', 'อีเมลล์', 'email', 'e-mail'],
       shippedAt: ['วันเวลาที่ส่งเครื่อง', 'วันที่ส่งเครื่อง', 'shipped at', 'ship date', 'shipdate'],
       referenceName: ['ชื่อบุคคลอ้างอิง', 'บุคคลอ้างอิง', 'reference name', 'referencename'],
       referencePhone: ['เบอร์ติดต่อบุคคลอ้างอิง', 'เบอร์บุคคลอ้างอิง', 'reference phone', 'referencephone']
@@ -3580,6 +3662,7 @@
         var patch = {
           contractNo: String(resolveField(r, ALIASES.contractNo) || ''),
           phone: String(resolveField(r, ALIASES.phone) || ''),
+          email: String(resolveField(r, ALIASES.email) || ''),
           shippedAt: toDateString(resolveField(r, ALIASES.shippedAt)),
           referenceName: String(resolveField(r, ALIASES.referenceName) || ''),
           referencePhone: String(resolveField(r, ALIASES.referencePhone) || '')
@@ -3658,7 +3741,7 @@
     '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:20px; margin-bottom:28px;">' +
       card('📁 ข้อมูลลูกหนี้ / ตารางผ่อนชำระ', 'คอลัมน์: รหัสลูกค้า, ชื่อลูกค้า, คำสั่งซื้อ, วันที่ออกสัญญา, รายการสินค้า, ยอดวางดาวน์, ส่วนลด, ประเภทการซื้อ, งวดที่, วันครบกำหนดชำระ, ยอดผ่อนต่องวด<br><span style="color:#0b7a5b;">อัปซ้ำได้ — ยอดชำระที่บันทึกไว้จะไม่ถูกล้าง</span>', 'debt', 'debtFileInputTop', 'onDebtFile', state.uploadMsgDebt) +
       card('💳 ข้อมูลยอดชำระเงิน', 'คอลัมน์: คำสั่งซื้อ, งวดที่, ยอดที่ชำระจริง, วันที่ชำระ, สถานะการชำระเงิน (ถ้ามี), ส่วนลด (ถ้ามี), หมายเหตุ (ถ้ามี)<br><span style="color:#0b7a5b;">โหมดบวกเพิ่ม — ควรใส่ “วันที่ชำระ” ทุกแถวเพื่อให้ระบบกันการบวกซ้ำได้แม่นยำ</span><br><span style="color:#6b6785;">รองรับไฟล์ประวัติสถานะจากระบบเก่า (มีคอลัมน์ “timestamp”) โดยอัตโนมัติ — จะตั้งค่าล่าสุดแทนการบวกสะสม</span>', 'payment', 'paymentFileInputTop', 'onPaymentFile', state.uploadMsgPayment) +
-      card('📇 ข้อมูลลูกค้าเพิ่มเติม (เบอร์โทร/บุคคลอ้างอิง)', 'คอลัมน์: เลขที่สัญญา, ชื่อ-นามสกุลลูกค้า, เลข SO, รหัสลูกค้า, เบอร์ติดต่อลูกค้า, วันเวลาที่ส่งเครื่อง, ชื่อบุคคลอ้างอิง, เบอร์ติดต่อบุคคลอ้างอิง<br><span style="color:#0b7a5b;">จับคู่กับข้อมูลลูกหนี้ด้วยเลข SO ก่อน ตามด้วยรหัสลูกค้า แล้วจึงชื่อลูกค้า — อัปซ้ำได้ ค่าใหม่แทนที่ค่าเดิม</span>', 'customerinfo', 'customerInfoFileInputTop', 'onCustomerInfo', state.uploadMsgCustomerInfo) +
+      card('📇 ข้อมูลลูกค้าเพิ่มเติม (เบอร์โทร/อีเมล/บุคคลอ้างอิง)', 'คอลัมน์: เลขที่สัญญา, ชื่อ-นามสกุลลูกค้า, เลข SO, รหัสลูกค้า, เบอร์ติดต่อลูกค้า, อีเมลลูกค้า, วันเวลาที่ส่งเครื่อง, ชื่อบุคคลอ้างอิง, เบอร์ติดต่อบุคคลอ้างอิง<br><span style="color:#0b7a5b;">จับคู่กับข้อมูลลูกหนี้ด้วยเลข SO ก่อน ตามด้วยรหัสลูกค้า แล้วจึงชื่อลูกค้า — อัปซ้ำได้ ค่าใหม่แทนที่ค่าเดิม</span>', 'customerinfo', 'customerInfoFileInputTop', 'onCustomerInfo', state.uploadMsgCustomerInfo) +
       '<div style="background:rgba(255,255,255,0.55); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.8); border-radius:20px; padding:22px 24px; box-shadow:0 8px 30px rgba(124,92,255,0.10);">' +
         '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:16px; color:#2b2540; margin-bottom:10px;">🖼 หัวฟอร์มจดหมายทวงถามหนี้</div>' +
         '<div style="font-size:12.5px; color:#6b6785; margin-bottom:14px; line-height:1.6;">รูปหัวกระดาษ (โลโก้+ที่อยู่บริษัท) ที่จะแทรกบนสุดของ PDF จดหมายทวงถามหนี้ทุกฉบับ — อัปโหลดครั้งเดียวใช้ได้กับทุก SO<br><span style="color:#0b7a5b;">ยังไม่อัปโหลด: จะใช้ชื่อบริษัทแบบตัวอักษรธรรมดาแทนไปก่อน</span></div>' +
@@ -4258,6 +4341,9 @@
     if (state.smsModalTarget) {
       html += renderSendSmsModal();
     }
+    if (state.emailModalTarget) {
+      html += renderSendEmailModal();
+    }
 
     html += '</div>';
     return html;
@@ -4368,6 +4454,40 @@
     '</div>';
   }
 
+  function renderSendEmailModal() {
+    var orderId = state.emailModalTarget;
+    var order = state.orders.find(function (o) { return o.orderId === orderId; });
+    if (!order) { state.emailModalTarget = null; return ''; }
+    var history = (order.letterHistory || []).slice().sort(function (a, b) { return b.no - a.no; });
+    var options = history.map(function (h) {
+      return '<option value="' + h.no + '"' + (h.no === state.emailModalLetterNo ? ' selected' : '') + '>ครั้งที่ ' + h.no + ' · ' + esc(h.at) + ' · ฿' + esc(h.amountDisp) + '</option>';
+    }).join('');
+    var emailHistoryHtml = '';
+    if (order.emailHistory && order.emailHistory.length) {
+      emailHistoryHtml = '<div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:8px;">📨 ประวัติการส่ง (' + order.emailHistory.length + ' ครั้ง)</div>' +
+        '<div style="display:flex; flex-direction:column; gap:6px; margin-bottom:16px; max-height:140px; overflow-y:auto;">' +
+        order.emailHistory.slice().reverse().map(function (h) {
+          return '<div style="background:rgba(37,99,235,0.05); border:1px solid rgba(37,99,235,0.15); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' + esc(h.at) + ' · ' + esc(h.to) + ' · ครั้งที่ ' + h.letterNo + '</div>';
+        }).join('') +
+        '</div>';
+    }
+    return '<div style="position:fixed; inset:0; z-index:9999; background:rgba(43,37,64,0.35); display:flex; align-items:center; justify-content:center; padding:20px;">' +
+      '<div style="max-width:460px; width:100%; max-height:90vh; overflow-y:auto; background:#fff; border-radius:20px; padding:26px 26px 22px; box-shadow:0 24px 60px rgba(43,37,64,0.3);">' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#2b2540; margin-bottom:18px;">📧 ส่งเมลล์จดหมายทวงถามหนี้</div>' +
+        emailHistoryHtml +
+        '<div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:6px;">อีเมลผู้รับ</div>' +
+        '<input type="email" value="' + esc(state.emailModalTo) + '" data-action="emailModalTo" placeholder="กรอกอีเมลลูกค้า" style="width:100%; box-sizing:border-box; padding:10px 14px; border-radius:10px; border:1px solid rgba(37,99,235,0.25); background:#fbfaff; font-size:14px; color:#2b2540; outline:none; margin-bottom:14px;" />' +
+        '<div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:6px;">เลือกจดหมาย (ครั้งที่)</div>' +
+        '<select data-action="emailModalLetterNo" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid rgba(37,99,235,0.25); background:#fff; font-size:13.5px; color:#2b2540; outline:none; margin-bottom:8px;">' + options + '</select>' +
+        '<div style="font-size:11px; color:#8a86a3; margin-bottom:20px;">อีเมลจะมีลิงก์ดาวน์โหลด PDF ของครั้งที่เลือกแนบไปด้วย (Thaibulksms Email API ไม่รองรับไฟล์แนบจริง)</div>' +
+        '<div style="display:flex; justify-content:flex-end; gap:10px;">' +
+          '<div data-action="closeSendEmailModal" style="padding:11px 20px; border-radius:10px; color:#6b6785; font-size:13.5px; font-weight:600; cursor:pointer;">ยกเลิก</div>' +
+          '<div data-action="confirmSendEmail" style="background:' + (state.emailModalSending ? '#8a86a3' : 'linear-gradient(135deg,#2563eb,#1d4ed8)') + '; color:#fff; padding:11px 22px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer;">' + (state.emailModalSending ? '⏳ กำลังส่ง...' : '📤 ส่งอีเมล') + '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
+
   function renderPostponeModal() {
     return '<div style="position:fixed; inset:0; z-index:9999; background:rgba(43,37,64,0.35); display:flex; align-items:center; justify-content:center; padding:20px;">' +
       '<div style="max-width:420px; width:100%; background:#fff; border-radius:20px; padding:26px 26px 22px; box-shadow:0 24px 60px rgba(43,37,64,0.3);">' +
@@ -4441,12 +4561,17 @@
       '<div style="border-top:1px solid rgba(124,92,255,0.10); padding-top:14px; margin-top:14px;">' +
         '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:14px;">' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">📄 เลขที่สัญญา</div><input type="text" value="' + esc(contactOrder.contractNo || '') + '" data-order-field="contractNo" data-order="' + esc(contactOrder.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
-          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">📱 เบอร์ติดต่อลูกค้า</div><input type="text" value="' + esc(contactOrder.phone || '') + '" data-order-field="phone" data-order="' + esc(contactOrder.orderId) + '" placeholder="ยังไม่มีเบอร์ (คั่นหลายเบอร์ด้วย /)" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" />' +
-            '<div style="margin-top:6px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">' + renderSendSmsButton('order', contactOrder.orderId, null, null, '📱 ส่ง SMS ทวงหนี้') + smsLastSentBadge(contactOrder.smsHistory) + '</div></div>' +
+          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">📱 เบอร์ติดต่อลูกค้า</div><input type="text" value="' + esc(contactOrder.phone || '') + '" data-order-field="phone" data-order="' + esc(contactOrder.orderId) + '" placeholder="ยังไม่มีเบอร์ (คั่นหลายเบอร์ด้วย /)" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
+          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">📧 อีเมลลูกค้า</div><input type="email" value="' + esc(contactOrder.email || '') + '" data-order-field="email" data-order="' + esc(contactOrder.orderId) + '" placeholder="ยังไม่มีอีเมล" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">🚚 วันเวลาที่ส่งเครื่อง</div><input type="date" value="' + esc(contactOrder.shippedAt || '') + '" data-order-field="shippedAt" data-order="' + esc(contactOrder.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">👤 ชื่อบุคคลอ้างอิง</div><input type="text" value="' + esc(contactOrder.referenceName || '') + '" data-order-field="referenceName" data-order="' + esc(contactOrder.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">📱 เบอร์ติดต่อบุคคลอ้างอิง</div><input type="text" value="' + esc(contactOrder.referencePhone || '') + '" data-order-field="referencePhone" data-order="' + esc(contactOrder.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
         '</div>' +
+        '<div style="margin-top:14px; padding-top:14px; border-top:1px dashed rgba(124,92,255,0.15); display:flex; flex-wrap:wrap; gap:20px;">' +
+          '<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">' + renderSendSmsButton('order', contactOrder.orderId, null, null, '📱 ส่ง SMS ทวงหนี้') + smsLastSentBadge(contactOrder.smsHistory) + '</div>' +
+          '<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">' + renderSendEmailButton(contactOrder) + '</div>' +
+        '</div>' +
+        renderIssueLetterRow(contactOrder) +
         callLogHtml +
       '</div>';
     var html = '<div id="customerDetailModal" style="position:fixed; inset:0; z-index:9999; background:rgba(43,37,64,0.35); display:flex; align-items:flex-start; justify-content:center; padding:30px 20px; overflow-y:auto;">' +
@@ -4508,7 +4633,6 @@
           (ord.isSold ? '<div style="background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">📤 จำหน่ายชื่อให้บริษัทติดตามหนี้</div>' : '') +
           (ord.isCancelled ? '<div style="background:' + hexToRgba('#4b5563', 0.14) + '; color:#4b5563; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">↩️ ยกเลิกสัญญา คืนเครื่อง</div>' : '') +
         '</div>' +
-        renderIssueLetterRow(ord) +
         '<div style="display:grid; grid-template-columns:2fr 1fr; gap:16px; margin-bottom:16px;">' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">📦 รายการสินค้า' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:600; color:#2b2540;">' + esc(ord.productList) + '</div></div>' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">🏷 ราคาสินค้า</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.productPrice)) + '" data-order-field="productPrice" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#2b2540; background:#fff; outline:none;" /></div>' +
@@ -4852,6 +4976,9 @@
           issueLetter(t.getAttribute('data-order'), letterSel ? Number(letterSel.value) : null);
           break;
         }
+        case 'openSendEmail': openSendEmailModal(t.getAttribute('data-order')); break;
+        case 'closeSendEmailModal': closeSendEmailModal(); break;
+        case 'confirmSendEmail': confirmSendEmail(); break;
         case 'saveCallLog': saveCallLog(); break;
         case 'toggleCallHistory': state.callHistoryOpen = !state.callHistoryOpen; render(); break;
       }
@@ -4913,6 +5040,8 @@
         case 'onCustomerInfo': onCustomerInfoFileChange(t.files[0]); t.value = ''; break;
         case 'onLetterheadFile': onLetterheadFileChange(t.files[0]); t.value = ''; break;
         case 'smsModalPhone': state.smsModalPhone = t.value; break;
+        case 'emailModalTo': state.emailModalTo = t.value; break;
+        case 'emailModalLetterNo': state.emailModalLetterNo = Number(t.value); break;
         case 'smsModalDraft': state.smsModalDraft = t.value; break;
         case 'smsModalTemplate': selectSmsTemplate(t.value); break;
         case 'smsTemplateName': updateSmsTemplateField(t.getAttribute('data-tpl'), 'name', t.value); break;
