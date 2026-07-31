@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-31.14';
+  var APP_BUILD = '2026-07-31.15';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1900,7 +1900,9 @@
       .then(function (r) {
         state.smsModalSending = false;
         if (!r.ok || !r.data || r.data.error) {
-          window.alert('ส่ง SMS ไม่สำเร็จ: ' + (r.data && r.data.error ? r.data.error : 'unknown error'));
+          var errText = r.data && r.data.error;
+          if (errText && typeof errText !== 'string') errText = JSON.stringify(errText); // defensive — should always be a string from /api/send-sms, but never show "[object Object]"
+          window.alert('ส่ง SMS ไม่สำเร็จ: ' + (errText || 'unknown error'));
           render();
           return;
         }

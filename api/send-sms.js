@@ -34,8 +34,21 @@ module.exports = async function handler(req, res) {
       body: body.toString()
     });
     const data = await smsRes.json().catch(function () { return null; });
+    // Thaibulksms's error shape is {"error":{"code":112,"name":"ERROR_MESSAGE","description":"..."}}
+    // — a nested object, not a plain string. Pulling out .description/.name here is what actually
+    // matters, since without it the frontend's alert used to just stringify the object as
+    // "[object Object]" instead of showing the real reason (e.g. insufficient credit, bad sender).
+    const thaiErr = data && data.error;
+    const errMsg = thaiErr ? (thaiErr.description || thaiErr.name || JSON.stringify(thaiErr)) : ((data && data.message) || 'Thaibulksms API error');
+    // bad_phone_number_list can carry a per-number rejection even on an overall HTTP 200 — surface
+    // that too, since !smsRes.ok alone would miss it.
+    const badNumbers = data && Array.isArray(data.bad_phone_number_list) ? data.bad_phone_number_list : [];
     if (!smsRes.ok) {
-      res.status(smsRes.status).json({ error: (data && (data.message || data.error)) || 'Thaibulksms API error', detail: data });
+      res.status(smsRes.status).json({ error: errMsg, code: thaiErr && thaiErr.code, detail: data });
+      return;
+    }
+    if (badNumbers.length) {
+      res.status(400).json({ error: (badNumbers[0].message || 'เบอร์โทรศัพท์ไม่ถูกต้อง') + ' (' + badNumbers[0].number + ')', detail: data });
       return;
     }
     res.status(200).json({ ok: true, data: data });
