@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-31.7';
+  var APP_BUILD = '2026-07-31.8';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1008,9 +1008,13 @@
       // does NOT get derived here — computeOrdersUncached's result is cached on state.orders'
       // identity (see computeOrders above) and toggling the tag never touches state.orders, so
       // baking it into this cached object would show stale badges until some UNRELATED order edit
-      // happened to invalidate the cache. Every site that needs it (orderAccountStatusBadge,
-      // dashboard exclusions, customer header) looks it up live via state.customerTrackingReturn
-      // instead.
+      // happened to invalidate the cache. Every site that needs it for DISPLAY purposes
+      // (orderAccountStatusBadge, customer header, the filterAccountStatus dropdown) looks it up
+      // live via isCustomerTrackingReturn()/state.customerTrackingReturn instead. Deliberately NOT
+      // used to exclude anyone from grade/KPI/aging-report totals (fixed 2026-07-31, see git log) —
+      // it's a purely additive follow-up marker, not an exit from the collections pipeline like
+      // isCancelled/isSold are; a customer's real payment history/เกรด must stay accurate regardless
+      // of whether staff are also chasing their device.
       // "ยอดค้างชำระ"/"งวดค้าง" on the due-report table (renderTracking) must mean ONLY the 5
       // statuses staff actually consider "ค้างชำระจริงๆ" (the STATUS_GROUP_META 'ค้างชำระ' group —
       // same grouping the "แยกสถานะการชำระ" dashboard widget already uses), NOT every unpaid งวด.
@@ -1077,7 +1081,7 @@
   }
 
   function computeDashboard(orders) {
-    var activeOrders = orders.filter(function (o) { return !o.isCancelled && !o.isSold && !isCustomerTrackingReturn(o); });
+    var activeOrders = orders.filter(function (o) { return !o.isCancelled && !o.isSold; });
     var cancelledOrders = orders.filter(function (o) { return o.isCancelled; });
     var soldOrders = orders.filter(function (o) { return o.isSold; });
 
@@ -1289,7 +1293,7 @@
     });
     var purchaseTypeGroups = Object.keys(ptMap).map(function (type) {
       var list = ptMap[type].orders;
-      var activeList = list.filter(function (o) { return !o.isCancelled && !o.isSold && !isCustomerTrackingReturn(o); });
+      var activeList = list.filter(function (o) { return !o.isCancelled && !o.isSold; });
       var cancelledList = list.filter(function (o) { return o.isCancelled; });
       var soldList = list.filter(function (o) { return o.isSold; });
       var contractRaw = list.reduce(function (s, o) { return s + o.totalContractRaw; }, 0);
@@ -1465,7 +1469,7 @@
     }
     if (f.filterGrade !== 'all') {
       filteredOrders = filteredOrders.filter(function (o) {
-        if (o.isCancelled || o.isSold || isCustomerTrackingReturn(o)) return false;
+        if (o.isCancelled || o.isSold) return false;
         var g = o.lateCount === 0 ? 'A' : o.lateCount === 1 ? 'B' : 'หนี้สงสัยจะสูญ';
         return g === f.filterGrade;
       });
@@ -1548,7 +1552,7 @@
     // ปิดยอด — ยอดคงเหลือรวมทุกบิลของลูกค้าคนนี้เป็น 0 แล้ว (จ่ายครบ/ปิดยอดแล้วทุกสัญญา)
     var selectedCustomerFullySettled = hasSelectedCustomer && selectedCustomerOrders.reduce(function (s, o) { return s + o.totalOutstandingRaw; }, 0) <= 0.005;
     if (hasSelectedCustomer) {
-      var activeSel = selectedCustomerOrders.filter(function (o) { return !o.isCancelled && !o.isSold && !isCustomerTrackingReturn(o); });
+      var activeSel = selectedCustomerOrders.filter(function (o) { return !o.isCancelled && !o.isSold; });
       if (activeSel.some(function (o) { return o.lateCount >= 2; })) selectedCustomerGrade = 'หนี้สงสัยจะสูญ';
       else if (activeSel.some(function (o) { return o.lateCount === 1; })) selectedCustomerGrade = 'B';
     }
@@ -3363,7 +3367,7 @@
   // Aging report over each order's current (earliest unpaid) installment — mirrors the
   // reference site's "รายงานสินเชื่อที่ครบกำหนด" bucket row.
   function renderDueBuckets(orders) {
-    var active = orders.filter(function (o) { return !o.isCancelled && !o.isSold && !isCustomerTrackingReturn(o); });
+    var active = orders.filter(function (o) { return !o.isCancelled && !o.isSold; });
     var b = { due7: 0, due3: 0, dueToday: 0, od10: 0, od30: 0, odOver30: 0 };
     active.forEach(function (o) {
       // When a per-งวด filter (ครบกำหนดตั้งแต่-ถึง / สถานะการชำระ) is active, computeView() attaches
