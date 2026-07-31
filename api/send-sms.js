@@ -23,7 +23,13 @@ module.exports = async function handler(req, res) {
 
   try {
     const auth = Buffer.from(apiKey + ':' + apiSecret).toString('base64');
-    const body = new URLSearchParams({ msisdn: msisdn, message: text, sender: sender, force: 'corporate' });
+    // "force" overrides which credit pool (standard vs corporate) the send draws from — was
+    // hardcoded to 'corporate' with no real basis, which drew from an account's near-empty
+    // Corporate balance instead of its actual stocked Standard credit and surfaced as a confusing
+    // "Insufficient credit" error. Defaults to 'standard'; override via THAIBULKSMS_SMS_TYPE env var
+    // if a future account actually needs corporate-type sends.
+    const smsType = process.env.THAIBULKSMS_SMS_TYPE || 'standard';
+    const body = new URLSearchParams({ msisdn: msisdn, message: text, sender: sender, force: smsType });
     const smsRes = await fetch('https://api-v2.thaibulksms.com/sms', {
       method: 'POST',
       headers: {
