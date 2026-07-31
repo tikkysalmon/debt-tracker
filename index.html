@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-01.3';
+  var APP_BUILD = '2026-08-01.4';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -2849,8 +2849,8 @@
           return '<div style="font-size:11.5px; color:#8a86a3;">ครั้งที่ ' + h.no + ' · ' + esc(h.at) + ' · ฿' + esc(h.amountDisp) + ' (' + h.overdueCount + ' งวด) · <a href="' + esc(h.url) + '" target="_blank" rel="noopener" style="color:#7c5cff; font-weight:600; text-decoration:none;">⬇ ดาวน์โหลด</a></div>';
         }).join('') +
       '</div>';
-    return '<div data-letter-row="' + esc(ord.orderId) + '" style="margin-bottom:14px;">' +
-      '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">' + selectHtml + btn + '</div>' +
+    return '<div data-letter-row="' + esc(ord.orderId) + '" style="margin-top:16px; margin-bottom:14px;">' +
+      '<div style="display:flex; align-items:center; gap:18px; flex-wrap:wrap;">' + selectHtml + btn + '</div>' +
       historyList +
     '</div>';
   }
@@ -4578,9 +4578,9 @@
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">👤 ชื่อบุคคลอ้างอิง</div><input type="text" value="' + esc(contactOrder.referenceName || '') + '" data-order-field="referenceName" data-order="' + esc(contactOrder.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">📱 เบอร์ติดต่อบุคคลอ้างอิง</div><input type="text" value="' + esc(contactOrder.referencePhone || '') + '" data-order-field="referencePhone" data-order="' + esc(contactOrder.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
         '</div>' +
-        '<div style="margin-top:14px; padding-top:14px; border-top:1px dashed rgba(124,92,255,0.15); display:flex; flex-wrap:wrap; gap:20px;">' +
-          '<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">' + renderSendSmsButton('order', contactOrder.orderId, null, null, '📱 ส่ง SMS ทวงหนี้') + smsLastSentBadge(contactOrder.smsHistory) + '</div>' +
-          '<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">' + renderSendEmailButton(contactOrder) + '</div>' +
+        '<div style="margin-top:14px; padding-top:14px; border-top:1px dashed rgba(124,92,255,0.15); display:flex; flex-wrap:wrap; gap:28px;">' +
+          '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">' + renderSendSmsButton('order', contactOrder.orderId, null, null, '📱 ส่ง SMS ทวงหนี้') + smsLastSentBadge(contactOrder.smsHistory) + '</div>' +
+          '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">' + renderSendEmailButton(contactOrder) + '</div>' +
         '</div>' +
         renderIssueLetterRow(contactOrder) +
         callLogHtml +
