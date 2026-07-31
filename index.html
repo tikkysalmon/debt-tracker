@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-31.29';
+  var APP_BUILD = '2026-07-31.30';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -2121,7 +2121,7 @@
     var headerHtml = state.letterheadImageUrl
       ? '<img src="' + state.letterheadImageUrl + '" style="width:100%; display:block; margin-bottom:18px;" />'
       : '<div style="font-weight:700; font-size:17px; margin-bottom:6px;">บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด</div><div style="height:2px; background:#1f3a5f; margin-bottom:18px;"></div>';
-    return '<div style="width:794px; box-sizing:border-box; padding:50px 60px; background:#ffffff; font-family:\'Sarabun\',\'Noto Sans Thai\',\'Leelawadee UI\',sans-serif; color:#1c1b19; font-size:14px; line-height:1.6;">' +
+    return '<div style="width:794px; box-sizing:border-box; padding:42px 55px; background:#ffffff; font-family:\'Sarabun\',\'Noto Sans Thai\',\'Leelawadee UI\',sans-serif; color:#1c1b19; font-size:14px; line-height:1.55;">' +
       headerHtml +
       '<div style="display:flex; justify-content:space-between; font-size:12.5px; color:#5b5750; margin-bottom:18px;">' +
         '<div>เลขที่หนังสือ: DL-' + esc(order.orderId) + '-' + letterNo + '</div>' +
@@ -2130,23 +2130,31 @@
       '<div style="text-align:center; font-size:16px; font-weight:700; margin-bottom:3px;">หนังสือทวงถามให้ชำระหนี้ค้างชำระ</div>' +
       '<div style="text-align:center; font-size:12.5px; color:#5b5750; margin-bottom:18px;">(ครั้งที่ ' + letterNo + ')</div>' +
       '<div style="margin-bottom:14px;">เรียน คุณ' + esc(order.customerName) + '</div>' +
-      '<p style="margin:0 0 12px; text-align:justify; text-indent:2em;">ตามที่ท่านได้ทำสัญญาซื้อสินค้าแบบผ่อนชำระกับบริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด ("บริษัทฯ") ตามคำสั่งซื้อเลขที่ ' + esc(order.orderId) + (order.contractNo ? ' เลขที่สัญญา ' + esc(order.contractNo) : '') + ' ลงวันที่ ' + esc(order.contractDateDisp) + ' รายการสินค้า ' + esc(order.productList) + ' โดยตกลงผ่อนชำระเป็นรายงวดตามที่ระบุในสัญญานั้น</p>' +
+      '<p style="margin:0 0 12px; text-align:justify; text-indent:2em;">ตามที่ท่านได้ทำสัญญาเช่าซื้อสินค้ากับบริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด ("บริษัทฯ") ตามคำสั่งซื้อเลขที่ ' + esc(order.orderId) + (order.contractNo ? ' เลขที่สัญญา ' + esc(order.contractNo) : '') + ' ลงวันที่ ' + esc(order.contractDateDisp) + ' รายการสินค้า ' + esc(order.productList) + ' โดยตกลงผ่อนชำระเป็นรายงวดตามที่ระบุในสัญญานั้น</p>' +
       '<p style="margin:0 0 10px; text-indent:2em;">บัดนี้ปรากฏว่าท่านได้ค้างชำระค่างวดดังกล่าว โดยมีรายละเอียดยอดค้างชำระ ดังนี้</p>' +
       '<table style="width:100%; border-collapse:collapse; margin:0 0 16px; font-size:13.5px;">' +
         '<tr><td style="padding:6px 10px; border:1px solid #efece3; width:38%; color:#5b5750;">จำนวนงวดที่ค้างชำระ</td><td style="padding:6px 10px; border:1px solid #efece3; font-weight:700;">' + snapshot.overdueCount + ' งวด</td></tr>' +
         '<tr><td style="padding:6px 10px; border:1px solid #efece3; color:#5b5750;">ยอดค้างชำระรวม</td><td style="padding:6px 10px; border:1px solid #efece3; font-weight:700; color:#b3261e;">฿' + esc(snapshot.amountDisp) + '</td></tr>' +
         '<tr><td style="padding:6px 10px; border:1px solid #efece3; color:#5b5750;">ครบกำหนดชำระงวดล่าสุดเมื่อ</td><td style="padding:6px 10px; border:1px solid #efece3; font-weight:700;">' + esc(fmtDate(snapshot.dueDate)) + '</td></tr>' +
       '</table>' +
-      '<p style="margin:0 0 12px; text-align:justify;">อันเป็นการผิดนัดชำระหนี้ตามสัญญาที่ตกลงกันไว้ บริษัทฯ จึงขอแจ้งให้ท่านดำเนินการชำระยอดค้างดังกล่าวแก่บริษัทฯ ให้แล้วเสร็จภายใน 3 วัน นับแต่วันที่ได้รับหนังสือฉบับนี้ โดยชำระผ่านบัญชีธนาคารกสิกรไทย เลขที่บัญชี 098-8-36652-8 ชื่อบัญชี บจก.แซลม่อน เอ็นเตอร์ไพรส์ หรือติดต่อสอบถามรายละเอียดเพิ่มเติมได้ที่ 061-4015044 ต่อ 108-109</p>' +
-      '<p style="margin:0 0 12px; text-align:justify; text-indent:2em;">หากพ้นกำหนดระยะเวลาดังกล่าวแล้ว ท่านยังมิได้ชำระหนี้ให้แก่บริษัทฯ บริษัทฯ ขอสงวนสิทธิ์ในการดำเนินการตามกฎหมายเพื่อรักษาสิทธิของบริษัทฯ ต่อไป โดยไม่ต้องแจ้งให้ทราบล่วงหน้าอีก ซึ่งรวมถึงแต่ไม่จำกัดเพียงการฟ้องร้องดำเนินคดีทางแพ่งเพื่อเรียกให้ชำระหนี้ต้นเงิน ค่าปรับชำระล่าช้า ค่าเสียหาย และค่าใช้จ่ายในการติดตามทวงถามและดำเนินคดีตามที่กฎหมายกำหนด</p>' +
-      '<p style="margin:0 0 26px; text-align:justify; text-indent:2em;">จึงเรียนมาเพื่อโปรดพิจารณาดำเนินการชำระหนี้โดยเร็ว ทั้งนี้เพื่อรักษาผลประโยชน์และเครดิตทางการเงินของท่านเอง</p>' +
+      '<p style="margin:0 0 10px; text-align:justify;">อันเป็นการผิดนัดชำระหนี้ตามสัญญาที่ตกลงกันไว้ บริษัทฯ จึงขอแจ้งให้ท่านดำเนินการชำระยอดค้างดังกล่าวแก่บริษัทฯ ให้แล้วเสร็จภายใน 3 วัน นับแต่วันที่ได้รับหนังสือฉบับนี้ ตามช่องทางดังต่อไปนี้</p>' +
+      '<div style="background:rgba(31,58,95,0.04); border:1px solid rgba(31,58,95,0.15); border-radius:8px; padding:9px 14px; margin:0 0 12px; font-size:13px; line-height:1.4;">' +
+        '<div style="font-weight:700; color:#1f3a5f; margin-bottom:3px;">ช่องทางการชำระเงิน</div>' +
+        '<div>ธนาคารกสิกรไทย</div>' +
+        '<div>เลขที่บัญชี 098-8-36652-8</div>' +
+        '<div style="margin-bottom:6px;">ชื่อบัญชี บจก.แซลม่อน เอ็นเตอร์ไพรส์</div>' +
+        '<div style="font-weight:700; color:#1f3a5f; margin-bottom:3px;">ช่องทางติดต่อสอบถาม</div>' +
+        '<div>โทร 061-401-5044 ต่อ 108-109</div>' +
+      '</div>' +
+      '<p style="margin:0 0 12px; text-align:justify; text-indent:2em;">หากพ้นกำหนดระยะเวลาดังกล่าวแล้ว ท่านยังมิได้ชำระหนี้ให้แก่บริษัทฯ บริษัทฯ ขอสงวนสิทธิ์ในการบอกเลิกสัญญาเช่าซื้อ และเรียกให้ท่านส่งมอบทรัพย์สินตามสัญญาคืนแก่บริษัทฯ รวมถึงดำเนินการตามกฎหมายเพื่อรักษาสิทธิของบริษัทฯ ต่อไป โดยไม่ต้องแจ้งให้ทราบล่วงหน้าอีก ซึ่งรวมถึงแต่ไม่จำกัดเพียงการฟ้องร้องดำเนินคดีทางแพ่งเพื่อเรียกค่าเสียหาย ค่าปรับชำระล่าช้า และค่าใช้จ่ายในการติดตามทวงถามและดำเนินคดีตามที่กฎหมายกำหนด</p>' +
+      '<p style="margin:0 0 20px; text-align:justify; text-indent:2em;">จึงเรียนมาเพื่อโปรดพิจารณาดำเนินการชำระหนี้โดยเร็ว ทั้งนี้เพื่อรักษาผลประโยชน์และเครดิตทางการเงินของท่านเอง</p>' +
       '<div style="display:flex; justify-content:flex-end;">' +
         '<div style="text-align:center; font-size:13px;">' +
           '<div style="font-weight:700;">แผนกบัญชีเร่งรัดหนี้สิน</div>' +
           '<div style="color:#5b5750; font-size:12px;">บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด</div>' +
         '</div>' +
       '</div>' +
-      '<div style="margin-top:24px; padding-top:12px; border-top:1px solid #efece3; font-size:10.5px; color:#5b5750; line-height:1.55;">หนังสือฉบับนี้จัดทำและจัดส่งโดยบริษัทฯ ในฐานะเจ้าหนี้ตามสัญญา มีวัตถุประสงค์เพื่อแจ้งเตือนการค้างชำระหนี้เท่านั้น หากท่านได้ชำระหนี้ดังกล่าวแล้วก่อนได้รับหนังสือฉบับนี้ โปรดถือว่าหนังสือฉบับนี้เป็นอันยกเลิก และขออภัยมา ณ ที่นี้</div>' +
+      '<div style="margin-top:18px; padding-top:10px; border-top:1px solid #efece3; font-size:10.5px; color:#5b5750; line-height:1.5;">หนังสือฉบับนี้จัดทำและจัดส่งโดยบริษัทฯ ในฐานะเจ้าหนี้ตามสัญญา มีวัตถุประสงค์เพื่อแจ้งเตือนการค้างชำระหนี้เท่านั้น หากท่านได้ชำระหนี้ดังกล่าวแล้วก่อนได้รับหนังสือฉบับนี้ โปรดถือว่าหนังสือฉบับนี้เป็นอันยกเลิก และขออภัยมา ณ ที่นี้</div>' +
     '</div>';
   }
   // Uploaded straight to Supabase Storage (its own file, own small URL) rather than embedded as a
