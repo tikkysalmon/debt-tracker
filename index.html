@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-31.9';
+  var APP_BUILD = '2026-07-31.12';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -458,6 +458,7 @@
         customerTrackingReturn: state.customerTrackingReturn,
         customerTrackingReturnAt: state.customerTrackingReturnAt,
         appliedPaymentKeys: Object.keys(appliedPaymentKeys),
+        smsTemplates: state.smsTemplates,
         savedAt: new Date().toISOString()
       }));
       state.storageError = '';
@@ -588,6 +589,10 @@
     state.customerNotes = rawNotes;
     state.customerTrackingReturn = rawTrackingReturn;
     state.customerTrackingReturnAt = rawTrackingReturnAt;
+    // Not merged (last-save-wins), same treatment as isSampleData below — templates are edited
+    // rarely enough that this doesn't need the full 3-way merge machinery orders/notes get. Falls
+    // back to whatever's already local (never blank) if the snapshot predates this field existing.
+    if (Array.isArray(data.smsTemplates) && data.smsTemplates.length) state.smsTemplates = data.smsTemplates;
     appliedPaymentKeys = {};
     rawKeys.forEach(function (k) { appliedPaymentKeys[k] = true; });
     lastServerSnapshot = { orders: rawOrders, customerNotes: rawNotes, customerTrackingReturn: rawTrackingReturn, customerTrackingReturnAt: rawTrackingReturnAt, appliedPaymentKeys: rawKeys };
@@ -819,7 +824,7 @@
         // is non-empty too, and inferring "no longer sample" from length alone meant the demo orders
         // silently got treated as real and merged alongside the first genuine upload (see
         // repairStaleSampleOrders below for cleaning up datasets already affected by this).
-        var payload = { orders: mergedOrders, customerNotes: mergedNotes, customerTrackingReturn: mergedTrackingReturn, customerTrackingReturnAt: mergedTrackingReturnAt, appliedPaymentKeys: mergedKeys, isSampleData: state.isSampleData, _meta: { updatedAt: new Date().toISOString(), updatedBy: myClientId } };
+        var payload = { orders: mergedOrders, customerNotes: mergedNotes, customerTrackingReturn: mergedTrackingReturn, customerTrackingReturnAt: mergedTrackingReturnAt, appliedPaymentKeys: mergedKeys, isSampleData: state.isSampleData, smsTemplates: state.smsTemplates, _meta: { updatedAt: new Date().toISOString(), updatedBy: myClientId } };
         var text = JSON.stringify(payload);
         var blob = new Blob([text], { type: 'application/json' });
         if (retriesLeft <= 0) { doUpload(mergedOrders, mergedNotes, mergedTrackingReturn, mergedTrackingReturnAt, mergedKeys, blob, text); return; }
@@ -899,6 +904,18 @@
     cloudPollTimer = setInterval(cloudPoll, CLOUD_POLL_MS);
   }
 
+  // ---------- SMS templates ----------
+  // Thaibulksms's own "Template ข้อความ" feature (visible in their console when composing a
+  // campaign) has NO API equivalent — confirmed against their official API v2 doc: the /sms
+  // endpoint only ever accepts msisdn/message/sender/scheduled_delivery/force/shorten_url, nothing
+  // template-related. So templates are reproduced locally here (editable via the ส่ง SMS modal) and
+  // resolved to plain text client-side before being sent through /api/send-sms's "message" field —
+  // staff should edit these to match whatever wording is actually approved/used on the Thaibulksms
+  // console. {ชื่อ}/{ยอดค้าง}/{วันครบกำหนด}/{งวดที่}/{เลขที่สัญญา} are substituted per-งวด at send time.
+  var DEFAULT_SMS_TEMPLATES = [
+    { id: 'tpl1', name: 'ติดตามหนี้ 1', body: 'เรียน คุณ{ชื่อ} ท่านมียอดค้างชำระ งวดที่ {งวดที่} จำนวน {ยอดค้าง} บาท ครบกำหนดวันที่ {วันครบกำหนด} กรุณาชำระโดยเร็วที่สุด ขอบคุณค่ะ' },
+    { id: 'tpl2', name: 'ติดตามหนี้ 2', body: 'เรียน คุณ{ชื่อ} ท่านค้างชำระเกินกำหนดแล้ว งวดที่ {งวดที่} จำนวน {ยอดค้าง} บาท กรุณาติดต่อชำระโดยด่วนที่สุด ขอบคุณค่ะ' }
+  ];
   // ---------- State ----------
   var state = {
     orders: repairStaleSampleOrders(repairOverpaidInstallments(repairAccessoryProductNames(repairDueDateSchedules(repairInvalidStatusOverrides((persisted && persisted.orders && persisted.orders.length) ? persisted.orders : generateMock()))))),
@@ -906,6 +923,7 @@
     selectedCustomerId: null,
     uploadMsgDebt: '',
     uploadMsgPayment: '',
+    uploadMsgCustomerInfo: '',
     view: 'dashboard',
     showCancelledDetail: false,
     showMultiOrderDetail: false,
@@ -941,6 +959,8 @@
     editingOrderIdFor: null, orderIdDraft: '',
     postponeTarget: null, postponeDate: '', postponeReason: '', postponeLateFee: 0, postponeUnlockFee: 0,
     noteModalTarget: null, noteModalDraft: '',
+    smsTemplates: (persisted && Array.isArray(persisted.smsTemplates) && persisted.smsTemplates.length) ? persisted.smsTemplates : DEFAULT_SMS_TEMPLATES,
+    smsModalTarget: null, smsModalPhone: '', smsModalTemplateId: '', smsModalDraft: '', smsModalManaging: false, smsModalSending: false,
     appliedQuery: '',
     appliedAccountStatus: 'all',
     appliedDueStatus: 'all',
@@ -1773,6 +1793,137 @@
     var pad = function (n) { return String(n).padStart(2, '0'); };
     return pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + '/' + d.getFullYear() + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
   }
+  // ---------- ส่ง SMS ทวงหนี้ (Thaibulksms) ----------
+  // {ชื่อ}/{ยอดค้าง}/{วันครบกำหนด}/{งวดที่}/{เลขที่สัญญา} placeholders, resolved client-side since
+  // Thaibulksms's own template feature has no API equivalent (see DEFAULT_SMS_TEMPLATES comment).
+  function resolveSmsTemplate(body, ctx) {
+    return String(body || '')
+      .replace(/\{ชื่อ\}/g, ctx.name || '')
+      .replace(/\{ยอดค้าง\}/g, ctx.amount || '')
+      .replace(/\{วันครบกำหนด\}/g, ctx.dueDate || '')
+      .replace(/\{งวดที่\}/g, ctx.no != null && ctx.no !== '' ? String(ctx.no) : '')
+      .replace(/\{เลขที่สัญญา\}/g, ctx.contractNo || '');
+  }
+  function earliestOverdueDueDate(ord) {
+    var all = (ord.installments || []).concat(ord.accessoryInstallments || []);
+    var overdue = all.filter(function (i) { return STATUS_TO_GROUP[i.effectiveStatus] === 'ค้างชำระ'; })
+      .sort(function (a, b) { return (a.dueDate || '').localeCompare(b.dueDate || ''); });
+    return overdue.length ? overdue[0].dueDate : '';
+  }
+  // Reads from CV (the currently-computed view), not raw state.orders — only ever called while a
+  // customer is selected and CV.selectedCustomerOrders already carries the computed display fields
+  // (soDisplay, trueOverdueDisp, effectiveStatus per งวด, etc.) this needs.
+  function smsContextFor(level, orderId, no, track) {
+    var ord = (CV.selectedCustomerOrders || []).find(function (o) { return o.orderId === orderId; });
+    if (!ord) return null;
+    if (level === 'installment') {
+      var list = track === 'accessory' ? (ord.accessoryInstallments || []) : (ord.installments || []);
+      var inst = list.find(function (i) { return i.no === no; });
+      if (!inst) return null;
+      var netDue = Math.max(0, toNumber(inst.amountDue) - toNumber(inst.discount) - toNumber(inst.amountPaid));
+      return {
+        name: ord.customerName, amount: fmtMoney(netDue), dueDate: fmtDate(inst.dueDate), no: inst.no,
+        contractNo: ord.contractNo || ord.soDisplay, phone: ord.phone, history: inst.smsHistory || []
+      };
+    }
+    var dd = earliestOverdueDueDate(ord);
+    return {
+      name: ord.customerName, amount: ord.trueOverdueDisp, dueDate: dd ? fmtDate(dd) : '', no: ord.overdueCount || '',
+      contractNo: ord.contractNo || ord.soDisplay, phone: ord.phone, history: ord.smsHistory || []
+    };
+  }
+  function openSendSmsModal(level, orderId, no, track) {
+    var ctx = smsContextFor(level, orderId, no, track);
+    if (!ctx) return;
+    state.smsModalTarget = { level: level, orderId: orderId, no: no, track: track };
+    var nums = extractPhoneNumbers(ctx.phone);
+    state.smsModalPhone = nums[0] || '';
+    var tpl = state.smsTemplates.find(function (t) { return t.id === state.smsModalTemplateId; }) || state.smsTemplates[0];
+    state.smsModalTemplateId = tpl ? tpl.id : '';
+    state.smsModalDraft = tpl ? resolveSmsTemplate(tpl.body, ctx) : '';
+    state.smsModalManaging = false;
+    render();
+  }
+  function closeSendSmsModal() {
+    state.smsModalTarget = null;
+    render();
+  }
+  function selectSmsTemplate(id) {
+    state.smsModalTemplateId = id;
+    var target = state.smsModalTarget;
+    var ctx = target && smsContextFor(target.level, target.orderId, target.no, target.track);
+    var tpl = state.smsTemplates.find(function (t) { return t.id === id; });
+    if (tpl && ctx) state.smsModalDraft = resolveSmsTemplate(tpl.body, ctx);
+    render();
+  }
+  function addSmsTemplate() {
+    var id = 'tpl' + Date.now();
+    state.smsTemplates = state.smsTemplates.concat([{ id: id, name: 'Template ใหม่', body: '' }]);
+    state.hasUnsavedChanges = true;
+    render();
+  }
+  function updateSmsTemplateField(id, field, value) {
+    state.smsTemplates = state.smsTemplates.map(function (t) {
+      if (t.id !== id) return t;
+      var patch = {}; patch[field] = value;
+      return Object.assign({}, t, patch);
+    });
+    state.hasUnsavedChanges = true;
+    render();
+  }
+  function deleteSmsTemplate(id) {
+    if (state.smsTemplates.length <= 1) { window.alert('ต้องมี template อย่างน้อย 1 รายการ'); return; }
+    state.smsTemplates = state.smsTemplates.filter(function (t) { return t.id !== id; });
+    if (state.smsModalTemplateId === id) state.smsModalTemplateId = state.smsTemplates[0].id;
+    state.hasUnsavedChanges = true;
+    render();
+  }
+  // Sent SMS are recorded as an append-only smsHistory array (on the งวด for a per-installment
+  // send, on the order for a general/customer-level send) — per user request, a new send must never
+  // overwrite a previous record; only the newest entry is shown as "ล่าสุด" (see renderSendSmsModal).
+  function confirmSendSms() {
+    if (!state.smsModalTarget || state.smsModalSending) return;
+    var phone = (state.smsModalPhone || '').trim();
+    var message = (state.smsModalDraft || '').trim();
+    if (!phone) { window.alert('กรุณาเลือก/กรอกเบอร์โทรศัพท์'); return; }
+    if (!message) { window.alert('กรุณากรอกข้อความ'); return; }
+    var target = state.smsModalTarget;
+    var tpl = state.smsTemplates.find(function (t) { return t.id === state.smsModalTemplateId; });
+    state.smsModalSending = true;
+    render();
+    fetch('/api/send-sms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: phone, message: message })
+    })
+      .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+      .then(function (r) {
+        state.smsModalSending = false;
+        if (!r.ok || !r.data || r.data.error) {
+          window.alert('ส่ง SMS ไม่สำเร็จ: ' + (r.data && r.data.error ? r.data.error : 'unknown error'));
+          render();
+          return;
+        }
+        var entry = { at: nowTimestamp(), phone: phone, template: tpl ? tpl.name : '', message: message };
+        if (target.level === 'installment') {
+          var order = state.orders.find(function (o) { return o.orderId === target.orderId; });
+          var list = order && (order[trackKey(target.track)] || []);
+          var inst = list && list.find(function (i) { return i.no === target.no; });
+          var history = (inst && inst.smsHistory) || [];
+          updateInstallment(target.orderId, target.no, 'smsHistory', history.concat([entry]), target.track);
+        } else {
+          var ord2 = state.orders.find(function (o) { return o.orderId === target.orderId; });
+          var history2 = (ord2 && ord2.smsHistory) || [];
+          updateOrderField(target.orderId, 'smsHistory', history2.concat([entry]));
+        }
+        state.smsModalTarget = null;
+      })
+      .catch(function (err) {
+        state.smsModalSending = false;
+        window.alert('เกิดข้อผิดพลาดขณะส่ง SMS: ' + err.message);
+        render();
+      });
+  }
   // Marks a single งวด as cross-checked against the reference CRM (or un-marks it) — a manual QA
   // step staff run monthly per ครบกำหนด month, per user request 2026-07-30: without this, a
   // customer still overdue next month gets re-verified from scratch instead of just checking the
@@ -2170,7 +2321,11 @@
       'C001,สมชาย ใจดี,O-2026-001,2026-01-09,iPhone 15 128GB,3000,500,ผ่อนชำระรายเดือน,1,2026-02-09,1500\n';
     var paymentContent = 'คำสั่งซื้อ,งวดที่,ยอดที่ชำระจริง,วันที่ชำระ,สถานะการชำระเงิน,ส่วนลด,หมายเหตุ\n' +
       'O-2026-001,1,1500,2026-02-08,ชำระแล้ว,0,ชำระตรงเวลา\n';
-    downloadBlob(type === 'debt' ? debtContent : paymentContent, type === 'debt' ? 'template_ลูกหนี้.csv' : 'template_ยอดชำระ.csv');
+    var customerInfoContent = 'เลขที่สัญญา,ชื่อ-นามสกุลลูกค้า,เลข SO,รหัสลูกค้า,เบอร์ติดต่อลูกค้า,วันเวลาที่ส่งเครื่อง,ชื่อบุคคลอ้างอิง,เบอร์ติดต่อบุคคลอ้างอิง\n' +
+      'SALMON202606010010,สมชาย ใจดี,O-2026-001,C001,081-234-5678,2026-06-01,วรรณา ใจดี,089-876-5432\n';
+    var content = type === 'debt' ? debtContent : type === 'customerinfo' ? customerInfoContent : paymentContent;
+    var name = type === 'debt' ? 'template_ลูกหนี้.csv' : type === 'customerinfo' ? 'template_ข้อมูลลูกค้าเพิ่มเติม.csv' : 'template_ยอดชำระ.csv';
+    downloadBlob(content, name);
   }
 
   // ---------- File import ----------
@@ -2190,6 +2345,33 @@
     if (!s) return 0;
     var n = Number(s);
     return isFinite(n) ? n : 0;
+  }
+  // A phone field may hold more than one number (staff typing "081-234-5678 / 089-876-5432", or a
+  // future source file combining several into one cell) — pull out every Thai-style number found
+  // so callers (the SMS-send buttons) can offer one per number instead of assuming exactly one.
+  function extractPhoneNumbers(str) {
+    var matches = String(str || '').match(/0\d[\d\-]{7,9}\d/g) || [];
+    var seen = {}, out = [];
+    matches.forEach(function (m) {
+      var digits = m.replace(/-/g, '');
+      if (!seen[digits]) { seen[digits] = true; out.push(digits); }
+    });
+    return out;
+  }
+  // Opens the ส่ง SMS modal (template picker + phone + editable message) — used both by the
+  // per-งวด button (level:'installment') and the customer-header/per-order general button
+  // (level:'order'). Multi-phone support (see extractPhoneNumbers) lives inside the modal itself
+  // as a picker, rather than one button per number, so there's a single send flow either way.
+  function renderSendSmsButton(level, orderId, no, track, label) {
+    var da = ' data-level="' + level + '" data-order="' + esc(orderId) + '"' + (no != null ? ' data-no="' + no + '"' : '') + (track ? ' data-track="' + track + '"' : '');
+    return '<button data-action="openSendSms"' + da + ' title="เปิดหน้าต่างส่ง SMS ทวงหนี้" style="border:none; background:linear-gradient(135deg,#0ca678,#0b7a5b); color:#fff; padding:5px 14px; border-radius:20px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;">' + (label || '📱 ส่ง SMS') + '</button>';
+  }
+  // "ล่าสุด" always reads the last entry of an append-only history array — sends are never
+  // overwritten (see confirmSendSms), only added to, per user request.
+  function smsLastSentBadge(history) {
+    if (!history || !history.length) return '';
+    var last = history[history.length - 1];
+    return '<span style="font-size:11px; color:#0b7a5b; font-weight:600; white-space:nowrap;">📩 ส่งล่าสุด ' + esc(last.at) + (history.length > 1 ? ' (×' + history.length + ')' : '') + '</span>';
   }
   // An early full-settlement payment often gets recorded entirely against ONE งวด (e.g. "ยอดชำระ
   // ปิดยอด" landing on งวดที่ 5 while งวด 6-12 still show 0), leaving the rest of the schedule stuck
@@ -2334,6 +2516,7 @@
       dueDate: ['วันครบกำหนดชำระ', 'duedate', 'due date', 'วันครบกำหนด', 'กำหนดชำระ', 'วันนัดชำระ', 'วันที่ครบกำหนด'],
       amountDue: ['ยอดผ่อนต่องวด', 'ราคาผ่อนต่องวด (ดาวน์)', 'amountdue', 'amount due', 'ยอดผ่อน', 'ค่างวด', 'จำนวนเงินต่องวด', 'ยอดชำระต่องวด'],
       age: ['อายุลูกค้า', 'อายุ', 'age'],
+      phone: ['เบอร์โทรศัพท์', 'เบอร์โทร', 'เบอร์มือถือ', 'เบอร์ติดต่อ', 'โทรศัพท์', 'เบอร์', 'phone', 'tel', 'mobile', 'phone number'],
       // Schedule-style workbook: remaining term + first unpaid due date + monthly payment day
       term: ['ระยะเวลาผ่อน (ผ่อน)', 'ระยะเวลาผ่อน (ดาวน์)', 'ระยะเวลาผ่อน', 'จำนวนงวดคงเหลือ', 'จำนวนงวด', 'งวดทั้งหมด', 'จำนวนงวดที่ผ่อน', 'จำนวนงวดคงเหลือที่ต้องผ่อน'],
       // ลูกหนี้เก่า (ก่อน 1/10/2025) only: "term" above already matches its "จำนวนงวดคงเหลือที่ต้องผ่อน"
@@ -2435,6 +2618,10 @@
           discount: resolveNumber(r, ALIASES.discount),
           purchaseType: String(resolveField(r, ALIASES.purchaseType) || ''),
           age: Math.round(resolveNumber(r, ALIASES.age)),
+          phone: String(resolveField(r, ALIASES.phone) || ''),
+          // Filled in later by the separate "ข้อมูลลูกค้าเพิ่มเติม" upload (onCustomerInfoFileChange)
+          // — never present in the debtor file itself, so these always start blank on import.
+          contractNo: '', shippedAt: '', referenceName: '', referencePhone: '',
           firstDueDate: toDateString(resolveField(r, ALIASES.firstDue)),
           payDay: Math.round(resolveNumber(r, ALIASES.payDay)) || null,
           _perInst: resolveNumber(r, ALIASES.amountDue),
@@ -2953,6 +3140,78 @@
     }).catch(function (err) { state.uploadMsgPayment = 'เกิดข้อผิดพลาด: ' + err.message; render(); });
   }
 
+  // Separate "ข้อมูลลูกค้าเพิ่มเติม" file (เลขที่สัญญา/เบอร์ติดต่อลูกค้า/วันเวลาที่ส่งเครื่อง/บุคคล
+  // อ้างอิง) — this is customer-level contact info, not part of the debtor/payment schedule files,
+  // so it gets its own upload + its own alias list rather than folding into onDebtFileChange.
+  // Matched onto existing orders by เลข SO first (most precise — one row = one contract), then
+  // รหัสลูกค้า (applies to every order that customer already has), then ชื่อ-นามสกุลลูกค้า last
+  // (least reliable — names collide) — per user's explicit priority (SO/customerId/name).
+  function onCustomerInfoFileChange(file) {
+    if (!file) return;
+    if (!window.XLSX) { state.uploadMsgCustomerInfo = 'ไม่พบไลบรารีอ่านไฟล์ กรุณาลองใหม่'; render(); return; }
+    var ALIASES = {
+      customerId: ['รหัสลูกค้า', 'customerid', 'customer id'],
+      customerName: ['ชื่อ-นามสกุลลูกค้า', 'ชื่อลูกค้า', 'customername', 'customer name'],
+      soNumber: ['เลข so', 'so', 'so number', 'เลขที่ so', 'orderid', 'order id'],
+      contractNo: ['เลขที่สัญญา', 'contract no', 'contractno', 'contract number'],
+      phone: ['เบอร์ติดต่อลูกค้า', 'เบอร์โทรศัพท์', 'เบอร์โทร', 'เบอร์มือถือ', 'เบอร์ติดต่อ', 'โทรศัพท์', 'เบอร์', 'phone', 'tel', 'mobile'],
+      shippedAt: ['วันเวลาที่ส่งเครื่อง', 'วันที่ส่งเครื่อง', 'shipped at', 'ship date', 'shipdate'],
+      referenceName: ['ชื่อบุคคลอ้างอิง', 'บุคคลอ้างอิง', 'reference name', 'referencename'],
+      referencePhone: ['เบอร์ติดต่อบุคคลอ้างอิง', 'เบอร์บุคคลอ้างอิง', 'reference phone', 'referencephone']
+    };
+    readRows(file).then(function (rows) {
+      if (!rows.length) { state.uploadMsgCustomerInfo = '⚠️ ไม่พบข้อมูลในไฟล์'; render(); return; }
+      var headers = Object.keys(rows[0]);
+      if (!headerKey(headers, ALIASES.soNumber) && !headerKey(headers, ALIASES.customerId) && !headerKey(headers, ALIASES.customerName)) {
+        state.uploadMsgCustomerInfo = '⚠️ จับคู่คอลัมน์ "เลข SO" / "รหัสลูกค้า" / "ชื่อ-นามสกุลลูกค้า" ไม่ได้เลย (ยังไม่นำเข้าข้อมูล)\nหัวคอลัมน์ในไฟล์นี้คือ: ' + headers.join(' | ');
+        render();
+        return;
+      }
+      var byOrderId = {}, byCustomerId = {}, byCustomerName = {};
+      state.orders.forEach(function (o) {
+        byOrderId[o.orderId] = o;
+        if (o.customerId) (byCustomerId[o.customerId] = byCustomerId[o.customerId] || []).push(o);
+        var nk = String(o.customerName || '').trim().toLowerCase();
+        if (nk) (byCustomerName[nk] = byCustomerName[nk] || []).push(o);
+      });
+      var matchedOrders = 0, matchedRows = 0, unmatched = [];
+      rows.forEach(function (r) {
+        var so = String(resolveField(r, ALIASES.soNumber) || '').trim();
+        var custId = String(resolveField(r, ALIASES.customerId) || '').trim();
+        var custName = String(resolveField(r, ALIASES.customerName) || '').trim();
+        var patch = {
+          contractNo: String(resolveField(r, ALIASES.contractNo) || ''),
+          phone: String(resolveField(r, ALIASES.phone) || ''),
+          shippedAt: toDateString(resolveField(r, ALIASES.shippedAt)),
+          referenceName: String(resolveField(r, ALIASES.referenceName) || ''),
+          referencePhone: String(resolveField(r, ALIASES.referencePhone) || '')
+        };
+        var targets = so && byOrderId[so] ? [byOrderId[so]]
+          : custId && byCustomerId[custId] ? byCustomerId[custId]
+          : custName && byCustomerName[custName.toLowerCase()] ? byCustomerName[custName.toLowerCase()]
+          : [];
+        if (!targets.length) { unmatched.push(so || custId || custName || '(ไม่ทราบแถว)'); return; }
+        matchedRows++;
+        targets.forEach(function (o) {
+          Object.keys(patch).forEach(function (k) { if (patch[k]) o[k] = patch[k]; });
+          matchedOrders++;
+        });
+      });
+      if (matchedRows === 0) {
+        state.uploadMsgCustomerInfo = '⚠️ อ่านไฟล์ได้ ' + rows.length + ' แถว แต่จับคู่กับข้อมูลลูกหนี้ไม่ได้เลย (ยังไม่บันทึก) — '
+          + (state.orders.length === 0 ? 'ยังไม่มีข้อมูลลูกหนี้ในระบบ กรุณาอัปโหลด "ไฟล์ลูกหนี้" ก่อน' : 'ตรวจว่า เลข SO / รหัสลูกค้า / ชื่อลูกค้า ตรงกับข้อมูลลูกหนี้ที่มีอยู่');
+        render();
+        return;
+      }
+      state.hasUnsavedChanges = false;
+      state.isSampleData = false;
+      savePersisted();
+      state.uploadMsgCustomerInfo = '✅ จับคู่สำเร็จ ' + matchedRows + ' แถว (อัปเดต ' + matchedOrders + ' สัญญา)'
+        + (unmatched.length ? ('\n⚠️ ไม่พบลูกค้าที่ตรงกัน ' + unmatched.length + ' แถว: ' + unmatched.slice(0, 10).join(', ') + (unmatched.length > 10 ? ' ...' : '')) : '');
+      render();
+    }).catch(function (err) { state.uploadMsgCustomerInfo = 'เกิดข้อผิดพลาด: ' + err.message; render(); });
+  }
+
   // ---------- Render: shared bits ----------
   function donut(size, inset, conic) {
     return '<div style="width:' + size + 'px; height:' + size + 'px; border-radius:50%; background:' + conic + '; position:relative; flex-shrink:0;">' +
@@ -2998,9 +3257,10 @@
         '</div>' +
       '</div>';
     return banner +
-    '<div style="display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:28px;">' +
+    '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:20px; margin-bottom:28px;">' +
       card('📁 ข้อมูลลูกหนี้ / ตารางผ่อนชำระ', 'คอลัมน์: รหัสลูกค้า, ชื่อลูกค้า, คำสั่งซื้อ, วันที่ออกสัญญา, รายการสินค้า, ยอดวางดาวน์, ส่วนลด, ประเภทการซื้อ, งวดที่, วันครบกำหนดชำระ, ยอดผ่อนต่องวด<br><span style="color:#0b7a5b;">อัปซ้ำได้ — ยอดชำระที่บันทึกไว้จะไม่ถูกล้าง</span>', 'debt', 'debtFileInputTop', 'onDebtFile', state.uploadMsgDebt) +
       card('💳 ข้อมูลยอดชำระเงิน', 'คอลัมน์: คำสั่งซื้อ, งวดที่, ยอดที่ชำระจริง, วันที่ชำระ, สถานะการชำระเงิน (ถ้ามี), ส่วนลด (ถ้ามี), หมายเหตุ (ถ้ามี)<br><span style="color:#0b7a5b;">โหมดบวกเพิ่ม — ควรใส่ “วันที่ชำระ” ทุกแถวเพื่อให้ระบบกันการบวกซ้ำได้แม่นยำ</span><br><span style="color:#6b6785;">รองรับไฟล์ประวัติสถานะจากระบบเก่า (มีคอลัมน์ “timestamp”) โดยอัตโนมัติ — จะตั้งค่าล่าสุดแทนการบวกสะสม</span>', 'payment', 'paymentFileInputTop', 'onPaymentFile', state.uploadMsgPayment) +
+      card('📇 ข้อมูลลูกค้าเพิ่มเติม (เบอร์โทร/บุคคลอ้างอิง)', 'คอลัมน์: เลขที่สัญญา, ชื่อ-นามสกุลลูกค้า, เลข SO, รหัสลูกค้า, เบอร์ติดต่อลูกค้า, วันเวลาที่ส่งเครื่อง, ชื่อบุคคลอ้างอิง, เบอร์ติดต่อบุคคลอ้างอิง<br><span style="color:#0b7a5b;">จับคู่กับข้อมูลลูกหนี้ด้วยเลข SO ก่อน ตามด้วยรหัสลูกค้า แล้วจึงชื่อลูกค้า — อัปซ้ำได้ ค่าใหม่แทนที่ค่าเดิม</span>', 'customerinfo', 'customerInfoFileInputTop', 'onCustomerInfo', state.uploadMsgCustomerInfo) +
     '</div>';
   }
 
@@ -3539,6 +3799,9 @@
     if (state.noteModalTarget) {
       html += renderNoteModal();
     }
+    if (state.smsModalTarget) {
+      html += renderSendSmsModal();
+    }
 
     html += '</div>';
     return html;
@@ -3577,6 +3840,68 @@
         '<div style="display:flex; justify-content:flex-end; gap:10px;">' +
           '<div data-action="closeNoteModal" style="padding:11px 20px; border-radius:10px; color:#6b6785; font-size:13.5px; font-weight:600; cursor:pointer;">ยกเลิก</div>' +
           '<div data-action="saveNoteModal" style="background:#2b2540; color:#fff; padding:11px 22px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer;">บันทึก</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function renderSendSmsModal() {
+    var target = state.smsModalTarget;
+    var ctx = smsContextFor(target.level, target.orderId, target.no, target.track);
+    if (!ctx) { state.smsModalTarget = null; return ''; }
+    var nums = extractPhoneNumbers(ctx.phone);
+    var titleSuffix = target.level === 'installment' ? ('· งวดที่ ' + target.no) : '· ทั้งบัญชี';
+    var phoneField = nums.length
+      ? '<select data-action="smsModalPhone" style="width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fff; font-size:13.5px; color:#2b2540; outline:none;">' +
+          nums.map(function (p) { return '<option value="' + esc(p) + '"' + (p === state.smsModalPhone ? ' selected' : '') + '>' + esc(p) + '</option>'; }).join('') +
+        '</select>'
+      : '<input type="text" value="' + esc(state.smsModalPhone) + '" data-action="smsModalPhone" placeholder="ยังไม่มีเบอร์ในระบบ — กรอกเบอร์ที่จะส่ง" style="width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(224,49,49,0.35); background:#fff; font-size:13.5px; color:#2b2540; outline:none;" />';
+    var templateOptions = state.smsTemplates.map(function (t) {
+      return '<option value="' + esc(t.id) + '"' + (t.id === state.smsModalTemplateId ? ' selected' : '') + '>' + esc(t.name) + '</option>';
+    }).join('');
+    var managerHtml = !state.smsModalManaging ? '' :
+      '<div style="background:rgba(124,92,255,0.05); border:1px solid rgba(124,92,255,0.15); border-radius:12px; padding:12px; margin-bottom:14px; display:flex; flex-direction:column; gap:10px;">' +
+        state.smsTemplates.map(function (t) {
+          return '<div style="border-bottom:1px dashed rgba(124,92,255,0.2); padding-bottom:10px;">' +
+            '<div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">' +
+              '<input type="text" value="' + esc(t.name) + '" data-action="smsTemplateName" data-tpl="' + esc(t.id) + '" style="flex:1; box-sizing:border-box; padding:6px 8px; border-radius:8px; border:1px solid rgba(124,92,255,0.2); font-size:12.5px; font-weight:600; color:#2b2540; outline:none;" />' +
+              '<button data-action="deleteSmsTemplate" data-tpl="' + esc(t.id) + '" title="ลบ template นี้" style="border:none; background:transparent; color:#e03131; cursor:pointer; font-size:14px; flex-shrink:0;">🗑</button>' +
+            '</div>' +
+            '<textarea data-action="smsTemplateBody" data-tpl="' + esc(t.id) + '" rows="2" style="width:100%; box-sizing:border-box; padding:6px 8px; border-radius:8px; border:1px solid rgba(124,92,255,0.2); font-size:12px; color:#2b2540; outline:none; font-family:inherit; resize:vertical;">' + esc(t.body) + '</textarea>' +
+          '</div>';
+        }).join('') +
+        '<div data-action="addSmsTemplate" style="color:#7c5cff; font-size:12.5px; font-weight:600; cursor:pointer;">+ เพิ่ม template ใหม่</div>' +
+        '<div style="font-size:11px; color:#8a86a3;">ตัวแปรที่ใช้ได้: {ชื่อ} {ยอดค้าง} {วันครบกำหนด} {งวดที่} {เลขที่สัญญา} · ต้องกด "บันทึกการเปลี่ยนแปลง" ที่หน้าหลักด้วยเพื่อบันทึก template ถาวร</div>' +
+      '</div>';
+    var historyHtml = '';
+    if (ctx.history.length) {
+      historyHtml = '<div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:8px;">📨 ประวัติการส่ง (' + ctx.history.length + ' ครั้ง)</div>' +
+        '<div style="display:flex; flex-direction:column; gap:6px; margin-bottom:16px; max-height:160px; overflow-y:auto;">' +
+        ctx.history.slice().reverse().map(function (h) {
+          return '<div style="background:rgba(18,184,134,0.05); border:1px solid rgba(18,184,134,0.15); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' +
+            '<div style="font-weight:700; color:#0b7a5b; margin-bottom:2px;">' + esc(h.at) + ' · ' + esc(h.phone) + (h.template ? ' · ' + esc(h.template) : '') + '</div>' +
+            '<div style="color:#6b6785; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + esc(h.message) + '</div>' +
+          '</div>';
+        }).join('') +
+        '</div>';
+    }
+    return '<div style="position:fixed; inset:0; z-index:9999; background:rgba(43,37,64,0.35); display:flex; align-items:center; justify-content:center; padding:20px;">' +
+      '<div style="max-width:480px; width:100%; max-height:90vh; overflow-y:auto; background:#fff; border-radius:20px; padding:26px 26px 22px; box-shadow:0 24px 60px rgba(43,37,64,0.3);">' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#2b2540; margin-bottom:18px;">📱 ส่ง SMS ทวงหนี้ ' + titleSuffix + '</div>' +
+        historyHtml +
+        '<div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:6px;">เบอร์โทรศัพท์ปลายทาง</div>' +
+        phoneField +
+        '<div style="display:flex; align-items:center; justify-content:space-between; margin-top:14px; margin-bottom:6px;">' +
+          '<div style="font-size:12px; color:#6b6785; font-weight:600;">Template ข้อความ</div>' +
+          '<div data-action="toggleSmsManaging" style="font-size:11.5px; color:#7c5cff; font-weight:600; cursor:pointer;">' + (state.smsModalManaging ? 'ปิดการจัดการ' : '✏️ จัดการ template') + '</div>' +
+        '</div>' +
+        '<select data-action="smsModalTemplate" style="width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fff; font-size:13.5px; color:#2b2540; outline:none; margin-bottom:14px;">' + templateOptions + '</select>' +
+        managerHtml +
+        '<div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:6px;">ข้อความ (แก้ไขได้ก่อนส่ง)</div>' +
+        '<textarea data-action="smsModalDraft" rows="5" style="width:100%; box-sizing:border-box; padding:12px 14px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fbfaff; font-size:14px; color:#2b2540; outline:none; margin-bottom:20px; font-family:inherit; resize:vertical;">' + esc(state.smsModalDraft) + '</textarea>' +
+        '<div style="display:flex; justify-content:flex-end; gap:10px;">' +
+          '<div data-action="closeSendSmsModal" style="padding:11px 20px; border-radius:10px; color:#6b6785; font-size:13.5px; font-weight:600; cursor:pointer;">ยกเลิก</div>' +
+          '<div data-action="confirmSendSms" style="background:' + (state.smsModalSending ? '#8a86a3' : 'linear-gradient(135deg,#0ca678,#0b7a5b)') + '; color:#fff; padding:11px 22px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer;">' + (state.smsModalSending ? '⏳ กำลังส่ง...' : '📤 ส่ง SMS') + '</div>' +
         '</div>' +
       '</div>' +
     '</div>';
@@ -3624,6 +3949,20 @@
     var trackingReturnTagHtml = trActive
       ? '<button data-action="toggleCustomerTrackingReturn" title="คลิกเพื่อยกเลิกแท็กนี้" style="border:none; cursor:pointer; background:' + hexToRgba('#0b7285', 0.14) + '; color:#0b7285; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">🔎 ติดตามเครื่องคืน' + (trAt ? ' · อัปเดตล่าสุด ' + esc(trAt) : '') + '</button>'
       : '<button data-action="toggleCustomerTrackingReturn" title="คลิกเพื่อติดแท็กติดตามเครื่องคืน" style="border:1px dashed rgba(11,114,133,0.45); cursor:pointer; background:transparent; color:#0b7285; padding:2px 11px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">+ ติดตามเครื่องคืน</button>';
+    // Quick-glance contact summary from "ข้อมูลลูกค้าเพิ่มเติม" upload (เลขที่สัญญา/เบอร์ติดต่อ
+    // ลูกค้า/วันเวลาที่ส่งเครื่อง/บุคคลอ้างอิง) — customer-level in the UI even though the fields
+    // live per-order, since almost every customer here only has one order carrying this data; picks
+    // whichever order actually has it (falling back to the first order) rather than always order[0].
+    var contactOrders = CV.selectedCustomerOrders || [];
+    var contactOrder = contactOrders.find(function (o) { return o.contractNo || o.phone || o.shippedAt || o.referenceName || o.referencePhone; }) || contactOrders[0];
+    var contactSummaryHtml = !contactOrder ? '' :
+      '<div style="border-top:1px solid rgba(124,92,255,0.10); padding-top:14px; margin-top:14px; display:flex; flex-wrap:wrap; gap:18px; align-items:center;">' +
+        '<div style="font-size:12.5px; color:#6b6785;">📄 เลขที่สัญญา: <span style="color:#2b2540; font-weight:600;">' + (contactOrder.contractNo ? esc(contactOrder.contractNo) : '—') + '</span></div>' +
+        '<div style="font-size:12.5px; color:#6b6785; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">📱 เบอร์ติดต่อลูกค้า: <span style="color:#2b2540; font-weight:600;">' + (contactOrder.phone ? esc(contactOrder.phone) : '—') + '</span>' +
+          renderSendSmsButton('order', contactOrder.orderId, null, null, '📱 ส่ง SMS ทวงหนี้') + smsLastSentBadge(contactOrder.smsHistory) + '</div>' +
+        '<div style="font-size:12.5px; color:#6b6785;">🚚 วันเวลาที่ส่งเครื่อง: <span style="color:#2b2540; font-weight:600;">' + (contactOrder.shippedAt ? esc(fmtDate(contactOrder.shippedAt)) : '—') + '</span></div>' +
+        '<div style="font-size:12.5px; color:#6b6785;">👤 บุคคลอ้างอิง: <span style="color:#2b2540; font-weight:600;">' + (contactOrder.referenceName ? esc(contactOrder.referenceName) : '—') + (contactOrder.referencePhone ? ' (' + esc(contactOrder.referencePhone) + ')' : '') + '</span></div>' +
+      '</div>';
     var html = '<div id="customerDetailModal" style="position:fixed; inset:0; z-index:9999; background:rgba(43,37,64,0.35); display:flex; align-items:flex-start; justify-content:center; padding:30px 20px; overflow-y:auto;">' +
       '<div style="max-width:1100px; width:100%; background:rgba(255,255,255,0.97); backdrop-filter:blur(24px); -webkit-backdrop-filter:blur(24px); border:1px solid rgba(255,255,255,0.85); border-radius:24px; padding:28px 30px; box-shadow:0 24px 60px rgba(43,37,64,0.3); margin-bottom:30px;">' +
       '<div style="display:flex; align-items:flex-start; gap:16px; margin-bottom:18px;">' +
@@ -3647,6 +3986,7 @@
         '<div style="display:flex; align-items:center; gap:10px; flex-shrink:0;">' + renderSaveButton(false) +
         '<button data-action="closeDetail" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; padding:8px 16px; border-radius:20px; font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap;">✕ ปิด</button></div>' +
       '</div>' +
+      contactSummaryHtml +
       '<div style="border-top:1px solid rgba(124,92,255,0.10); padding-top:16px; margin-bottom:22px;">' +
         '<div style="font-size:12.5px; color:#6b6785; font-weight:600; margin-bottom:6px; display:flex; align-items:center; gap:6px;">📝 หมายเหตุ</div>' +
         (CV.customerNoteSaved ? '<div style="font-size:13.5px; color:#2b2540; margin-bottom:8px; background:rgba(124,92,255,0.05); padding:8px 12px; border-radius:10px;">' + esc(CV.customerNoteSaved) + '</div>' : '') +
@@ -3681,6 +4021,14 @@
           '<div style="background:rgba(240,140,0,0.12); color:#c2650a; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">' + esc(ord.purchaseType) + '</div>' +
           (ord.isSold ? '<div style="background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">📤 จำหน่ายชื่อให้บริษัทติดตามหนี้</div>' : '') +
           (ord.isCancelled ? '<div style="background:' + hexToRgba('#4b5563', 0.14) + '; color:#4b5563; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">↩️ ยกเลิกสัญญา คืนเครื่อง</div>' : '') +
+        '</div>' +
+        '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:14px; margin-bottom:14px; padding:14px 16px; background:rgba(124,92,255,0.05); border-radius:14px;">' +
+          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">📄 เลขที่สัญญา</div><input type="text" value="' + esc(ord.contractNo || '') + '" data-order-field="contractNo" data-order="' + esc(ord.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
+          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">📱 เบอร์ติดต่อลูกค้า</div><input type="text" value="' + esc(ord.phone || '') + '" data-order-field="phone" data-order="' + esc(ord.orderId) + '" placeholder="ยังไม่มีเบอร์ (คั่นหลายเบอร์ด้วย /)" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" />' +
+            '<div style="margin-top:6px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">' + renderSendSmsButton('order', ord.orderId, null, null, '📱 ส่ง SMS ทวงหนี้') + smsLastSentBadge(ord.smsHistory) + '</div></div>' +
+          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">🚚 วันเวลาที่ส่งเครื่อง</div><input type="date" value="' + esc(ord.shippedAt || '') + '" data-order-field="shippedAt" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
+          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">👤 ชื่อบุคคลอ้างอิง</div><input type="text" value="' + esc(ord.referenceName || '') + '" data-order-field="referenceName" data-order="' + esc(ord.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
+          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">📱 เบอร์ติดต่อบุคคลอ้างอิง</div><input type="text" value="' + esc(ord.referencePhone || '') + '" data-order-field="referencePhone" data-order="' + esc(ord.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
         '</div>' +
         '<div style="display:grid; grid-template-columns:2fr 1fr; gap:16px; margin-bottom:16px;">' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">📦 รายการสินค้า' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:600; color:#2b2540;">' + esc(ord.productList) + '</div></div>' +
@@ -3814,7 +4162,9 @@
         '</div>' +
         '<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">' +
           '<button data-action="openPostpone"' + da + ' style="border:1px solid rgba(124,92,255,0.3); background:#fff; color:#7c5cff; border-radius:8px; padding:6px 10px; font-size:11.5px; font-weight:600; cursor:pointer; white-space:nowrap;">🔁 เลื่อนวันชำระ</button>' +
+          renderSendSmsButton('installment', orderId, inst.no, track, '📱 ส่ง SMS') +
           (overdue > 0 ? '<span style="background:rgba(224,49,49,0.10); color:#e03131; padding:3px 10px; border-radius:20px; font-size:11px; font-weight:700; white-space:nowrap;">⏰ เกิน ' + overdue + ' วัน</span>' : '') +
+          smsLastSentBadge(inst.smsHistory) +
         '</div>' +
         // Money fields — 2-col grid, no horizontal scroll needed at any width.
         '<div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; padding-top:4px; border-top:1px solid rgba(124,92,255,0.08);">' +
@@ -4007,6 +4357,16 @@
         }
         case 'prevPage': state.page = Math.max(1, (state.page || 1) - 1); render(); break;
         case 'nextPage': state.page = (state.page || 1) + 1; render(); break;
+        case 'openSendSms': {
+          var smsNo = t.getAttribute('data-no');
+          openSendSmsModal(t.getAttribute('data-level'), t.getAttribute('data-order'), smsNo !== null ? Number(smsNo) : null, t.getAttribute('data-track'));
+          break;
+        }
+        case 'closeSendSmsModal': closeSendSmsModal(); break;
+        case 'confirmSendSms': confirmSendSms(); break;
+        case 'toggleSmsManaging': state.smsModalManaging = !state.smsModalManaging; render(); break;
+        case 'addSmsTemplate': addSmsTemplate(); break;
+        case 'deleteSmsTemplate': deleteSmsTemplate(t.getAttribute('data-tpl')); break;
       }
     });
 
@@ -4063,6 +4423,12 @@
         case 'setPageSize': state.pageSize = Number(t.value) || 50; state.page = 1; render(); break;
         case 'onDebtFile': onDebtFileChange(t.files[0]); t.value = ''; break;
         case 'onPaymentFile': onPaymentFileChange(t.files[0]); t.value = ''; break;
+        case 'onCustomerInfo': onCustomerInfoFileChange(t.files[0]); t.value = ''; break;
+        case 'smsModalPhone': state.smsModalPhone = t.value; break;
+        case 'smsModalDraft': state.smsModalDraft = t.value; break;
+        case 'smsModalTemplate': selectSmsTemplate(t.value); break;
+        case 'smsTemplateName': updateSmsTemplateField(t.getAttribute('data-tpl'), 'name', t.value); break;
+        case 'smsTemplateBody': updateSmsTemplateField(t.getAttribute('data-tpl'), 'body', t.value); break;
       }
     });
   }
