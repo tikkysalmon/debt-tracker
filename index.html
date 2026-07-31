@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-30.28';
+  var APP_BUILD = '2026-07-31.1';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -2559,6 +2559,7 @@
       // even on what would otherwise look like a still-pure-demo base.
       state.orders = repairStaleSampleOrders(Object.keys(map).map(function (k) { return map[k]; }));
       state.isSampleData = false;
+      state.hasUnsavedChanges = false;
       savePersisted();
 
       var msg = 'นำเข้าสำเร็จ ' + newOrders.length + ' คำสั่งซื้อ · ' + instCount + ' งวด\n'
@@ -2700,6 +2701,7 @@
         });
         state.orders = orders;
         state.isSampleData = false;
+        state.hasUnsavedChanges = false;
         savePersisted();
         state.uploadMsgPayment = 'อัปเดตประวัติสถานะสำเร็จ: ตั้งยอดชำระ ' + setPaid + ' งวด · อัปเดตสถานะอย่างเดียว ' + statusOnly + ' งวด'
           + (missedSnap ? (' · ไม่พบ ' + missedSnap + ' แถว (SO หรืองวดที่ไม่ตรงกับข้อมูลลูกหนี้ เช่น รหัสงวด 900+ ที่ยังไม่ทราบความหมาย)') : '');
@@ -2819,6 +2821,7 @@
       });
       state.orders = orders;
       if (added || addedPenalty || updatedOnly) state.isSampleData = false;
+      state.hasUnsavedChanges = false;
       savePersisted();
       state.uploadMsgPayment = 'บวกยอดสำเร็จ ' + added + ' งวด'
         + (addedPenalty ? (' · ค่าปรับ ' + addedPenalty + ' งวด') : '')
@@ -3794,7 +3797,14 @@
       switch (a) {
         case 'goDashboard': if (confirmDiscardIfDirty()) { state.view = 'dashboard'; render(); } break;
         case 'goTracking': if (confirmDiscardIfDirty()) { state.view = 'tracking'; render(); } break;
-        case 'goUpload': if (confirmDiscardIfDirty()) { state.view = 'upload'; render(); } break;
+        // No confirmDiscardIfDirty() guard here (unlike goDashboard/goTracking): uploads always
+        // save immediately regardless of manual-save mode, and a pending edit sitting in
+        // state.orders rides along safely into that save rather than needing to be discarded
+        // first — blocking on it just trained staff to reflexively click "discard" to reach this
+        // tab, which silently wiped the pending edit AND could race the debounced cloud save of a
+        // just-completed import if the discard landed before that save's 600ms+ round trip (~20MB
+        // payload) finished. See [[project-debt-tracker-site]] memory, 2026-07-31.
+        case 'goUpload': state.view = 'upload'; render(); break;
         case 'toggleFilters': state.showFilters = !state.showFilters; render(); break;
         case 'performSearch': performSearch(); break;
         case 'clearAllFilters': clearAllFilters(); break;
