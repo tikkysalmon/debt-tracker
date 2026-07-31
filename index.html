@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-31.27';
+  var APP_BUILD = '2026-07-31.29';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -2131,15 +2131,15 @@
       '<div style="text-align:center; font-size:12.5px; color:#5b5750; margin-bottom:18px;">(ครั้งที่ ' + letterNo + ')</div>' +
       '<div style="margin-bottom:14px;">เรียน คุณ' + esc(order.customerName) + '</div>' +
       '<p style="margin:0 0 12px; text-align:justify; text-indent:2em;">ตามที่ท่านได้ทำสัญญาซื้อสินค้าแบบผ่อนชำระกับบริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด ("บริษัทฯ") ตามคำสั่งซื้อเลขที่ ' + esc(order.orderId) + (order.contractNo ? ' เลขที่สัญญา ' + esc(order.contractNo) : '') + ' ลงวันที่ ' + esc(order.contractDateDisp) + ' รายการสินค้า ' + esc(order.productList) + ' โดยตกลงผ่อนชำระเป็นรายงวดตามที่ระบุในสัญญานั้น</p>' +
-      '<p style="margin:0 0 10px;">บัดนี้ปรากฏว่าท่านได้ค้างชำระค่างวดดังกล่าว โดยมีรายละเอียดยอดค้างชำระ ดังนี้</p>' +
+      '<p style="margin:0 0 10px; text-indent:2em;">บัดนี้ปรากฏว่าท่านได้ค้างชำระค่างวดดังกล่าว โดยมีรายละเอียดยอดค้างชำระ ดังนี้</p>' +
       '<table style="width:100%; border-collapse:collapse; margin:0 0 16px; font-size:13.5px;">' +
         '<tr><td style="padding:6px 10px; border:1px solid #efece3; width:38%; color:#5b5750;">จำนวนงวดที่ค้างชำระ</td><td style="padding:6px 10px; border:1px solid #efece3; font-weight:700;">' + snapshot.overdueCount + ' งวด</td></tr>' +
         '<tr><td style="padding:6px 10px; border:1px solid #efece3; color:#5b5750;">ยอดค้างชำระรวม</td><td style="padding:6px 10px; border:1px solid #efece3; font-weight:700; color:#b3261e;">฿' + esc(snapshot.amountDisp) + '</td></tr>' +
         '<tr><td style="padding:6px 10px; border:1px solid #efece3; color:#5b5750;">ครบกำหนดชำระงวดล่าสุดเมื่อ</td><td style="padding:6px 10px; border:1px solid #efece3; font-weight:700;">' + esc(fmtDate(snapshot.dueDate)) + '</td></tr>' +
       '</table>' +
-      '<p style="margin:0 0 12px; text-align:justify;">อันเป็นการผิดนัดชำระหนี้ตามสัญญาที่ตกลงกันไว้ บริษัทฯ จึงขอแจ้งให้ท่านดำเนินการชำระยอดค้างดังกล่าวแก่บริษัทฯ ให้แล้วเสร็จภายใน 3 วัน นับแต่วันที่ได้รับหนังสือฉบับนี้ โดยติดต่อชำระหรือสอบถามรายละเอียดเพิ่มเติมได้ที่ 061-4015044 ต่อ 108-109</p>' +
-      '<p style="margin:0 0 12px; text-align:justify; text-indent:2em;">หากพ้นกำหนดระยะเวลาดังกล่าวแล้ว ท่านยังมิได้ชำระหนี้ให้แก่บริษัทฯ บริษัทฯ ขอสงวนสิทธิ์ในการดำเนินการตามกฎหมายเพื่อรักษาสิทธิของบริษัทฯ ต่อไป โดยไม่ต้องแจ้งให้ทราบล่วงหน้าอีก ซึ่งรวมถึงแต่ไม่จำกัดเพียงการฟ้องร้องดำเนินคดีทางแพ่งเพื่อเรียกให้ชำระหนี้ต้นเงิน ดอกเบี้ยผิดนัดชำระ ค่าเสียหาย และค่าใช้จ่ายในการติดตามทวงถามและดำเนินคดีตามที่กฎหมายกำหนด</p>' +
-      '<p style="margin:0 0 26px; text-align:justify;">จึงเรียนมาเพื่อโปรดพิจารณาดำเนินการชำระหนี้โดยเร็ว ทั้งนี้เพื่อรักษาผลประโยชน์และเครดิตทางการเงินของท่านเอง</p>' +
+      '<p style="margin:0 0 12px; text-align:justify;">อันเป็นการผิดนัดชำระหนี้ตามสัญญาที่ตกลงกันไว้ บริษัทฯ จึงขอแจ้งให้ท่านดำเนินการชำระยอดค้างดังกล่าวแก่บริษัทฯ ให้แล้วเสร็จภายใน 3 วัน นับแต่วันที่ได้รับหนังสือฉบับนี้ โดยชำระผ่านบัญชีธนาคารกสิกรไทย เลขที่บัญชี 098-8-36652-8 ชื่อบัญชี บจก.แซลม่อน เอ็นเตอร์ไพรส์ หรือติดต่อสอบถามรายละเอียดเพิ่มเติมได้ที่ 061-4015044 ต่อ 108-109</p>' +
+      '<p style="margin:0 0 12px; text-align:justify; text-indent:2em;">หากพ้นกำหนดระยะเวลาดังกล่าวแล้ว ท่านยังมิได้ชำระหนี้ให้แก่บริษัทฯ บริษัทฯ ขอสงวนสิทธิ์ในการดำเนินการตามกฎหมายเพื่อรักษาสิทธิของบริษัทฯ ต่อไป โดยไม่ต้องแจ้งให้ทราบล่วงหน้าอีก ซึ่งรวมถึงแต่ไม่จำกัดเพียงการฟ้องร้องดำเนินคดีทางแพ่งเพื่อเรียกให้ชำระหนี้ต้นเงิน ค่าปรับชำระล่าช้า ค่าเสียหาย และค่าใช้จ่ายในการติดตามทวงถามและดำเนินคดีตามที่กฎหมายกำหนด</p>' +
+      '<p style="margin:0 0 26px; text-align:justify; text-indent:2em;">จึงเรียนมาเพื่อโปรดพิจารณาดำเนินการชำระหนี้โดยเร็ว ทั้งนี้เพื่อรักษาผลประโยชน์และเครดิตทางการเงินของท่านเอง</p>' +
       '<div style="display:flex; justify-content:flex-end;">' +
         '<div style="text-align:center; font-size:13px;">' +
           '<div style="font-weight:700;">แผนกบัญชีเร่งรัดหนี้สิน</div>' +
