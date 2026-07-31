@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-01.4';
+  var APP_BUILD = '2026-08-01.5';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -2328,7 +2328,12 @@
         if (!r.ok || !r.data || r.data.error) {
           var errText = r.data && r.data.error;
           if (errText && typeof errText !== 'string') errText = JSON.stringify(errText);
-          window.alert('ส่งอีเมลไม่สำเร็จ: ' + (errText || 'unknown error'));
+          // detail.required carries Thaibulksms's own field-by-field validation messages (a "Bad
+          // Request Exception" alone doesn't say WHICH field) — surfacing it here means a rejected
+          // send is self-diagnosing from the alert, no need to inspect network requests separately.
+          var reqDetail = r.data && r.data.detail && Array.isArray(r.data.detail.required) ? r.data.detail.required : null;
+          var extra = reqDetail ? ('\n\n' + reqDetail.join('\n')) : '';
+          window.alert('ส่งอีเมลไม่สำเร็จ: ' + (errText || 'unknown error') + extra);
           render();
           return;
         }

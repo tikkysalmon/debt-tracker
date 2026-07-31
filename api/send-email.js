@@ -2,23 +2,27 @@
 // Keeps credentials server-side; index.html (public static file) must never see these directly.
 //
 // This hits a SEPARATE gateway from the SMS API (different domain) and is TEMPLATE-based only —
-// confirmed 2026-07-31 against Thaibulksms's own developer PDF
-// (assets.thaibulksms.com/documents/developer-manual/nwc/email-api-th.pdf). There is no raw
-// body/HTML parameter and NO file-attachment parameter documented at all, so this sends a
-// DOWNLOAD LINK to the PDF (already public on Supabase Storage) via a merge tag instead of a real
-// attachment — per explicit user decision. Staff must first build the email's actual content as a
-// Template in the Thaibulksms Email console (thaibulkmail.com) using these merge tags:
+// no raw body/HTML parameter and NO file-attachment parameter, so this sends a DOWNLOAD LINK to
+// the PDF (already public on Supabase Storage) via a merge tag instead of a real attachment — per
+// explicit user decision. Staff build the email's actual content as a Template in the Thaibulksms
+// Email console (thaibulkmail.com) using these merge tags:
 // {{CUSTOMER_NAME}} {{AMOUNT}} {{DUE_DATE}} {{PDF_LINK}} {{LETTER_NO}} {{ORDER_ID}}
 //
 // Auth: per Thaibulksms (2026-07-31), the SAME API Key/Secret already used for SMS (THAIBULKSMS_API_KEY
 // / THAIBULKSMS_API_SECRET) works here too — both services were enabled under one credential pair,
 // so this reuses those instead of needing a separate Email-only key.
 //
-// NOTE: the PDF's own parameter table had its columns visibly garbled by text extraction, so the
-// exact key name/casing for the merge-tag payload ("Payload" below) is a best-effort reading, not
-// 100% confirmed — if the API rejects the request, check the real payload shape via the Thaibulksms
-// Email API Reference (https://developer.thaibulksms.com/reference) or their support before assuming
-// this proxy is broken.
+// Request shape: Thaibulksms's own developer PDF (assets.thaibulksms.com/documents/developer-manual/
+// nwc/email-api-th.pdf, dated 2024-01-10) documents template_id/Payload/mail_to:string — but the
+// LIVE gateway rejects that exact shape (tested directly 2026-08-01, response:
+// {"message":"Bad Request Exception","required":["property template_id should not exist",
+// "property Payload should not exist","template_uuid must be a UUID", "each value in nested
+// property mail_to must be either object or array"]}). The PDF is stale vs. the deployed API. This
+// now sends template_uuid + mail_to as an array of {email, payload} objects instead — the array
+// shape is confirmed by that error, but the exact per-recipient merge-tag field name ("payload"
+// below) is still an educated guess, not confirmed. If sends still fail, read the `detail` field
+// of the error the app now surfaces — it's the raw response straight from Thaibulksms's validator
+// and will spell out exactly what's still wrong — or check with Thaibulksms support directly.
 module.exports = async function handler(req, res) {
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method not allowed' });
@@ -43,18 +47,22 @@ module.exports = async function handler(req, res) {
     const auth = Buffer.from(apiKey + ':' + apiSecret).toString('base64');
     const subject = 'หนังสือทวงถามให้ชำระหนี้ค้างชำระ (ครั้งที่ ' + (letterNo || '') + ') เลขที่คำสั่งซื้อ ' + (orderId || '');
     const payload = {
-      template_id: templateId,
+      template_uuid: templateId,
       mail_from: senderName,
-      mail_to: mailTo,
       subject: subject,
-      Payload: {
-        CUSTOMER_NAME: customerName || '',
-        AMOUNT: amount || '',
-        DUE_DATE: dueDate || '',
-        PDF_LINK: pdfLink,
-        LETTER_NO: String(letterNo || ''),
-        ORDER_ID: orderId || ''
-      }
+      mail_to: [
+        {
+          email: mailTo,
+          payload: {
+            CUSTOMER_NAME: customerName || '',
+            AMOUNT: amount || '',
+            DUE_DATE: dueDate || '',
+            PDF_LINK: pdfLink,
+            LETTER_NO: String(letterNo || ''),
+            ORDER_ID: orderId || ''
+          }
+        }
+      ]
     };
     const emailRes = await fetch('https://tbs-email-api-gateway.omb.to/email/v1/send_template', {
       method: 'POST',
