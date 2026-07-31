@@ -8,6 +8,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
   html, body { margin: 0; }
   body { font-family:'Noto Sans Thai', sans-serif; }
@@ -65,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-31.19';
+  var APP_BUILD = '2026-07-31.22';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -460,6 +462,7 @@
         customerTrackingReturnAt: state.customerTrackingReturnAt,
         appliedPaymentKeys: Object.keys(appliedPaymentKeys),
         smsTemplates: state.smsTemplates,
+        letterheadImageUrl: state.letterheadImageUrl,
         savedAt: new Date().toISOString()
       }));
       state.storageError = '';
@@ -594,6 +597,7 @@
     // rarely enough that this doesn't need the full 3-way merge machinery orders/notes get. Falls
     // back to whatever's already local (never blank) if the snapshot predates this field existing.
     if (Array.isArray(data.smsTemplates) && data.smsTemplates.length) state.smsTemplates = data.smsTemplates;
+    if (data.letterheadImageUrl) state.letterheadImageUrl = data.letterheadImageUrl;
     appliedPaymentKeys = {};
     rawKeys.forEach(function (k) { appliedPaymentKeys[k] = true; });
     lastServerSnapshot = { orders: rawOrders, customerNotes: rawNotes, customerTrackingReturn: rawTrackingReturn, customerTrackingReturnAt: rawTrackingReturnAt, appliedPaymentKeys: rawKeys };
@@ -825,7 +829,7 @@
         // is non-empty too, and inferring "no longer sample" from length alone meant the demo orders
         // silently got treated as real and merged alongside the first genuine upload (see
         // repairStaleSampleOrders below for cleaning up datasets already affected by this).
-        var payload = { orders: mergedOrders, customerNotes: mergedNotes, customerTrackingReturn: mergedTrackingReturn, customerTrackingReturnAt: mergedTrackingReturnAt, appliedPaymentKeys: mergedKeys, isSampleData: state.isSampleData, smsTemplates: state.smsTemplates, _meta: { updatedAt: new Date().toISOString(), updatedBy: myClientId } };
+        var payload = { orders: mergedOrders, customerNotes: mergedNotes, customerTrackingReturn: mergedTrackingReturn, customerTrackingReturnAt: mergedTrackingReturnAt, appliedPaymentKeys: mergedKeys, isSampleData: state.isSampleData, smsTemplates: state.smsTemplates, letterheadImageUrl: state.letterheadImageUrl, _meta: { updatedAt: new Date().toISOString(), updatedBy: myClientId } };
         var text = JSON.stringify(payload);
         var blob = new Blob([text], { type: 'application/json' });
         if (retriesLeft <= 0) { doUpload(mergedOrders, mergedNotes, mergedTrackingReturn, mergedTrackingReturnAt, mergedKeys, blob, text); return; }
@@ -970,6 +974,11 @@
     smsTemplates: (persisted && Array.isArray(persisted.smsTemplates) && persisted.smsTemplates.length) ? persisted.smsTemplates : DEFAULT_SMS_TEMPLATES,
     smsModalTarget: null, smsModalPhone: '', smsModalTemplateId: '', smsModalDraft: '', smsModalManaging: false, smsModalSending: false,
     callDraft: '', callHistoryOpen: false,
+    // Letterhead image for จดหมายทวงถามหนี้ (PDF) — one company-wide image, uploaded once via the
+    // Upload tab. Falls back to a plain-text company name header (buildLetterHtml) until set.
+    letterheadImageUrl: (persisted && persisted.letterheadImageUrl) || '',
+    letterIssuing: null, // orderId currently being generated, or null — disables the button mid-generate
+    uploadMsgLetterhead: '',
     appliedQuery: '',
     appliedAccountStatus: 'all',
     appliedDueStatus: 'all',
@@ -2076,6 +2085,176 @@
     out.sort(function (a, b) { return a.triggerDateIso < b.triggerDateIso ? -1 : a.triggerDateIso > b.triggerDateIso ? 1 : 0; });
     return out;
   }
+  // ---------- จดหมายทวงถามหนี้ (PDF) ----------
+  // Only enabled once ≥2 งวด are genuinely overdue (order.overdueCount, the same "ค้างชำระจริงๆ"
+  // definition used everywhere else — see STATUS_GROUP_META) — per explicit user request 2026-07-31.
+  var LETTER_MIN_OVERDUE_INSTALLMENTS = 2;
+  function latestOverdueDueDate(ord) {
+    var all = (ord.installments || []).concat(ord.accessoryInstallments || []);
+    var overdue = all.filter(function (i) { return STATUS_TO_GROUP[i.effectiveStatus] === 'ค้างชำระ'; })
+      .sort(function (a, b) { return (a.dueDate || '').localeCompare(b.dueDate || ''); });
+    return overdue.length ? overdue[overdue.length - 1].dueDate : '';
+  }
+  // Renders the letter as a self-contained (fully inline-styled) HTML snippet — no dependency on
+  // the app's own stylesheet — because it gets captured by html2canvas from an off-screen node, not
+  // displayed in the normal page flow. Content matches the wording approved 2026-07-31 (see
+  // [[project-debt-tracker-site]] memory): company name/phone/signer/3-day deadline are fixed
+  // constants written directly into the text, not editable per-letter, since they were explicitly
+  // locked in during that review. If state.letterheadImageUrl hasn't been uploaded yet (Upload
+  // tab), falls back to a plain-text company name header instead of leaving blank space.
+  // `snapshot` ({overdueCount, amountDisp, dueDate}) is deliberately passed in rather than read live
+  // off `order` — re-issuing an EXISTING ครั้งที่ must keep showing the debt figures as they stood
+  // the first time that ครั้งที่ was issued, never today's (possibly larger) live totals, per
+  // explicit user request 2026-07-31. Only a genuinely NEW ครั้งที่ number gets a fresh live
+  // snapshot (see issueLetter). customerName/orderId/productList/contractDate are read live off
+  // `order` regardless — those don't retroactively misrepresent the debt the way a stale ยอดค้าง
+  // would, and a name/product correction should show correctly even on a re-issued old ครั้งที่.
+  function buildLetterHtml(order, letterNo, snapshot) {
+    var now = new Date();
+    var todayIso = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+    var headerHtml = state.letterheadImageUrl
+      ? '<img src="' + state.letterheadImageUrl + '" style="width:100%; display:block; margin-bottom:24px;" />'
+      : '<div style="font-weight:700; font-size:20px; margin-bottom:8px;">บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด</div><div style="height:2px; background:#1f3a5f; margin-bottom:24px;"></div>';
+    return '<div style="width:794px; box-sizing:border-box; padding:70px 74px; background:#ffffff; font-family:\'Sarabun\',\'Noto Sans Thai\',\'Leelawadee UI\',sans-serif; color:#1c1b19; font-size:16px; line-height:1.9;">' +
+      headerHtml +
+      '<div style="display:flex; justify-content:space-between; font-size:14px; color:#5b5750; margin-bottom:26px;">' +
+        '<div>เลขที่หนังสือ: DL-' + esc(order.orderId) + '-' + letterNo + '</div>' +
+        '<div>วันที่: ' + esc(fmtDate(todayIso)) + '</div>' +
+      '</div>' +
+      '<div style="text-align:center; font-size:19px; font-weight:700; margin-bottom:4px;">หนังสือทวงถามให้ชำระหนี้ค้างชำระ</div>' +
+      '<div style="text-align:center; font-size:14px; color:#5b5750; margin-bottom:30px;">(ครั้งที่ ' + letterNo + ')</div>' +
+      '<div style="margin-bottom:22px;"><div style="font-size:13px; color:#5b5750;">เรียน</div><div>' + esc(order.customerName) + '</div></div>' +
+      '<p style="margin:0 0 18px; text-align:justify;">ตามที่ท่านได้ทำสัญญาซื้อสินค้าแบบผ่อนชำระกับบริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด ("บริษัทฯ") ตามคำสั่งซื้อเลขที่ ' + esc(order.orderId) + ' ลงวันที่ ' + esc(order.contractDateDisp) + ' รายการสินค้า ' + esc(order.productList) + ' โดยตกลงผ่อนชำระเป็นรายงวดตามที่ระบุในสัญญานั้น</p>' +
+      '<p style="margin:0 0 18px;">บัดนี้ปรากฏว่าท่านได้ค้างชำระค่างวดดังกล่าว โดยมีรายละเอียดยอดค้างชำระ ดังนี้</p>' +
+      '<table style="width:100%; border-collapse:collapse; margin:0 0 24px; font-size:15px;">' +
+        '<tr><td style="padding:9px 12px; border:1px solid #efece3; width:38%; color:#5b5750;">จำนวนงวดที่ค้างชำระ</td><td style="padding:9px 12px; border:1px solid #efece3; font-weight:700;">' + snapshot.overdueCount + ' งวด</td></tr>' +
+        '<tr><td style="padding:9px 12px; border:1px solid #efece3; color:#5b5750;">ยอดค้างชำระรวม</td><td style="padding:9px 12px; border:1px solid #efece3; font-weight:700; color:#b3261e;">฿' + esc(snapshot.amountDisp) + '</td></tr>' +
+        '<tr><td style="padding:9px 12px; border:1px solid #efece3; color:#5b5750;">ครบกำหนดชำระงวดล่าสุดเมื่อ</td><td style="padding:9px 12px; border:1px solid #efece3; font-weight:700;">' + esc(fmtDate(snapshot.dueDate)) + '</td></tr>' +
+      '</table>' +
+      '<p style="margin:0 0 18px; text-align:justify;">อันเป็นการผิดนัดชำระหนี้ตามสัญญาที่ตกลงกันไว้ บริษัทฯ จึงขอแจ้งให้ท่านนำเงินจำนวนดังกล่าวมาชำระให้แก่บริษัทฯ ให้แล้วเสร็จภายใน 3 วัน นับแต่วันที่ได้รับหนังสือฉบับนี้ โดยติดต่อชำระหรือสอบถามรายละเอียดเพิ่มเติมได้ที่ 061-4015044 ต่อ 108-109</p>' +
+      '<p style="margin:0 0 18px; text-align:justify;">หากพ้นกำหนดระยะเวลาดังกล่าวแล้ว ท่านยังมิได้ชำระหนี้ให้แก่บริษัทฯ บริษัทฯ ขอสงวนสิทธิ์ในการดำเนินการตามกฎหมายเพื่อรักษาสิทธิของบริษัทฯ ต่อไป โดยไม่ต้องแจ้งให้ทราบล่วงหน้าอีก ซึ่งรวมถึงแต่ไม่จำกัดเพียงการฟ้องร้องดำเนินคดีทางแพ่งเพื่อเรียกให้ชำระหนี้ต้นเงิน ดอกเบี้ยผิดนัดชำระ ค่าเสียหาย และค่าใช้จ่ายในการติดตามทวงถามและดำเนินคดีตามที่กฎหมายกำหนด</p>' +
+      '<p style="margin:0 0 40px; text-align:justify;">จึงเรียนมาเพื่อโปรดพิจารณาดำเนินการชำระหนี้โดยเร็ว ทั้งนี้เพื่อรักษาผลประโยชน์และเครดิตทางการเงินของท่านเอง</p>' +
+      '<div style="display:flex; justify-content:flex-end;">' +
+        '<div style="text-align:center; font-size:15px;">' +
+          '<div style="border-bottom:1px solid #1c1b19; width:220px; height:46px; margin-bottom:8px;"></div>' +
+          '<div style="font-weight:700;">แผนกบัญชีเร่งรัดหนี้สิน</div>' +
+          '<div style="color:#5b5750; font-size:13px;">บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="margin-top:40px; padding-top:16px; border-top:1px solid #efece3; font-size:12px; color:#5b5750; line-height:1.7;">หนังสือฉบับนี้จัดทำและจัดส่งโดยบริษัทฯ ในฐานะเจ้าหนี้ตามสัญญา มีวัตถุประสงค์เพื่อแจ้งเตือนการค้างชำระหนี้เท่านั้น หากท่านได้ชำระหนี้ดังกล่าวแล้วก่อนได้รับหนังสือฉบับนี้ โปรดถือว่าหนังสือฉบับนี้เป็นอันยกเลิก และขออภัยมา ณ ที่นี้</div>' +
+    '</div>';
+  }
+  // Uploaded straight to Supabase Storage (its own file, own small URL) rather than embedded as a
+  // base64 data URL inside state.json — that JSON blob is already ~20MB and every open browser tab
+  // re-downloads it every CLOUD_POLL_MS (12s); baking a multi-hundred-KB image into it would make
+  // that recurring cost permanent for a logo that basically never changes. Only the resulting URL
+  // string lives in state.letterheadImageUrl.
+  function onLetterheadFileChange(file) {
+    if (!file) return;
+    if (!/^image\//.test(file.type)) { state.uploadMsgLetterhead = '⚠️ กรุณาเลือกไฟล์รูปภาพ'; render(); return; }
+    if (!db) { state.uploadMsgLetterhead = '⚠️ ยังไม่ได้เชื่อมต่อฐานข้อมูลกลาง (Supabase)'; render(); return; }
+    if (file.size > 3 * 1024 * 1024) { state.uploadMsgLetterhead = '⚠️ ไฟล์ใหญ่เกินไป (จำกัด 3MB) กรุณาลดขนาดรูปก่อน'; render(); return; }
+    var ext = (String(file.name || '').split('.').pop() || 'png').toLowerCase().replace(/[^a-z0-9]/g, '') || 'png';
+    var path = 'assets/letterhead.' + ext;
+    state.uploadMsgLetterhead = '⏳ กำลังอัปโหลด...';
+    render();
+    db.storage.from(CLOUD_BUCKET).upload(path, file, { upsert: true, contentType: file.type, cacheControl: '0' }).then(function (res) {
+      if (res.error) throw res.error;
+      state.letterheadImageUrl = SUPABASE_URL + '/storage/v1/object/public/' + CLOUD_BUCKET + '/' + path;
+      state.hasUnsavedChanges = true;
+      state.uploadMsgLetterhead = '✅ อัปโหลดหัวฟอร์มสำเร็จ — ต้องกด "บันทึกการเปลี่ยนแปลง" ด้วยเพื่อบันทึกถาวร';
+      render();
+    }).catch(function (err) {
+      state.uploadMsgLetterhead = '⚠️ อัปโหลดไม่สำเร็จ: ' + err.message;
+      render();
+    });
+  }
+  // letterNo picks WHICH ครั้งที่ to (re)issue — either an existing number (a correction: reuses
+  // that ครั้งที่'s FROZEN snapshot figures and overwrites ONLY that ครั้งที่'s own file) or exactly
+  // one past the current max (a genuinely new ครั้งที่: takes a fresh live snapshot, uploads to a
+  // brand-new path, and is appended — never touches any earlier ครั้งที่'s file). Every ครั้งที่ gets
+  // its own permanent Storage path (letters/{orderId}-{no}.pdf), so issuing ครั้งที่ 3 can never
+  // collide with or overwrite ครั้งที่ 1/2's files — per explicit user request 2026-07-31, to stop a
+  // later, larger ยอดค้างชำระ from silently overwriting an earlier notice's already-correct figures.
+  function issueLetter(orderId, letterNo) {
+    if (state.letterIssuing) return;
+    var order = state.orders.find(function (o) { return o.orderId === orderId; });
+    if (!order) return;
+    var cvOrder = (CV.computedOrders || []).find(function (o) { return o.orderId === orderId; });
+    if (!cvOrder || (cvOrder.overdueCount || 0) < LETTER_MIN_OVERDUE_INSTALLMENTS) {
+      window.alert('ออกจดหมายทวงถามได้เฉพาะเมื่อค้างชำระ (จริง) ตั้งแต่ ' + LETTER_MIN_OVERDUE_INSTALLMENTS + ' งวดขึ้นไป');
+      return;
+    }
+    if (!db) { window.alert('ยังไม่ได้เชื่อมต่อฐานข้อมูลกลาง (Supabase) — ไม่สามารถบันทึกไฟล์ PDF ได้'); return; }
+    if (!window.html2canvas || !(window.jspdf && window.jspdf.jsPDF)) { window.alert('ไม่พบไลบรารีสร้าง PDF กรุณาลองรีเฟรชหน้าเว็บ'); return; }
+    var history = order.letterHistory || [];
+    var existing = history.find(function (h) { return h.no === letterNo; });
+    var nextNo = history.reduce(function (m, h) { return Math.max(m, h.no); }, 0) + 1;
+    if (!existing && letterNo !== nextNo) {
+      window.alert('เลือกได้เฉพาะครั้งที่มีอยู่แล้ว (แก้ไขของเดิม) หรือครั้งที่ ' + nextNo + ' (ครั้งใหม่) เท่านั้น');
+      return;
+    }
+    var snapshot = existing
+      ? { overdueCount: existing.overdueCount, amountDisp: existing.amountDisp, dueDate: existing.dueDate }
+      : { overdueCount: cvOrder.overdueCount, amountDisp: cvOrder.trueOverdueDisp, dueDate: latestOverdueDueDate(cvOrder) };
+    var confirmMsg = existing
+      ? 'ยืนยันออกจดหมายทวงถามหนี้ครั้งที่ ' + letterNo + ' ซ้ำ ให้ลูกค้า ' + cvOrder.customerName + ' ?\n\n' +
+        'จะใช้ยอดค้างชำระเดิมตอนออกครั้งนี้ครั้งแรก (฿' + existing.amountDisp + ' · ' + existing.overdueCount + ' งวด) ไม่ใช่ยอดปัจจุบัน — ไฟล์ PDF เดิมของครั้งที่ ' + letterNo + ' จะถูกแทนที่ ไฟล์ครั้งอื่นไม่ถูกกระทบ'
+      : 'ยืนยันออกจดหมายทวงถามหนี้ครั้งใหม่ (ครั้งที่ ' + letterNo + ') ให้ลูกค้า ' + cvOrder.customerName + ' ?\n\n' +
+        'ยอดค้างชำระปัจจุบัน ฿' + snapshot.amountDisp + ' · ' + snapshot.overdueCount + ' งวด — จะไม่กระทบไฟล์ครั้งก่อนหน้า';
+    if (!window.confirm(confirmMsg)) return;
+    state.letterIssuing = orderId;
+    render();
+    var container = document.createElement('div');
+    container.style.cssText = 'position:fixed; left:-99999px; top:0; z-index:-1;';
+    container.innerHTML = buildLetterHtml(cvOrder, letterNo, snapshot);
+    document.body.appendChild(container);
+    var imgEl = container.querySelector('img');
+    var ready = (imgEl && !imgEl.complete) ? new Promise(function (res) { imgEl.onload = res; imgEl.onerror = res; }) : Promise.resolve();
+    ready
+      .then(function () { return window.html2canvas(container, { scale: 2, useCORS: true, backgroundColor: '#ffffff' }); })
+      .then(function (canvas) {
+        var pdf = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4' });
+        var pageWidth = 210, pageHeight = 297;
+        var imgData = canvas.toDataURL('image/jpeg', 0.92);
+        var imgHeight = (canvas.height * pageWidth) / canvas.width;
+        var heightLeft = imgHeight, position = 0;
+        pdf.addImage(imgData, 'JPEG', 0, position, pageWidth, imgHeight);
+        heightLeft -= pageHeight;
+        while (heightLeft > 0) {
+          position = heightLeft - imgHeight;
+          pdf.addPage();
+          pdf.addImage(imgData, 'JPEG', 0, position, pageWidth, imgHeight);
+          heightLeft -= pageHeight;
+        }
+        return pdf.output('blob');
+      })
+      .then(function (blob) {
+        var path = 'letters/' + orderId.replace(/[^a-zA-Z0-9_-]/g, '_') + '-' + letterNo + '.pdf';
+        return db.storage.from(CLOUD_BUCKET).upload(path, blob, { upsert: true, contentType: 'application/pdf', cacheControl: '0' }).then(function (res) {
+          if (res.error) throw res.error;
+          return path;
+        });
+      })
+      .then(function (path) {
+        var url = SUPABASE_URL + '/storage/v1/object/public/' + CLOUD_BUCKET + '/' + path;
+        var entry = { no: letterNo, at: nowTimestamp(), url: url, overdueCount: snapshot.overdueCount, amountDisp: snapshot.amountDisp, dueDate: snapshot.dueDate };
+        var newHistory = existing
+          ? history.map(function (h) { return h.no === letterNo ? entry : h; })
+          : history.concat([entry]);
+        updateOrderField(orderId, 'letterHistory', newHistory);
+        state.letterIssuing = null;
+        if (container.parentNode) document.body.removeChild(container);
+        render();
+        window.alert((existing ? 'ออกจดหมายซ้ำ' : 'ออกจดหมายทวงถามหนี้') + 'สำเร็จ (ครั้งที่ ' + letterNo + ')');
+      })
+      .catch(function (err) {
+        state.letterIssuing = null;
+        if (container.parentNode) document.body.removeChild(container);
+        window.alert('เกิดข้อผิดพลาดขณะออกเอกสาร: ' + err.message);
+        render();
+      });
+  }
   // Marks a single งวด as cross-checked against the reference CRM (or un-marks it) — a manual QA
   // step staff run monthly per ครบกำหนด month, per user request 2026-07-30: without this, a
   // customer still overdue next month gets re-verified from scratch instead of just checking the
@@ -2524,6 +2703,46 @@
     if (!history || !history.length) return '';
     var last = history[history.length - 1];
     return '<span style="font-size:11px; color:#0b7a5b; font-weight:600; white-space:nowrap;">📩 ส่งล่าสุด ' + esc(last.at) + (history.length > 1 ? ' (×' + history.length + ')' : '') + '</span>';
+  }
+  // "สถานะจดหมายทวงถามหนี้" report-table pill — mirrors callStatusPill/smsStatusPill's visual
+  // language. Shows the HIGHEST ครั้งที่ (most escalated), not just whichever entry was touched most
+  // recently — re-issuing an old ครั้งที่ N to fix a typo shouldn't visually demote a later ครั้งที่
+  // N+1 that's already gone out.
+  function letterStatusPill(order) {
+    var history = order.letterHistory || [];
+    if (!history.length) return '<span style="color:#c3c0d6; font-size:12px;">—</span>';
+    var latest = history.reduce(function (m, h) { return (!m || h.no > m.no) ? h : m; }, null);
+    return '<span style="background:rgba(179,38,30,0.10); color:#b3261e; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap; display:inline-block;">📄 ' + esc(latest.at) + '</span>' +
+      '<div style="font-size:10.5px; color:#8a86a3; margin-top:4px;">ครั้งที่ ' + latest.no + '</div>';
+  }
+  // Order-card button + ครั้งที่ picker + per-ครั้งที่ history list. The <select> offers every
+  // EXISTING ครั้งที่ (labeled "แก้ไขของเดิม" — re-issuing keeps that ครั้งที่'s original frozen
+  // figures and overwrites only its own file) plus exactly one new number after the current max
+  // (labeled "ครั้งใหม่" — takes a fresh live snapshot, gets its own new file, never touches earlier
+  // ones). The button reads whichever option is selected at click time (see dispatcher).
+  function renderIssueLetterRow(ord) {
+    var eligible = (ord.overdueCount || 0) >= LETTER_MIN_OVERDUE_INSTALLMENTS;
+    var busy = state.letterIssuing === ord.orderId;
+    var history = (ord.letterHistory || []).slice().sort(function (a, b) { return a.no - b.no; });
+    var nextNo = history.reduce(function (m, h) { return Math.max(m, h.no); }, 0) + 1;
+    var options = history.map(function (h) {
+      return '<option value="' + h.no + '">ครั้งที่ ' + h.no + ' (แก้ไขของเดิม — ฿' + esc(h.amountDisp) + ')</option>';
+    }).join('') + '<option value="' + nextNo + '" selected>ครั้งที่ ' + nextNo + ' (ครั้งใหม่)</option>';
+    var selectHtml = '<select data-role="letterNoSelect"' + (!eligible || busy ? ' disabled' : '') + ' style="padding:6px 10px; border-radius:10px; border:1px solid rgba(179,38,30,0.25); background:#fff; font-size:12.5px; color:#2b2540;">' + options + '</select>';
+    var btn = '<button data-action="issueLetter" data-order="' + esc(ord.orderId) + '"' + (!eligible || busy ? ' disabled' : '') +
+      ' title="' + (eligible ? 'ออกจดหมายทวงถามหนี้ (PDF) ตามครั้งที่เลือกไว้' : 'ต้องค้างชำระจริงอย่างน้อย ' + LETTER_MIN_OVERDUE_INSTALLMENTS + ' งวด (ตอนนี้ ' + (ord.overdueCount || 0) + ' งวด)') + '"' +
+      ' style="border:none; background:' + (eligible && !busy ? 'linear-gradient(135deg,#b3261e,#8f1d17)' : '#c3c0d6') + '; color:#fff; padding:6px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:' + (eligible && !busy ? 'pointer' : 'not-allowed') + '; white-space:nowrap;">' +
+      (busy ? '⏳ กำลังสร้าง...' : '📄 ออกเอกสาร') + '</button>';
+    var historyList = !history.length ? '' :
+      '<div style="display:flex; flex-direction:column; gap:4px; margin-top:8px;">' +
+        history.slice().reverse().map(function (h) {
+          return '<div style="font-size:11.5px; color:#8a86a3;">ครั้งที่ ' + h.no + ' · ' + esc(h.at) + ' · ฿' + esc(h.amountDisp) + ' (' + h.overdueCount + ' งวด) · <a href="' + esc(h.url) + '" target="_blank" rel="noopener" style="color:#7c5cff; font-weight:600; text-decoration:none;">⬇ ดาวน์โหลด</a></div>';
+        }).join('') +
+      '</div>';
+    return '<div data-letter-row="' + esc(ord.orderId) + '" style="margin-bottom:14px;">' +
+      '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">' + selectHtml + btn + '</div>' +
+      historyList +
+    '</div>';
   }
   // An early full-settlement payment often gets recorded entirely against ONE งวด (e.g. "ยอดชำระ
   // ปิดยอด" landing on งวดที่ 5 while งวด 6-12 still show 0), leaving the rest of the schedule stuck
@@ -3413,6 +3632,14 @@
       card('📁 ข้อมูลลูกหนี้ / ตารางผ่อนชำระ', 'คอลัมน์: รหัสลูกค้า, ชื่อลูกค้า, คำสั่งซื้อ, วันที่ออกสัญญา, รายการสินค้า, ยอดวางดาวน์, ส่วนลด, ประเภทการซื้อ, งวดที่, วันครบกำหนดชำระ, ยอดผ่อนต่องวด<br><span style="color:#0b7a5b;">อัปซ้ำได้ — ยอดชำระที่บันทึกไว้จะไม่ถูกล้าง</span>', 'debt', 'debtFileInputTop', 'onDebtFile', state.uploadMsgDebt) +
       card('💳 ข้อมูลยอดชำระเงิน', 'คอลัมน์: คำสั่งซื้อ, งวดที่, ยอดที่ชำระจริง, วันที่ชำระ, สถานะการชำระเงิน (ถ้ามี), ส่วนลด (ถ้ามี), หมายเหตุ (ถ้ามี)<br><span style="color:#0b7a5b;">โหมดบวกเพิ่ม — ควรใส่ “วันที่ชำระ” ทุกแถวเพื่อให้ระบบกันการบวกซ้ำได้แม่นยำ</span><br><span style="color:#6b6785;">รองรับไฟล์ประวัติสถานะจากระบบเก่า (มีคอลัมน์ “timestamp”) โดยอัตโนมัติ — จะตั้งค่าล่าสุดแทนการบวกสะสม</span>', 'payment', 'paymentFileInputTop', 'onPaymentFile', state.uploadMsgPayment) +
       card('📇 ข้อมูลลูกค้าเพิ่มเติม (เบอร์โทร/บุคคลอ้างอิง)', 'คอลัมน์: เลขที่สัญญา, ชื่อ-นามสกุลลูกค้า, เลข SO, รหัสลูกค้า, เบอร์ติดต่อลูกค้า, วันเวลาที่ส่งเครื่อง, ชื่อบุคคลอ้างอิง, เบอร์ติดต่อบุคคลอ้างอิง<br><span style="color:#0b7a5b;">จับคู่กับข้อมูลลูกหนี้ด้วยเลข SO ก่อน ตามด้วยรหัสลูกค้า แล้วจึงชื่อลูกค้า — อัปซ้ำได้ ค่าใหม่แทนที่ค่าเดิม</span>', 'customerinfo', 'customerInfoFileInputTop', 'onCustomerInfo', state.uploadMsgCustomerInfo) +
+      '<div style="background:rgba(255,255,255,0.55); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.8); border-radius:20px; padding:22px 24px; box-shadow:0 8px 30px rgba(124,92,255,0.10);">' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:16px; color:#2b2540; margin-bottom:10px;">🖼 หัวฟอร์มจดหมายทวงถามหนี้</div>' +
+        '<div style="font-size:12.5px; color:#6b6785; margin-bottom:14px; line-height:1.6;">รูปหัวกระดาษ (โลโก้+ที่อยู่บริษัท) ที่จะแทรกบนสุดของ PDF จดหมายทวงถามหนี้ทุกฉบับ — อัปโหลดครั้งเดียวใช้ได้กับทุก SO<br><span style="color:#0b7a5b;">ยังไม่อัปโหลด: จะใช้ชื่อบริษัทแบบตัวอักษรธรรมดาแทนไปก่อน</span></div>' +
+        (state.letterheadImageUrl ? '<img src="' + esc(state.letterheadImageUrl) + '" style="max-width:100%; max-height:110px; display:block; margin-bottom:14px; border:1px solid rgba(124,92,255,0.15); border-radius:8px;" />' : '') +
+        '<label for="letterheadFileInputTop" style="display:inline-flex; align-items:center; gap:8px; background:linear-gradient(135deg,#7c5cff,#6647e0); color:#fff; padding:10px 20px; border-radius:12px; font-size:14px; font-weight:600; cursor:pointer; box-shadow:0 6px 16px rgba(124,92,255,0.35);">⬆ ' + (state.letterheadImageUrl ? 'เปลี่ยนรูปหัวฟอร์ม' : 'อัปโหลดรูปหัวฟอร์ม') + '</label>' +
+        '<input id="letterheadFileInputTop" type="file" accept="image/*" data-action="onLetterheadFile" style="display:none;" />' +
+        (state.uploadMsgLetterhead ? '<div style="margin-top:10px; font-size:13px; color:' + (state.uploadMsgLetterhead.indexOf('⚠️') >= 0 ? '#a5620d' : '#4b3fa0') + '; white-space:pre-line; line-height:1.65;">' + esc(state.uploadMsgLetterhead) + '</div>' : '') +
+      '</div>' +
     '</div>';
   }
 
@@ -3788,6 +4015,17 @@
       (order.callLatestNote ? '<div style="font-size:10.5px; color:#8a86a3; margin-top:4px; max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-left:auto; margin-right:auto;">' + esc(order.callLatestNote) + '</div>' : '');
   }
   function smsStatusPill(order) {
+    // Same list the 🔔 banner reads (CV.pendingSmsReminders) — an order with a งวด currently due
+    // for its next escalation stage gets an actionable badge right in this column, not just in the
+    // banner. Clicking it opens the same ส่ง SMS modal pre-selected; once sent, the next render's
+    // computePendingSmsReminders no longer includes this งวด (its new smsHistory entry satisfies
+    // that stage), so the badge automatically reverts to the plain "last sent" pill below — no
+    // separate "mark as done" step needed.
+    var pending = (CV.pendingSmsReminders || []).find(function (r) { return r.orderId === order.orderId; });
+    if (pending) {
+      return '<button data-action="openSendSms" data-level="installment" data-order="' + esc(pending.orderId) + '" data-no="' + pending.no + '" data-track="' + pending.track + '" data-template="' + esc(pending.templateId) + '" title="ครบกำหนดส่งตั้งแต่ ' + esc(pending.dueSinceDisp) + '" style="border:none; background:rgba(240,140,0,0.14); color:#c2650a; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap; cursor:pointer;">🔔 ควรส่ง ' + esc(pending.templateName) + '</button>' +
+        (order.smsLatestAt ? '<div style="font-size:10px; color:#8a86a3; margin-top:4px;">ส่งล่าสุด ' + esc(order.smsLatestAt) + '</div>' : '');
+    }
     if (!order.smsLatestAt) return '<span style="color:#c3c0d6; font-size:12px;">—</span>';
     return '<span style="background:rgba(12,166,120,0.10); color:#0b7a5b; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap; display:inline-block;">📱 ' + esc(order.smsLatestAt) + '</span>' +
       (order.smsLatestTemplate ? '<div style="font-size:10.5px; color:#8a86a3; margin-top:4px;">' + esc(order.smsLatestTemplate) + '</div>' : '');
@@ -3946,9 +4184,9 @@
       var pageStart = (page - 1) * pageSize;
       var pageRows = CV.filteredOrders.slice(pageStart, pageStart + pageSize);
       html += '<div style="background:rgba(255,255,255,0.55); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.8); border-radius:20px; padding:6px; margin-bottom:28px; box-shadow:0 8px 30px rgba(124,92,255,0.08); overflow-x:auto;">' +
-        '<table style="width:100%; border-collapse:collapse; min-width:1080px;"><thead><tr style="text-align:left; font-size:11.5px; color:#7c5cff; text-transform:uppercase; letter-spacing:0.4px; border-bottom:2px solid rgba(124,92,255,0.14);">' +
+        '<table style="width:100%; border-collapse:collapse; min-width:1220px;"><thead><tr style="text-align:left; font-size:11.5px; color:#7c5cff; text-transform:uppercase; letter-spacing:0.4px; border-bottom:2px solid rgba(124,92,255,0.14);">' +
           ['รหัสลูกค้า','ชื่อลูกค้า','สถานะบัญชี','คำสั่งซื้อ','วันที่ทำสัญญา'].map(function (h) { return '<th style="padding:14px 16px; font-weight:700;">' + h + '</th>'; }).join('') +
-          ['ยอดค้างชำระ','งวดค้าง','ตรวจสอบ CRM','สถานะการโทร','สถานะส่ง SMS'].map(function (h) { return '<th style="padding:14px 16px; font-weight:700; text-align:center;">' + h + '</th>'; }).join('') +
+          ['ยอดค้างชำระ','งวดค้าง','ตรวจสอบ CRM','สถานะการโทร','สถานะส่ง SMS','สถานะจดหมายทวงถาม'].map(function (h) { return '<th style="padding:14px 16px; font-weight:700; text-align:center;">' + h + '</th>'; }).join('') +
         '</tr></thead><tbody>' +
           pageRows.map(function (order) {
             return '<tr data-action="selectCustomer" data-cid="' + esc(customerKey(order)) + '" style="cursor:pointer; font-size:13.5px; color:#2b2540; border-top:1px solid rgba(124,92,255,0.08);">' +
@@ -3962,6 +4200,7 @@
               '<td style="padding:14px 16px; text-align:center;">' + crmStatusPill(order) + '</td>' +
               '<td style="padding:14px 16px; text-align:center;">' + callStatusPill(order) + '</td>' +
               '<td style="padding:14px 16px; text-align:center;">' + smsStatusPill(order) + '</td>' +
+              '<td style="padding:14px 16px; text-align:center;">' + letterStatusPill(order) + '</td>' +
             '</tr>';
           }).join('') +
         '</tbody></table>' +
@@ -4242,6 +4481,7 @@
           (ord.isSold ? '<div style="background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">📤 จำหน่ายชื่อให้บริษัทติดตามหนี้</div>' : '') +
           (ord.isCancelled ? '<div style="background:' + hexToRgba('#4b5563', 0.14) + '; color:#4b5563; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">↩️ ยกเลิกสัญญา คืนเครื่อง</div>' : '') +
         '</div>' +
+        renderIssueLetterRow(ord) +
         '<div style="display:grid; grid-template-columns:2fr 1fr; gap:16px; margin-bottom:16px;">' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">📦 รายการสินค้า' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:600; color:#2b2540;">' + esc(ord.productList) + '</div></div>' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">🏷 ราคาสินค้า</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.productPrice)) + '" data-order-field="productPrice" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#2b2540; background:#fff; outline:none;" /></div>' +
@@ -4579,6 +4819,12 @@
         case 'toggleSmsManaging': state.smsModalManaging = !state.smsModalManaging; render(); break;
         case 'addSmsTemplate': addSmsTemplate(); break;
         case 'deleteSmsTemplate': deleteSmsTemplate(t.getAttribute('data-tpl')); break;
+        case 'issueLetter': {
+          var letterRow = t.closest('[data-letter-row]');
+          var letterSel = letterRow && letterRow.querySelector('[data-role="letterNoSelect"]');
+          issueLetter(t.getAttribute('data-order'), letterSel ? Number(letterSel.value) : null);
+          break;
+        }
         case 'saveCallLog': saveCallLog(); break;
         case 'toggleCallHistory': state.callHistoryOpen = !state.callHistoryOpen; render(); break;
       }
@@ -4638,6 +4884,7 @@
         case 'onDebtFile': onDebtFileChange(t.files[0]); t.value = ''; break;
         case 'onPaymentFile': onPaymentFileChange(t.files[0]); t.value = ''; break;
         case 'onCustomerInfo': onCustomerInfoFileChange(t.files[0]); t.value = ''; break;
+        case 'onLetterheadFile': onLetterheadFileChange(t.files[0]); t.value = ''; break;
         case 'smsModalPhone': state.smsModalPhone = t.value; break;
         case 'smsModalDraft': state.smsModalDraft = t.value; break;
         case 'smsModalTemplate': selectSmsTemplate(t.value); break;
