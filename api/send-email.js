@@ -8,9 +8,12 @@
 // Email console (thaibulkmail.com) using these merge tags:
 // {{CUSTOMER_NAME}} {{AMOUNT}} {{DUE_DATE}} {{PDF_LINK}} {{LETTER_NO}} {{ORDER_ID}}
 //
-// Auth: per Thaibulksms (2026-07-31), the SAME API Key/Secret already used for SMS (THAIBULKSMS_API_KEY
-// / THAIBULKSMS_API_SECRET) works here too — both services were enabled under one credential pair,
-// so this reuses those instead of needing a separate Email-only key.
+// Auth: uses a DEDICATED API Key/Secret pair (THAIBULKSMS_EMAIL_API_KEY / THAIBULKSMS_EMAIL_API_SECRET),
+// created via API Key > "ประเภท API: อีเมล" in the Thaibulksms console, not the shared
+// THAIBULKSMS_API_KEY/SECRET used for SMS. Reverted to this (2026-08-01) after payload shape, sender
+// casing, template choice, credit balance, and link-vs-plain-text all ruled out as the cause of a
+// persistent 500 "internal error" on every send attempt — testing whether a key created under the
+// SMS "ประเภท API" type (even though the account has both services enabled) is itself the problem.
 //
 // Request shape: Thaibulksms's own developer PDF (assets.thaibulksms.com/documents/developer-manual/
 // nwc/email-api-th.pdf, dated 2024-01-10) documents template_id/Payload/mail_to:string — but the
@@ -29,8 +32,8 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const apiKey = process.env.THAIBULKSMS_API_KEY;
-  const apiSecret = process.env.THAIBULKSMS_API_SECRET;
+  const apiKey = process.env.THAIBULKSMS_EMAIL_API_KEY;
+  const apiSecret = process.env.THAIBULKSMS_EMAIL_API_SECRET;
   const templateId = process.env.THAIBULKSMS_EMAIL_TEMPLATE_ID;
   // Thaibulksms's sender list stores/verifies the address lowercase (confirmed 2026-08-01 — the
   // console shows "debtcollection@salmonphone.com" while the env var was originally typed with
@@ -38,7 +41,7 @@ module.exports = async function handler(req, res) {
   // because of how this got typed into Vercel.
   const senderName = (process.env.THAIBULKSMS_EMAIL_SENDER_NAME || '').trim().toLowerCase();
   if (!apiKey || !apiSecret || !templateId || !senderName) {
-    res.status(500).json({ error: 'Thaibulksms Email API ยังไม่ได้ตั้งค่าบน server (THAIBULKSMS_API_KEY / THAIBULKSMS_API_SECRET / THAIBULKSMS_EMAIL_TEMPLATE_ID / THAIBULKSMS_EMAIL_SENDER_NAME)' });
+    res.status(500).json({ error: 'Thaibulksms Email API ยังไม่ได้ตั้งค่าบน server (THAIBULKSMS_EMAIL_API_KEY / THAIBULKSMS_EMAIL_API_SECRET / THAIBULKSMS_EMAIL_TEMPLATE_ID / THAIBULKSMS_EMAIL_SENDER_NAME)' });
     return;
   }
 
