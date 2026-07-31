@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-31.6';
+  var APP_BUILD = '2026-07-31.7';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -3366,7 +3366,15 @@
     var active = orders.filter(function (o) { return !o.isCancelled && !o.isSold && !isCustomerTrackingReturn(o); });
     var b = { due7: 0, due3: 0, dueToday: 0, od10: 0, od30: 0, odOver30: 0 };
     active.forEach(function (o) {
-      var cur = o.installments.find(function (i) { return i.effectiveStatus !== 'ชำระแล้ว'; });
+      // When a per-งวด filter (ครบกำหนดตั้งแต่-ถึง / สถานะการชำระ) is active, computeView() attaches
+      // filteredInstallments — only the งวด that actually matched (see exportFilteredCsv for the same
+      // pattern). Bucketing off the unfiltered o.installments here instead used to pick each order's
+      // overall earliest-unpaid งวด regardless of the filter — so an order with an old unrelated
+      // overdue งวด PLUS a separate งวด that matched, say, "ครบกำหนด 30/07/2026" got bucketed by the
+      // OLD งวด's age instead, showing up under "เกินกำหนดมากกว่า 30 วัน" even though every row in the
+      // filtered table above it was exactly 1 day overdue (user report 2026-07-31).
+      var pool = o.filteredInstallments || o.installments;
+      var cur = pool.find(function (i) { return i.effectiveStatus !== 'ชำระแล้ว'; });
       if (!cur) return;
       var d = dueDiffDays(cur);
       if (d === null) return;
