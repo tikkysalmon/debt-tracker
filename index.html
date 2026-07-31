@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-31.12';
+  var APP_BUILD = '2026-07-31.14';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -3949,19 +3949,22 @@
     var trackingReturnTagHtml = trActive
       ? '<button data-action="toggleCustomerTrackingReturn" title="คลิกเพื่อยกเลิกแท็กนี้" style="border:none; cursor:pointer; background:' + hexToRgba('#0b7285', 0.14) + '; color:#0b7285; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">🔎 ติดตามเครื่องคืน' + (trAt ? ' · อัปเดตล่าสุด ' + esc(trAt) : '') + '</button>'
       : '<button data-action="toggleCustomerTrackingReturn" title="คลิกเพื่อติดแท็กติดตามเครื่องคืน" style="border:1px dashed rgba(11,114,133,0.45); cursor:pointer; background:transparent; color:#0b7285; padding:2px 11px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">+ ติดตามเครื่องคืน</button>';
-    // Quick-glance contact summary from "ข้อมูลลูกค้าเพิ่มเติม" upload (เลขที่สัญญา/เบอร์ติดต่อ
-    // ลูกค้า/วันเวลาที่ส่งเครื่อง/บุคคลอ้างอิง) — customer-level in the UI even though the fields
-    // live per-order, since almost every customer here only has one order carrying this data; picks
-    // whichever order actually has it (falling back to the first order) rather than always order[0].
+    // Contact info from "ข้อมูลลูกค้าเพิ่มเติม" upload (เลขที่สัญญา/เบอร์ติดต่อลูกค้า/วันเวลาที่ส่ง
+    // เครื่อง/บุคคลอ้างอิง) — edited here at customer-header level only (per user request, moved out
+    // of the per-order/SO card below); the fields still live on a specific order underneath, so
+    // picks whichever order actually has data (falling back to the first order) to edit.
     var contactOrders = CV.selectedCustomerOrders || [];
     var contactOrder = contactOrders.find(function (o) { return o.contractNo || o.phone || o.shippedAt || o.referenceName || o.referencePhone; }) || contactOrders[0];
-    var contactSummaryHtml = !contactOrder ? '' :
-      '<div style="border-top:1px solid rgba(124,92,255,0.10); padding-top:14px; margin-top:14px; display:flex; flex-wrap:wrap; gap:18px; align-items:center;">' +
-        '<div style="font-size:12.5px; color:#6b6785;">📄 เลขที่สัญญา: <span style="color:#2b2540; font-weight:600;">' + (contactOrder.contractNo ? esc(contactOrder.contractNo) : '—') + '</span></div>' +
-        '<div style="font-size:12.5px; color:#6b6785; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">📱 เบอร์ติดต่อลูกค้า: <span style="color:#2b2540; font-weight:600;">' + (contactOrder.phone ? esc(contactOrder.phone) : '—') + '</span>' +
-          renderSendSmsButton('order', contactOrder.orderId, null, null, '📱 ส่ง SMS ทวงหนี้') + smsLastSentBadge(contactOrder.smsHistory) + '</div>' +
-        '<div style="font-size:12.5px; color:#6b6785;">🚚 วันเวลาที่ส่งเครื่อง: <span style="color:#2b2540; font-weight:600;">' + (contactOrder.shippedAt ? esc(fmtDate(contactOrder.shippedAt)) : '—') + '</span></div>' +
-        '<div style="font-size:12.5px; color:#6b6785;">👤 บุคคลอ้างอิง: <span style="color:#2b2540; font-weight:600;">' + (contactOrder.referenceName ? esc(contactOrder.referenceName) : '—') + (contactOrder.referencePhone ? ' (' + esc(contactOrder.referencePhone) + ')' : '') + '</span></div>' +
+    var contactFieldHtml = !contactOrder ? '' :
+      '<div style="border-top:1px solid rgba(124,92,255,0.10); padding-top:14px; margin-top:14px;">' +
+        '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:14px;">' +
+          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">📄 เลขที่สัญญา</div><input type="text" value="' + esc(contactOrder.contractNo || '') + '" data-order-field="contractNo" data-order="' + esc(contactOrder.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
+          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">📱 เบอร์ติดต่อลูกค้า</div><input type="text" value="' + esc(contactOrder.phone || '') + '" data-order-field="phone" data-order="' + esc(contactOrder.orderId) + '" placeholder="ยังไม่มีเบอร์ (คั่นหลายเบอร์ด้วย /)" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" />' +
+            '<div style="margin-top:6px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">' + renderSendSmsButton('order', contactOrder.orderId, null, null, '📱 ส่ง SMS ทวงหนี้') + smsLastSentBadge(contactOrder.smsHistory) + '</div></div>' +
+          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">🚚 วันเวลาที่ส่งเครื่อง</div><input type="date" value="' + esc(contactOrder.shippedAt || '') + '" data-order-field="shippedAt" data-order="' + esc(contactOrder.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
+          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">👤 ชื่อบุคคลอ้างอิง</div><input type="text" value="' + esc(contactOrder.referenceName || '') + '" data-order-field="referenceName" data-order="' + esc(contactOrder.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
+          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">📱 เบอร์ติดต่อบุคคลอ้างอิง</div><input type="text" value="' + esc(contactOrder.referencePhone || '') + '" data-order-field="referencePhone" data-order="' + esc(contactOrder.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
+        '</div>' +
       '</div>';
     var html = '<div id="customerDetailModal" style="position:fixed; inset:0; z-index:9999; background:rgba(43,37,64,0.35); display:flex; align-items:flex-start; justify-content:center; padding:30px 20px; overflow-y:auto;">' +
       '<div style="max-width:1100px; width:100%; background:rgba(255,255,255,0.97); backdrop-filter:blur(24px); -webkit-backdrop-filter:blur(24px); border:1px solid rgba(255,255,255,0.85); border-radius:24px; padding:28px 30px; box-shadow:0 24px 60px rgba(43,37,64,0.3); margin-bottom:30px;">' +
@@ -3986,7 +3989,7 @@
         '<div style="display:flex; align-items:center; gap:10px; flex-shrink:0;">' + renderSaveButton(false) +
         '<button data-action="closeDetail" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; padding:8px 16px; border-radius:20px; font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap;">✕ ปิด</button></div>' +
       '</div>' +
-      contactSummaryHtml +
+      contactFieldHtml +
       '<div style="border-top:1px solid rgba(124,92,255,0.10); padding-top:16px; margin-bottom:22px;">' +
         '<div style="font-size:12.5px; color:#6b6785; font-weight:600; margin-bottom:6px; display:flex; align-items:center; gap:6px;">📝 หมายเหตุ</div>' +
         (CV.customerNoteSaved ? '<div style="font-size:13.5px; color:#2b2540; margin-bottom:8px; background:rgba(124,92,255,0.05); padding:8px 12px; border-radius:10px;">' + esc(CV.customerNoteSaved) + '</div>' : '') +
@@ -4021,14 +4024,6 @@
           '<div style="background:rgba(240,140,0,0.12); color:#c2650a; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">' + esc(ord.purchaseType) + '</div>' +
           (ord.isSold ? '<div style="background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">📤 จำหน่ายชื่อให้บริษัทติดตามหนี้</div>' : '') +
           (ord.isCancelled ? '<div style="background:' + hexToRgba('#4b5563', 0.14) + '; color:#4b5563; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">↩️ ยกเลิกสัญญา คืนเครื่อง</div>' : '') +
-        '</div>' +
-        '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:14px; margin-bottom:14px; padding:14px 16px; background:rgba(124,92,255,0.05); border-radius:14px;">' +
-          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">📄 เลขที่สัญญา</div><input type="text" value="' + esc(ord.contractNo || '') + '" data-order-field="contractNo" data-order="' + esc(ord.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
-          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">📱 เบอร์ติดต่อลูกค้า</div><input type="text" value="' + esc(ord.phone || '') + '" data-order-field="phone" data-order="' + esc(ord.orderId) + '" placeholder="ยังไม่มีเบอร์ (คั่นหลายเบอร์ด้วย /)" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" />' +
-            '<div style="margin-top:6px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">' + renderSendSmsButton('order', ord.orderId, null, null, '📱 ส่ง SMS ทวงหนี้') + smsLastSentBadge(ord.smsHistory) + '</div></div>' +
-          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">🚚 วันเวลาที่ส่งเครื่อง</div><input type="date" value="' + esc(ord.shippedAt || '') + '" data-order-field="shippedAt" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
-          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">👤 ชื่อบุคคลอ้างอิง</div><input type="text" value="' + esc(ord.referenceName || '') + '" data-order-field="referenceName" data-order="' + esc(ord.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
-          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">📱 เบอร์ติดต่อบุคคลอ้างอิง</div><input type="text" value="' + esc(ord.referencePhone || '') + '" data-order-field="referencePhone" data-order="' + esc(ord.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
         '</div>' +
         '<div style="display:grid; grid-template-columns:2fr 1fr; gap:16px; margin-bottom:16px;">' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">📦 รายการสินค้า' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:600; color:#2b2540;">' + esc(ord.productList) + '</div></div>' +
