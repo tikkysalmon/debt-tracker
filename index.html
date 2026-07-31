@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-31.2';
+  var APP_BUILD = '2026-07-31.3';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -207,10 +207,13 @@
     // cfg.lockDays/screenDays days are a grace COUNT after the due date (เช่น ครบกำหนด 15, นับ 16-20
     // เป็น 5 วัน) — the status only changes on the day AFTER that count finishes (วันที่ 21), hence
     // strictly-greater-than here rather than >=, which would have flipped the status a day early
-    // (on the last day still being counted, วันที่ 20).
+    // (on the last day still being counted, วันที่ 20). ล็อคเครื่อง/เปลี่ยนภาพพักหน้าจอ thresholds are
+    // unchanged per user request 2026-07-31 — only day 1 changed, from ค้างชำระ to เกินกำหนดชำระ (per
+    // user request 2026-07-31: the very next day after the due date should already read as เกิน
+    // กำหนดชำระ). Both statuses already share the same "ค้างชำระ" STATUS_GROUP_META bucket, so this
+    // is purely a label/color change on day 1 — no KPI/total is affected.
     if (diffDays > cfg.lockDays) return 'ล็อคเครื่อง';
     if (diffDays > cfg.screenDays) return 'เปลี่ยนภาพพักหน้าจอ';
-    if (diffDays === 1) return 'ค้างชำระ';
     return 'เกินกำหนดชำระ';
   }
   // One-time self-heal for data already corrupted by an earlier bug: regular payment-file imports
