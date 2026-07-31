@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-31.3';
+  var APP_BUILD = '2026-07-31.4';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -83,7 +83,8 @@
     'หนี้สงสัยจะสูญ': { color: '#9c1f4a', order: 8 },
     'จำหน่ายชื่อให้บริษัทติดตามหนี้': { color: '#7c5cff', order: 9 },
     'ยกเลิกสัญญา คืนเครื่อง': { color: '#4b5563', order: 10 },
-    'ค้างชำระ ล็อคเครื่องไม่ได้': { color: '#9a4b1f', order: 11 }
+    'ติดตามเครื่องคืน': { color: '#0b7285', order: 11 },
+    'ค้างชำระ ล็อคเครื่องไม่ได้': { color: '#9a4b1f', order: 12 }
   };
   var STATUS_OPTIONS = Object.keys(STATUS_META).sort(function (a, b) { return STATUS_META[a].order - STATUS_META[b].order; });
   // Grouping for the dashboard's "แยกสถานะการชำระ" widget only — every other place in the app
@@ -112,7 +113,7 @@
   // dueDate alone. See PAYMENT_CLEARS_OVERRIDE_STATUSES below for how this override still expires
   // once the customer actually pays the งวด, unlike the other manual-only statuses which need a
   // staff member to click "รีเซ็ตสถานะเป็นอัตโนมัติ" (⟲) to clear.
-  var MANUAL_ONLY_STATUSES = { 'หนี้สงสัยจะสูญ': true, 'จำหน่ายชื่อให้บริษัทติดตามหนี้': true, 'ยกเลิกสัญญา คืนเครื่อง': true, 'ค้างชำระ ล็อคเครื่องไม่ได้': true, 'เปลี่ยนภาพพักหน้าจอ': true };
+  var MANUAL_ONLY_STATUSES = { 'หนี้สงสัยจะสูญ': true, 'จำหน่ายชื่อให้บริษัทติดตามหนี้': true, 'ยกเลิกสัญญา คืนเครื่อง': true, 'ค้างชำระ ล็อคเครื่องไม่ได้': true, 'เปลี่ยนภาพพักหน้าจอ': true, 'ติดตามเครื่องคืน': true };
   // A statusOverride for one of these becomes stale the moment the งวด itself receives any
   // payment (amountPaid > 0) — that's the signal the customer settled the outstanding installment,
   // so the manual hold should release on its own instead of needing a staff member to notice and
@@ -963,6 +964,7 @@
       // account-status badge disappear — see stickyAccountStatusPatch for why.
       var isCancelled = !!o.wasCancelled || allInstallments.some(function (i) { return i.effectiveStatus === 'ยกเลิกสัญญา คืนเครื่อง'; });
       var isSold = !!o.wasSold || allInstallments.some(function (i) { return i.effectiveStatus === 'จำหน่ายชื่อให้บริษัทติดตามหนี้'; });
+      var isTrackingReturn = !!o.wasTrackingReturn || allInstallments.some(function (i) { return i.effectiveStatus === 'ติดตามเครื่องคืน'; });
       // "ยอดค้างชำระ"/"งวดค้าง" on the due-report table (renderTracking) must mean ONLY the 5
       // statuses staff actually consider "ค้างชำระจริงๆ" (the STATUS_GROUP_META 'ค้างชำระ' group —
       // same grouping the "แยกสถานะการชำระ" dashboard widget already uses), NOT every unpaid งวด.
@@ -1020,6 +1022,8 @@
         crmVerifiedCount: crmVerifiedCount, crmStatus: crmStatus, crmVerifiedLatestAt: crmVerifiedLatestAt,
         isCancelled: isCancelled,
         isSold: isSold,
+        isTrackingReturn: isTrackingReturn,
+        trackingReturnAt: o.trackingReturnAt || '',
         lateCount: lateInsts.length,
         lateOutstandingRaw: lateOutstandingRaw,
         installmentCount: installments.length,
@@ -1029,7 +1033,7 @@
   }
 
   function computeDashboard(orders) {
-    var activeOrders = orders.filter(function (o) { return !o.isCancelled && !o.isSold; });
+    var activeOrders = orders.filter(function (o) { return !o.isCancelled && !o.isSold && !o.isTrackingReturn; });
     var cancelledOrders = orders.filter(function (o) { return o.isCancelled; });
     var soldOrders = orders.filter(function (o) { return o.isSold; });
 
@@ -1241,7 +1245,7 @@
     });
     var purchaseTypeGroups = Object.keys(ptMap).map(function (type) {
       var list = ptMap[type].orders;
-      var activeList = list.filter(function (o) { return !o.isCancelled && !o.isSold; });
+      var activeList = list.filter(function (o) { return !o.isCancelled && !o.isSold && !o.isTrackingReturn; });
       var cancelledList = list.filter(function (o) { return o.isCancelled; });
       var soldList = list.filter(function (o) { return o.isSold; });
       var contractRaw = list.reduce(function (s, o) { return s + o.totalContractRaw; }, 0);
@@ -1387,7 +1391,8 @@
       filteredOrders = filteredOrders.filter(function (o) {
         if (f.filterAccountStatus === 'cancelled') return o.isCancelled;
         if (f.filterAccountStatus === 'sold') return o.isSold;
-        return !o.isCancelled && !o.isSold;
+        if (f.filterAccountStatus === 'trackingReturn') return o.isTrackingReturn;
+        return !o.isCancelled && !o.isSold && !o.isTrackingReturn;
       });
     }
     // Combine main + accessory (ดาวน์+อุปกรณ์เสริม) installments for every per-installment filter
@@ -1416,7 +1421,7 @@
     }
     if (f.filterGrade !== 'all') {
       filteredOrders = filteredOrders.filter(function (o) {
-        if (o.isCancelled || o.isSold) return false;
+        if (o.isCancelled || o.isSold || o.isTrackingReturn) return false;
         var g = o.lateCount === 0 ? 'A' : o.lateCount === 1 ? 'B' : 'หนี้สงสัยจะสูญ';
         return g === f.filterGrade;
       });
@@ -1499,7 +1504,7 @@
     // ปิดยอด — ยอดคงเหลือรวมทุกบิลของลูกค้าคนนี้เป็น 0 แล้ว (จ่ายครบ/ปิดยอดแล้วทุกสัญญา)
     var selectedCustomerFullySettled = hasSelectedCustomer && selectedCustomerOrders.reduce(function (s, o) { return s + o.totalOutstandingRaw; }, 0) <= 0.005;
     if (hasSelectedCustomer) {
-      var activeSel = selectedCustomerOrders.filter(function (o) { return !o.isCancelled && !o.isSold; });
+      var activeSel = selectedCustomerOrders.filter(function (o) { return !o.isCancelled && !o.isSold && !o.isTrackingReturn; });
       if (activeSel.some(function (o) { return o.lateCount >= 2; })) selectedCustomerGrade = 'หนี้สงสัยจะสูญ';
       else if (activeSel.some(function (o) { return o.lateCount === 1; })) selectedCustomerGrade = 'B';
     }
@@ -1672,9 +1677,15 @@
   // ชำระแล้ว — the whole point is tracking how much a sold-to-collections customer has since paid,
   // not losing that history the moment one งวด looks current again. See isSold/isCancelled below,
   // which OR this sticky flag in with the live installment check.
+  // ติดตามเครื่องคืน (added 2026-07-31, per user request) is a staff-entered account tag for
+  // customers whose device is being actively chased down for return — staff need to pull a report
+  // of exactly these accounts, so it's tracked the same sticky way (isTrackingReturn below) and also
+  // stamps trackingReturnAt with nowTimestamp() every time it's (re-)selected, so staff can see when
+  // this tag was last updated rather than just that it's set.
   function stickyAccountStatusPatch(status) {
     if (status === 'จำหน่ายชื่อให้บริษัทติดตามหนี้') return { wasSold: true };
     if (status === 'ยกเลิกสัญญา คืนเครื่อง') return { wasCancelled: true };
+    if (status === 'ติดตามเครื่องคืน') return { wasTrackingReturn: true, trackingReturnAt: nowTimestamp() };
     return null;
   }
   function trackKey(track) { return track === 'accessory' ? 'accessoryInstallments' : 'installments'; }
@@ -1709,7 +1720,7 @@
   // 2026-07-30). statusOverride:true on every งวด keeps them pinned — neither status is in
   // PAYMENT_CLEARS_OVERRIDE_STATUSES, so a later payment-file import can never silently flip one
   // back to something else.
-  var ACCOUNT_LEVEL_STATUSES = ['ยกเลิกสัญญา คืนเครื่อง', 'จำหน่ายชื่อให้บริษัทติดตามหนี้'];
+  var ACCOUNT_LEVEL_STATUSES = ['ยกเลิกสัญญา คืนเครื่อง', 'จำหน่ายชื่อให้บริษัทติดตามหนี้', 'ติดตามเครื่องคืน'];
   // Fields that change what a งวด's ยอดค้างชำระ actually IS — if any of these change on a งวด
   // already marked ตรวจสอบ CRM แล้ว, that confirmation was for the OLD figure and no longer applies
   // (per user request 2026-07-30: a customer paying off a previously-verified ล็อคเครื่อง งวด the
@@ -3239,6 +3250,13 @@
   function orderAccountStatusBadge(order) {
     if (order.isSold) return '<span style="background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">📤 จำหน่ายชื่อฯ</span>';
     if (order.isCancelled) return '<span style="background:' + hexToRgba('#4b5563', 0.14) + '; color:#4b5563; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">↩️ ยกเลิกสัญญา</span>';
+    // ติดตามเครื่องคืน (2026-07-31): staff-entered tag, shown with an "อัปเดตล่าสุด" stamp (same
+    // pattern as crmStatusPill below) so staff pulling this report can see how fresh the tracking
+    // status is, not just that it's flagged.
+    if (order.isTrackingReturn) {
+      var trStamp = order.trackingReturnAt ? '<div style="font-size:10.5px; color:#8a86a3; margin-top:3px; white-space:nowrap;">อัปเดตล่าสุด ' + esc(order.trackingReturnAt) + '</div>' : '';
+      return '<span style="background:' + hexToRgba('#0b7285', 0.14) + '; color:#0b7285; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">🔎 ติดตามเครื่องคืน</span>' + trStamp;
+    }
     if (order.totalOutstandingRaw <= 0.005) return '<span style="background:rgba(18,184,134,0.14); color:#12b886; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">✅ ปิดยอด</span>';
     return '<span style="background:rgba(43,37,64,0.06); color:#6b6785; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">ปกติ</span>';
   }
@@ -3255,7 +3273,7 @@
   // Aging report over each order's current (earliest unpaid) installment — mirrors the
   // reference site's "รายงานสินเชื่อที่ครบกำหนด" bucket row.
   function renderDueBuckets(orders) {
-    var active = orders.filter(function (o) { return !o.isCancelled && !o.isSold; });
+    var active = orders.filter(function (o) { return !o.isCancelled && !o.isSold && !o.isTrackingReturn; });
     var b = { due7: 0, due3: 0, dueToday: 0, od10: 0, od30: 0, odOver30: 0 };
     active.forEach(function (o) {
       var cur = o.installments.find(function (i) { return i.effectiveStatus !== 'ชำระแล้ว'; });
@@ -3315,7 +3333,7 @@
         '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:14px; margin-bottom:14px;">' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">👤 สถานะบัญชีลูกค้า</div>' +
             '<select data-action="filter" data-key="filterAccountStatus" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13.5px; color:#2b2540;">' +
-              selOpt('all', 'ทุกสถานะ', state.filterAccountStatus === 'all') + selOpt('active', 'ปกติ', state.filterAccountStatus === 'active') + selOpt('cancelled', 'ยกเลิกสัญญา คืนเครื่อง', state.filterAccountStatus === 'cancelled') + selOpt('sold', 'จำหน่ายชื่อให้บริษัทติดตามหนี้', state.filterAccountStatus === 'sold') +
+              selOpt('all', 'ทุกสถานะ', state.filterAccountStatus === 'all') + selOpt('active', 'ปกติ', state.filterAccountStatus === 'active') + selOpt('cancelled', 'ยกเลิกสัญญา คืนเครื่อง', state.filterAccountStatus === 'cancelled') + selOpt('sold', 'จำหน่ายชื่อให้บริษัทติดตามหนี้', state.filterAccountStatus === 'sold') + selOpt('trackingReturn', 'ติดตามเครื่องคืน', state.filterAccountStatus === 'trackingReturn') +
             '</select></div>' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">🗓 สถานะวันครบกำหนด</div>' +
             '<select data-action="filter" data-key="filterDueStatus" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13.5px; color:#2b2540;">' +
@@ -3549,6 +3567,7 @@
           '<div style="background:rgba(240,140,0,0.12); color:#c2650a; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">' + esc(ord.purchaseType) + '</div>' +
           (ord.isSold ? '<div style="background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">📤 จำหน่ายชื่อให้บริษัทติดตามหนี้</div>' : '') +
           (ord.isCancelled ? '<div style="background:' + hexToRgba('#4b5563', 0.14) + '; color:#4b5563; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">↩️ ยกเลิกสัญญา คืนเครื่อง</div>' : '') +
+          (ord.isTrackingReturn ? '<div style="background:' + hexToRgba('#0b7285', 0.14) + '; color:#0b7285; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">🔎 ติดตามเครื่องคืน' + (ord.trackingReturnAt ? ' · อัปเดตล่าสุด ' + esc(ord.trackingReturnAt) : '') + '</div>' : '') +
         '</div>' +
         '<div style="display:grid; grid-template-columns:2fr 1fr; gap:16px; margin-bottom:16px;">' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">📦 รายการสินค้า' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:600; color:#2b2540;">' + esc(ord.productList) + '</div></div>' +
