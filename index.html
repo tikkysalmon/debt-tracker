@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-01.2';
+  var APP_BUILD = '2026-08-01.3';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -2784,7 +2784,7 @@
   // as a picker, rather than one button per number, so there's a single send flow either way.
   function renderSendSmsButton(level, orderId, no, track, label) {
     var da = ' data-level="' + level + '" data-order="' + esc(orderId) + '"' + (no != null ? ' data-no="' + no + '"' : '') + (track ? ' data-track="' + track + '"' : '');
-    return '<button data-action="openSendSms"' + da + ' title="เปิดหน้าต่างส่ง SMS ทวงหนี้" style="border:none; background:linear-gradient(135deg,#0ca678,#0b7a5b); color:#fff; padding:5px 14px; border-radius:20px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;">' + (label || '📱 ส่ง SMS') + '</button>';
+    return '<button data-action="openSendSms"' + da + ' title="เปิดหน้าต่างส่ง SMS ทวงหนี้" style="border:1.5px solid rgba(124,92,255,0.35); background:#fff; color:#7c5cff; padding:6px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:pointer; white-space:nowrap;">' + (label || '📱 ส่ง SMS') + '</button>';
   }
   // "ล่าสุด" always reads the last entry of an append-only history array — sends are never
   // overwritten (see confirmSendSms), only added to, per user request.
@@ -2797,9 +2797,11 @@
   // to via email otherwise (see openSendEmailModal).
   function renderSendEmailButton(order) {
     var disabled = !(order.letterHistory && order.letterHistory.length);
+    var enabledStyle = 'border:1.5px solid rgba(124,92,255,0.35); background:#fff; color:#7c5cff;';
+    var disabledStyle = 'border:1.5px solid rgba(138,134,163,0.25); background:#f5f4fa; color:#b3b0c4;';
     return '<button data-action="openSendEmail" data-order="' + esc(order.orderId) + '"' + (disabled ? ' disabled' : '') +
       ' title="' + (disabled ? 'ต้องออกจดหมายทวงถามหนี้ก่อน ถึงจะส่งอีเมลได้' : 'ส่งอีเมลจดหมายทวงถามหนี้ (แนบลิงก์ดาวน์โหลด PDF)') + '"' +
-      ' style="border:none; background:' + (disabled ? '#c3c0d6' : 'linear-gradient(135deg,#2563eb,#1d4ed8)') + '; color:#fff; padding:6px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:' + (disabled ? 'not-allowed' : 'pointer') + '; white-space:nowrap;">📧 ส่งเมลล์จดหมาย</button>' +
+      ' style="' + (disabled ? disabledStyle : enabledStyle) + ' padding:6px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:' + (disabled ? 'not-allowed' : 'pointer') + '; white-space:nowrap;">📧 ส่งเมลล์จดหมาย</button>' +
       emailLastSentBadge(order.emailHistory);
   }
   function emailLastSentBadge(history) {
@@ -2836,10 +2838,10 @@
     var options = history.map(function (h) {
       return '<option value="' + h.no + '">ครั้งที่ ' + h.no + ' (แก้ไขของเดิม — ฿' + esc(h.amountDisp) + ')</option>';
     }).join('') + '<option value="' + nextNo + '" selected>ครั้งที่ ' + nextNo + ' (ครั้งใหม่)</option>';
-    var selectHtml = '<select data-role="letterNoSelect"' + (!eligible || busy ? ' disabled' : '') + ' style="padding:6px 10px; border-radius:10px; border:1px solid rgba(179,38,30,0.25); background:#fff; font-size:12.5px; color:#2b2540;">' + options + '</select>';
+    var selectHtml = '<select data-role="letterNoSelect"' + (!eligible || busy ? ' disabled' : '') + ' style="padding:6px 10px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fff; font-size:12.5px; color:#2b2540;">' + options + '</select>';
     var btn = '<button data-action="issueLetter" data-order="' + esc(ord.orderId) + '"' + (!eligible || busy ? ' disabled' : '') +
       ' title="' + (eligible ? 'ออกจดหมายทวงถามหนี้ (PDF) ตามครั้งที่เลือกไว้' : blockedReason) + '"' +
-      ' style="border:none; background:' + (eligible && !busy ? 'linear-gradient(135deg,#b3261e,#8f1d17)' : '#c3c0d6') + '; color:#fff; padding:6px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:' + (eligible && !busy ? 'pointer' : 'not-allowed') + '; white-space:nowrap;">' +
+      ' style="border:none; background:' + (eligible && !busy ? 'linear-gradient(135deg,#7c5cff,#6647e0)' : '#c3c0d6') + '; color:#fff; padding:6px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:' + (eligible && !busy ? 'pointer' : 'not-allowed') + '; white-space:nowrap; box-shadow:' + (eligible && !busy ? '0 4px 12px rgba(124,92,255,0.3)' : 'none') + ';">' +
       (busy ? '⏳ กำลังสร้าง...' : '📄 ออกเอกสาร') + '</button>';
     var historyList = !history.length ? '' :
       '<div style="display:flex; flex-direction:column; gap:4px; margin-top:8px;">' +
