@@ -64,7 +64,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-07-31.5';
+  var APP_BUILD = '2026-07-31.6';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -84,8 +84,7 @@
     'หนี้สงสัยจะสูญ': { color: '#9c1f4a', order: 9 },
     'จำหน่ายชื่อให้บริษัทติดตามหนี้': { color: '#7c5cff', order: 10 },
     'ยกเลิกสัญญา คืนเครื่อง': { color: '#4b5563', order: 11 },
-    'ติดตามเครื่องคืน': { color: '#0b7285', order: 12 },
-    'ค้างชำระ ล็อคเครื่องไม่ได้': { color: '#9a4b1f', order: 13 }
+    'ค้างชำระ ล็อคเครื่องไม่ได้': { color: '#9a4b1f', order: 12 }
   };
   var STATUS_OPTIONS = Object.keys(STATUS_META).sort(function (a, b) { return STATUS_META[a].order - STATUS_META[b].order; });
   // เปลี่ยนภาพพักหน้าจอ (ระบบ) is never staff-pickable — it exists purely as computeStatus()'s own
@@ -121,7 +120,7 @@
   // dueDate alone. See PAYMENT_CLEARS_OVERRIDE_STATUSES below for how this override still expires
   // once the customer actually pays the งวด, unlike the other manual-only statuses which need a
   // staff member to click "รีเซ็ตสถานะเป็นอัตโนมัติ" (⟲) to clear.
-  var MANUAL_ONLY_STATUSES = { 'หนี้สงสัยจะสูญ': true, 'จำหน่ายชื่อให้บริษัทติดตามหนี้': true, 'ยกเลิกสัญญา คืนเครื่อง': true, 'ค้างชำระ ล็อคเครื่องไม่ได้': true, 'เปลี่ยนภาพพักหน้าจอ': true, 'ติดตามเครื่องคืน': true };
+  var MANUAL_ONLY_STATUSES = { 'หนี้สงสัยจะสูญ': true, 'จำหน่ายชื่อให้บริษัทติดตามหนี้': true, 'ยกเลิกสัญญา คืนเครื่อง': true, 'ค้างชำระ ล็อคเครื่องไม่ได้': true, 'เปลี่ยนภาพพักหน้าจอ': true };
   // A statusOverride for one of these becomes stale the moment the งวด itself receives any
   // payment (amountPaid > 0) — that's the signal the customer settled the outstanding installment,
   // so the manual hold should release on its own instead of needing a staff member to notice and
@@ -197,6 +196,11 @@
   // keys off this compound customerId+customerName string instead, so two different people never
   // collapse into one — real re-imports of the SAME person (same id, same name) are unaffected.
   function customerKey(o) { return String(o.customerId || '').trim() + '||' + String(o.customerName || '').trim(); }
+  // ติดตามเครื่องคืน (redesigned 2026-07-31 as a customer-account tag, not a payment status — see
+  // toggleCustomerTrackingReturn) — always looked up live off state.customerTrackingReturn rather
+  // than cached onto the order object, since computeOrders() is cached on state.orders' identity and
+  // toggling this tag never touches state.orders (see the long comment in computeOrdersUncached).
+  function isCustomerTrackingReturn(o) { return !!(state.customerTrackingReturn && state.customerTrackingReturn[customerKey(o)]); }
   function computeStatus(inst, cfg) {
     var due = new Date(inst.dueDate);
     var amountDue = Number(inst.amountDue || 0);
@@ -447,6 +451,8 @@
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
         orders: state.orders,
         customerNotes: state.customerNotes,
+        customerTrackingReturn: state.customerTrackingReturn,
+        customerTrackingReturnAt: state.customerTrackingReturnAt,
         appliedPaymentKeys: Object.keys(appliedPaymentKeys),
         savedAt: new Date().toISOString()
       }));
@@ -494,6 +500,8 @@
     if (ok) {
       state.orders = lastServerSnapshot.orders;
       state.customerNotes = lastServerSnapshot.customerNotes;
+      state.customerTrackingReturn = lastServerSnapshot.customerTrackingReturn;
+      state.customerTrackingReturnAt = lastServerSnapshot.customerTrackingReturnAt;
       appliedPaymentKeys = {};
       (lastServerSnapshot.appliedPaymentKeys || []).forEach(function (k) { appliedPaymentKeys[k] = true; });
       state.hasUnsavedChanges = false;
@@ -522,7 +530,7 @@
   // server right now (another client may have saved since), but the baseline this client's local
   // edits are measured against. Updated whenever a remote snapshot is applied (connect/poll) and
   // after every successful save (see cloudSaveNow) so the next diff is always against reality.
-  var lastServerSnapshot = { orders: [], customerNotes: {}, appliedPaymentKeys: [] };
+  var lastServerSnapshot = { orders: [], customerNotes: {}, customerTrackingReturn: {}, customerTrackingReturnAt: {}, appliedPaymentKeys: [] };
 
   var CLOUD_BUCKET = 'app-data';
   var CLOUD_FILE = IS_OLD_DATASET ? 'state-old.json' : 'state.json';
@@ -564,6 +572,8 @@
     // never notice there's anything to push back to the shared file.
     var rawOrders = Array.isArray(data.orders) ? data.orders : state.orders;
     var rawNotes = data.customerNotes || {};
+    var rawTrackingReturn = data.customerTrackingReturn || {};
+    var rawTrackingReturnAt = data.customerTrackingReturnAt || {};
     var rawKeys = data.appliedPaymentKeys || [];
     if (Array.isArray(data.orders)) {
       state.orders = repairStaleSampleOrders(repairOverpaidInstallments(repairAccessoryProductNames(repairDueDateSchedules(repairInvalidStatusOverrides(data.orders)))));
@@ -572,9 +582,11 @@
       state.isSampleData = typeof data.isSampleData === 'boolean' ? data.isSampleData : (data.orders.length === 0 ? state.isSampleData : false);
     }
     state.customerNotes = rawNotes;
+    state.customerTrackingReturn = rawTrackingReturn;
+    state.customerTrackingReturnAt = rawTrackingReturnAt;
     appliedPaymentKeys = {};
     rawKeys.forEach(function (k) { appliedPaymentKeys[k] = true; });
-    lastServerSnapshot = { orders: rawOrders, customerNotes: rawNotes, appliedPaymentKeys: rawKeys };
+    lastServerSnapshot = { orders: rawOrders, customerNotes: rawNotes, customerTrackingReturn: rawTrackingReturn, customerTrackingReturnAt: rawTrackingReturnAt, appliedPaymentKeys: rawKeys };
     applyingRemote = false;
   }
   // ---- Merge helpers for cloudSaveNow ----
@@ -726,11 +738,15 @@
     cloudStatus = 'saving'; updateCloudStatus();
     var baseOrders = lastServerSnapshot.orders;
     var baseNotes = lastServerSnapshot.customerNotes;
+    var baseTrackingReturn = lastServerSnapshot.customerTrackingReturn;
+    var baseTrackingReturnAt = lastServerSnapshot.customerTrackingReturnAt;
     // Captured now, not re-read after the round-trip — if a newer edit lands in state.orders while
     // this save is in flight, cloudSavePending picks it up as its own follow-up round (below), so
     // this round only ever claims to have saved exactly what it captured here.
     var localOrdersSnapshot = state.orders;
     var localNotesSnapshot = state.customerNotes;
+    var localTrackingReturnSnapshot = state.customerTrackingReturn;
+    var localTrackingReturnAtSnapshot = state.customerTrackingReturnAt;
     var localKeysSnapshot = Object.keys(appliedPaymentKeys);
     // Only clear cloudDirty once this was the LAST queued save (nothing newer waiting behind it)
     // and it actually succeeded — on failure or when another save is already queued, local state
@@ -744,6 +760,8 @@
         // would overwrite an edit the user just made with the older snapshot we captured above.
         if (state.orders === localOrdersSnapshot) { state.orders = merged.orders; render(); }
         if (state.customerNotes === localNotesSnapshot) state.customerNotes = merged.customerNotes;
+        if (state.customerTrackingReturn === localTrackingReturnSnapshot) state.customerTrackingReturn = merged.customerTrackingReturn;
+        if (state.customerTrackingReturnAt === localTrackingReturnAtSnapshot) state.customerTrackingReturnAt = merged.customerTrackingReturnAt;
         appliedPaymentKeys = {};
         merged.appliedPaymentKeys.forEach(function (k) { appliedPaymentKeys[k] = true; });
       }
@@ -763,7 +781,7 @@
     function attempt(retriesLeft) {
       findCloudFileMeta().then(function (item) {
         if (item && lastServerTs && item.updated_at === lastServerTs) {
-          proceed(item ? item.updated_at : null, { orders: baseOrders, customerNotes: baseNotes, appliedPaymentKeys: lastServerSnapshot.appliedPaymentKeys });
+          proceed(item ? item.updated_at : null, { orders: baseOrders, customerNotes: baseNotes, customerTrackingReturn: baseTrackingReturn, customerTrackingReturnAt: baseTrackingReturnAt, appliedPaymentKeys: lastServerSnapshot.appliedPaymentKeys });
           return;
         }
         var remoteTs = item ? item.updated_at : null;
@@ -782,27 +800,33 @@
       function proceed(remoteTs, remote) {
         var remoteOrders = (remote && Array.isArray(remote.orders)) ? remote.orders : [];
         var remoteNotes = (remote && remote.customerNotes) ? remote.customerNotes : {};
+        var remoteTrackingReturn = (remote && remote.customerTrackingReturn) ? remote.customerTrackingReturn : {};
+        var remoteTrackingReturnAt = (remote && remote.customerTrackingReturnAt) ? remote.customerTrackingReturnAt : {};
         var remoteKeys = (remote && remote.appliedPaymentKeys) ? remote.appliedPaymentKeys : [];
         var mergedOrders = mergeOrdersList(baseOrders, localOrdersSnapshot, remoteOrders);
         var mergedNotes = mergeNotes(baseNotes, localNotesSnapshot, remoteNotes);
+        // mergeNotes is fully generic (any scalar-valued map keyed by customerKey, not notes-
+        // specific) — reused as-is for these two rather than duplicating the same merge logic.
+        var mergedTrackingReturn = mergeNotes(baseTrackingReturn, localTrackingReturnSnapshot, remoteTrackingReturn);
+        var mergedTrackingReturnAt = mergeNotes(baseTrackingReturnAt, localTrackingReturnAtSnapshot, remoteTrackingReturnAt);
         var mergedKeys = unionKeys(remoteKeys, localKeysSnapshot);
         // isSampleData travels WITH the payload so applySnapshot can trust it explicitly instead of
         // guessing from orders.length — a freshly-seeded bucket's built-in demo data (generateMock())
         // is non-empty too, and inferring "no longer sample" from length alone meant the demo orders
         // silently got treated as real and merged alongside the first genuine upload (see
         // repairStaleSampleOrders below for cleaning up datasets already affected by this).
-        var payload = { orders: mergedOrders, customerNotes: mergedNotes, appliedPaymentKeys: mergedKeys, isSampleData: state.isSampleData, _meta: { updatedAt: new Date().toISOString(), updatedBy: myClientId } };
+        var payload = { orders: mergedOrders, customerNotes: mergedNotes, customerTrackingReturn: mergedTrackingReturn, customerTrackingReturnAt: mergedTrackingReturnAt, appliedPaymentKeys: mergedKeys, isSampleData: state.isSampleData, _meta: { updatedAt: new Date().toISOString(), updatedBy: myClientId } };
         var text = JSON.stringify(payload);
         var blob = new Blob([text], { type: 'application/json' });
-        if (retriesLeft <= 0) { doUpload(mergedOrders, mergedNotes, mergedKeys, blob, text); return; }
+        if (retriesLeft <= 0) { doUpload(mergedOrders, mergedNotes, mergedTrackingReturn, mergedTrackingReturnAt, mergedKeys, blob, text); return; }
         findCloudFileMeta().then(function (freshItem) {
           var freshTs = freshItem ? freshItem.updated_at : null;
           if (freshTs !== remoteTs) { attempt(retriesLeft - 1); return; }
-          doUpload(mergedOrders, mergedNotes, mergedKeys, blob, text);
-        }).catch(function () { doUpload(mergedOrders, mergedNotes, mergedKeys, blob, text); });
+          doUpload(mergedOrders, mergedNotes, mergedTrackingReturn, mergedTrackingReturnAt, mergedKeys, blob, text);
+        }).catch(function () { doUpload(mergedOrders, mergedNotes, mergedTrackingReturn, mergedTrackingReturnAt, mergedKeys, blob, text); });
       }
     }
-    function doUpload(mergedOrders, mergedNotes, mergedKeys, blob, text) {
+    function doUpload(mergedOrders, mergedNotes, mergedTrackingReturn, mergedTrackingReturnAt, mergedKeys, blob, text) {
       db.storage.from(CLOUD_BUCKET).upload(CLOUD_FILE, blob, { upsert: true, contentType: 'application/json', cacheControl: '0' }).then(function (res) {
         if (res.error) {
           cloudStatus = 'offline';
@@ -813,7 +837,7 @@
           return;
         }
         cloudErrorDetail = '';
-        var merged = { orders: mergedOrders, customerNotes: mergedNotes, appliedPaymentKeys: mergedKeys };
+        var merged = { orders: mergedOrders, customerNotes: mergedNotes, customerTrackingReturn: mergedTrackingReturn, customerTrackingReturnAt: mergedTrackingReturnAt, appliedPaymentKeys: mergedKeys };
         // Upload response doesn't include the new updated_at — fetch it so the next poll
         // recognizes this save as already-applied instead of re-downloading the whole file.
         findCloudFileMeta().then(function (item) {
@@ -895,6 +919,8 @@
     filterPurchaseTypes: [],
     dueFrom: '', dueTo: '', paidFrom: '', paidTo: '', contractFrom: '', contractTo: '',
     customerNotes: (persisted && persisted.customerNotes) || {},
+    customerTrackingReturn: (persisted && persisted.customerTrackingReturn) || {},
+    customerTrackingReturnAt: (persisted && persisted.customerTrackingReturnAt) || {},
     lastSavedAt: (persisted && persisted.savedAt) || '',
     isSampleData: !(persisted && persisted.orders && persisted.orders.length),
     // Manual-save mode (2026-07-30, per user request): edits to งวด/order fields, customer name/id,
@@ -977,7 +1003,14 @@
       // account-status badge disappear — see stickyAccountStatusPatch for why.
       var isCancelled = !!o.wasCancelled || allInstallments.some(function (i) { return i.effectiveStatus === 'ยกเลิกสัญญา คืนเครื่อง'; });
       var isSold = !!o.wasSold || allInstallments.some(function (i) { return i.effectiveStatus === 'จำหน่ายชื่อให้บริษัทติดตามหนี้'; });
-      var isTrackingReturn = !!o.wasTrackingReturn || allInstallments.some(function (i) { return i.effectiveStatus === 'ติดตามเครื่องคืน'; });
+      // ติดตามเครื่องคืน is a CUSTOMER-level tag now (state.customerTrackingReturn, keyed by
+      // customerKey — see toggleCustomerTrackingReturn), not an order/งวด status, so it deliberately
+      // does NOT get derived here — computeOrdersUncached's result is cached on state.orders'
+      // identity (see computeOrders above) and toggling the tag never touches state.orders, so
+      // baking it into this cached object would show stale badges until some UNRELATED order edit
+      // happened to invalidate the cache. Every site that needs it (orderAccountStatusBadge,
+      // dashboard exclusions, customer header) looks it up live via state.customerTrackingReturn
+      // instead.
       // "ยอดค้างชำระ"/"งวดค้าง" on the due-report table (renderTracking) must mean ONLY the 5
       // statuses staff actually consider "ค้างชำระจริงๆ" (the STATUS_GROUP_META 'ค้างชำระ' group —
       // same grouping the "แยกสถานะการชำระ" dashboard widget already uses), NOT every unpaid งวด.
@@ -1035,8 +1068,6 @@
         crmVerifiedCount: crmVerifiedCount, crmStatus: crmStatus, crmVerifiedLatestAt: crmVerifiedLatestAt,
         isCancelled: isCancelled,
         isSold: isSold,
-        isTrackingReturn: isTrackingReturn,
-        trackingReturnAt: o.trackingReturnAt || '',
         lateCount: lateInsts.length,
         lateOutstandingRaw: lateOutstandingRaw,
         installmentCount: installments.length,
@@ -1046,7 +1077,7 @@
   }
 
   function computeDashboard(orders) {
-    var activeOrders = orders.filter(function (o) { return !o.isCancelled && !o.isSold && !o.isTrackingReturn; });
+    var activeOrders = orders.filter(function (o) { return !o.isCancelled && !o.isSold && !isCustomerTrackingReturn(o); });
     var cancelledOrders = orders.filter(function (o) { return o.isCancelled; });
     var soldOrders = orders.filter(function (o) { return o.isSold; });
 
@@ -1258,7 +1289,7 @@
     });
     var purchaseTypeGroups = Object.keys(ptMap).map(function (type) {
       var list = ptMap[type].orders;
-      var activeList = list.filter(function (o) { return !o.isCancelled && !o.isSold && !o.isTrackingReturn; });
+      var activeList = list.filter(function (o) { return !o.isCancelled && !o.isSold && !isCustomerTrackingReturn(o); });
       var cancelledList = list.filter(function (o) { return o.isCancelled; });
       var soldList = list.filter(function (o) { return o.isSold; });
       var contractRaw = list.reduce(function (s, o) { return s + o.totalContractRaw; }, 0);
@@ -1404,8 +1435,8 @@
       filteredOrders = filteredOrders.filter(function (o) {
         if (f.filterAccountStatus === 'cancelled') return o.isCancelled;
         if (f.filterAccountStatus === 'sold') return o.isSold;
-        if (f.filterAccountStatus === 'trackingReturn') return o.isTrackingReturn;
-        return !o.isCancelled && !o.isSold && !o.isTrackingReturn;
+        if (f.filterAccountStatus === 'trackingReturn') return isCustomerTrackingReturn(o);
+        return !o.isCancelled && !o.isSold && !isCustomerTrackingReturn(o);
       });
     }
     // Combine main + accessory (ดาวน์+อุปกรณ์เสริม) installments for every per-installment filter
@@ -1434,7 +1465,7 @@
     }
     if (f.filterGrade !== 'all') {
       filteredOrders = filteredOrders.filter(function (o) {
-        if (o.isCancelled || o.isSold || o.isTrackingReturn) return false;
+        if (o.isCancelled || o.isSold || isCustomerTrackingReturn(o)) return false;
         var g = o.lateCount === 0 ? 'A' : o.lateCount === 1 ? 'B' : 'หนี้สงสัยจะสูญ';
         return g === f.filterGrade;
       });
@@ -1517,7 +1548,7 @@
     // ปิดยอด — ยอดคงเหลือรวมทุกบิลของลูกค้าคนนี้เป็น 0 แล้ว (จ่ายครบ/ปิดยอดแล้วทุกสัญญา)
     var selectedCustomerFullySettled = hasSelectedCustomer && selectedCustomerOrders.reduce(function (s, o) { return s + o.totalOutstandingRaw; }, 0) <= 0.005;
     if (hasSelectedCustomer) {
-      var activeSel = selectedCustomerOrders.filter(function (o) { return !o.isCancelled && !o.isSold && !o.isTrackingReturn; });
+      var activeSel = selectedCustomerOrders.filter(function (o) { return !o.isCancelled && !o.isSold && !isCustomerTrackingReturn(o); });
       if (activeSel.some(function (o) { return o.lateCount >= 2; })) selectedCustomerGrade = 'หนี้สงสัยจะสูญ';
       else if (activeSel.some(function (o) { return o.lateCount === 1; })) selectedCustomerGrade = 'B';
     }
@@ -1638,6 +1669,20 @@
       delete notesPatch[oldKey];
       state.customerNotes = notesPatch;
     }
+    // ติดตามเครื่องคืน is keyed the same compound way as customerNotes — must move onto the new key
+    // too, or correcting a customer's name/รหัส (exactly the kind of edit this tag exists to survive
+    // — see project memory on the customerId/customerName correction case) would silently orphan the
+    // tag under the old, now-unmatched key.
+    if (Object.prototype.hasOwnProperty.call(state.customerTrackingReturn, oldKey)) {
+      var trPatch = Object.assign({}, state.customerTrackingReturn);
+      trPatch[newKey] = trPatch[oldKey];
+      delete trPatch[oldKey];
+      state.customerTrackingReturn = trPatch;
+      var trAtPatch = Object.assign({}, state.customerTrackingReturnAt);
+      trAtPatch[newKey] = trAtPatch[oldKey];
+      delete trAtPatch[oldKey];
+      state.customerTrackingReturnAt = trAtPatch;
+    }
     state.selectedCustomerId = newKey;
     return true;
   }
@@ -1685,20 +1730,33 @@
     state.hasUnsavedChanges = true;
     render();
   }
+  // ติดตามเครื่องคืน — customer-account tag (redesigned 2026-07-31 from a per-งวด payment status,
+  // per user request, into an account-level tag shown in the customer detail header — a customer
+  // can have several bills/orders, and "tracking down the device" is a fact about the PERSON, not
+  // any one order). Staff toggle it directly; keyed by customerKey exactly like customerNotes (see
+  // renameCustomerField for why it must move when customerId/customerName gets corrected).
+  // nowTimestamp() restamps on every toggle, on OR off, so staff always see when it was last
+  // touched, not just whether it's currently on. Like every other edit in manual-save mode, this
+  // only flips hasUnsavedChanges — it isn't actually persisted until 💾 บันทึกการเปลี่ยนแปลง.
+  function toggleCustomerTrackingReturn() {
+    if (!state.selectedCustomerId) return;
+    var key = state.selectedCustomerId;
+    var next = !state.customerTrackingReturn[key];
+    var trPatch = {}; trPatch[key] = next;
+    state.customerTrackingReturn = Object.assign({}, state.customerTrackingReturn, trPatch);
+    var atPatch = {}; atPatch[key] = nowTimestamp();
+    state.customerTrackingReturnAt = Object.assign({}, state.customerTrackingReturnAt, atPatch);
+    state.hasUnsavedChanges = true;
+    render();
+  }
   // Once an order has ever been flagged จำหน่ายชื่อให้บริษัทติดตามหนี้/ยกเลิกสัญญา คืนเครื่อง, the
   // account-status badge must stay tagged even if a later payment brings some installment back to
   // ชำระแล้ว — the whole point is tracking how much a sold-to-collections customer has since paid,
   // not losing that history the moment one งวด looks current again. See isSold/isCancelled below,
   // which OR this sticky flag in with the live installment check.
-  // ติดตามเครื่องคืน (added 2026-07-31, per user request) is a staff-entered account tag for
-  // customers whose device is being actively chased down for return — staff need to pull a report
-  // of exactly these accounts, so it's tracked the same sticky way (isTrackingReturn below) and also
-  // stamps trackingReturnAt with nowTimestamp() every time it's (re-)selected, so staff can see when
-  // this tag was last updated rather than just that it's set.
   function stickyAccountStatusPatch(status) {
     if (status === 'จำหน่ายชื่อให้บริษัทติดตามหนี้') return { wasSold: true };
     if (status === 'ยกเลิกสัญญา คืนเครื่อง') return { wasCancelled: true };
-    if (status === 'ติดตามเครื่องคืน') return { wasTrackingReturn: true, trackingReturnAt: nowTimestamp() };
     return null;
   }
   function trackKey(track) { return track === 'accessory' ? 'accessoryInstallments' : 'installments'; }
@@ -1733,7 +1791,7 @@
   // 2026-07-30). statusOverride:true on every งวด keeps them pinned — neither status is in
   // PAYMENT_CLEARS_OVERRIDE_STATUSES, so a later payment-file import can never silently flip one
   // back to something else.
-  var ACCOUNT_LEVEL_STATUSES = ['ยกเลิกสัญญา คืนเครื่อง', 'จำหน่ายชื่อให้บริษัทติดตามหนี้', 'ติดตามเครื่องคืน'];
+  var ACCOUNT_LEVEL_STATUSES = ['ยกเลิกสัญญา คืนเครื่อง', 'จำหน่ายชื่อให้บริษัทติดตามหนี้'];
   // Fields that change what a งวด's ยอดค้างชำระ actually IS — if any of these change on a งวด
   // already marked ตรวจสอบ CRM แล้ว, that confirmation was for the OLD figure and no longer applies
   // (per user request 2026-07-30: a customer paying off a previously-verified ล็อคเครื่อง งวด the
@@ -2043,6 +2101,8 @@
     clearPersisted();
     state.orders = toSample ? generateMock() : [];
     state.customerNotes = {};
+    state.customerTrackingReturn = {};
+    state.customerTrackingReturnAt = {};
     state.selectedCustomerId = null;
     state.lastSavedAt = '';
     state.isSampleData = !!toSample;
@@ -2064,11 +2124,21 @@
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
   }
+  // Plain-text version of orderAccountStatusBadge()'s logic — same 4 states (จำหน่ายชื่อฯ/ยกเลิกสัญญา/
+  // ติดตามเครื่องคืน/ปิดยอด/ปกติ), no HTML, for the CSV export below so the file matches what staff
+  // see in the สถานะบัญชี column on screen (per user request 2026-07-31).
+  function accountStatusText(o) {
+    if (o.isSold) return 'จำหน่ายชื่อให้บริษัทติดตามหนี้';
+    if (o.isCancelled) return 'ยกเลิกสัญญา คืนเครื่อง';
+    if (isCustomerTrackingReturn(o)) return 'ติดตามเครื่องคืน';
+    if (o.totalOutstandingRaw <= 0.005) return 'ปิดยอด';
+    return 'ปกติ';
+  }
   function exportFilteredCsv(orders) {
-    var content = 'รหัสลูกค้า,ชื่อลูกค้า,คำสั่งซื้อ,งวดที่,วันครบกำหนดชำระ,ยอดผ่อนต่องวด,ยอดที่ชำระจริง,วันที่ชำระ,สถานะการชำระเงิน,ส่วนลด,หมายเหตุ,ตรวจสอบ CRM แล้ว,วันเวลาที่ตรวจสอบ\n';
-    function addRows(customerId, customerName, orderId, list) {
+    var content = 'รหัสลูกค้า,ชื่อลูกค้า,สถานะบัญชี,วันที่อัปเดตติดตามเครื่องคืน,คำสั่งซื้อ,งวดที่,วันครบกำหนดชำระ,ยอดผ่อนต่องวด,ยอดที่ชำระจริง,วันที่ชำระ,สถานะการชำระเงิน,ส่วนลด,หมายเหตุ,ตรวจสอบ CRM แล้ว,วันเวลาที่ตรวจสอบ\n';
+    function addRows(customerId, customerName, accountStatus, trackingReturnAt, orderId, list) {
       list.forEach(function (i) {
-        content += [customerId, customerName, orderId, i.no, i.dueDate, i.amountDue, i.amountPaid, i.paidDate, i.effectiveStatus, i.discount, i.note, i.verifiedCRM ? 'ใช่' : 'ไม่', i.verifiedCRM ? (i.verifiedCRMAt || '') : '']
+        content += [customerId, customerName, accountStatus, trackingReturnAt, orderId, i.no, i.dueDate, i.amountDue, i.amountPaid, i.paidDate, i.effectiveStatus, i.discount, i.note, i.verifiedCRM ? 'ใช่' : 'ไม่', i.verifiedCRM ? (i.verifiedCRMAt || '') : '']
           .map(function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; }).join(',') + '\n';
       });
     }
@@ -2078,9 +2148,12 @@
       // งวด the order has, so the file matches what the filters actually selected on screen.
       var mainInsts = o.filteredInstallments || o.installments;
       var accInsts = o.filteredAccessoryInstallments || o.accessoryInstallments;
-      addRows(o.customerId, o.customerName, o.orderId, mainInsts);
+      var accountStatus = accountStatusText(o);
+      var ck = customerKey(o);
+      var trAt = isCustomerTrackingReturn(o) ? ((state.customerTrackingReturnAt && state.customerTrackingReturnAt[ck]) || '') : '';
+      addRows(o.customerId, o.customerName, accountStatus, trAt, o.orderId, mainInsts);
       // ดาวน์+อุปกรณ์เสริม orders export under their own accessory SO — it's a separate CRM bill.
-      if (accInsts && accInsts.length) addRows(o.customerId, o.customerName, o.accessoryOrderId || (o.orderId + ' (อุปกรณ์เสริม)'), accInsts);
+      if (accInsts && accInsts.length) addRows(o.customerId, o.customerName, accountStatus, trAt, o.accessoryOrderId || (o.orderId + ' (อุปกรณ์เสริม)'), accInsts);
     });
     downloadBlob(content, 'debt_data_export.csv');
   }
@@ -3263,11 +3336,15 @@
   function orderAccountStatusBadge(order) {
     if (order.isSold) return '<span style="background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">📤 จำหน่ายชื่อฯ</span>';
     if (order.isCancelled) return '<span style="background:' + hexToRgba('#4b5563', 0.14) + '; color:#4b5563; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">↩️ ยกเลิกสัญญา</span>';
-    // ติดตามเครื่องคืน (2026-07-31): staff-entered tag, shown with an "อัปเดตล่าสุด" stamp (same
-    // pattern as crmStatusPill below) so staff pulling this report can see how fresh the tracking
-    // status is, not just that it's flagged.
-    if (order.isTrackingReturn) {
-      var trStamp = order.trackingReturnAt ? '<div style="font-size:10.5px; color:#8a86a3; margin-top:3px; white-space:nowrap;">อัปเดตล่าสุด ' + esc(order.trackingReturnAt) + '</div>' : '';
+    // ติดตามเครื่องคืน (customer-account tag, redesigned 2026-07-31) — shown with an "อัปเดตล่าสุด"
+    // stamp (same pattern as crmStatusPill below) so staff pulling this report can see how fresh the
+    // tag is, not just that it's flagged. Looked up live off state.customerTrackingReturn (see
+    // isCustomerTrackingReturn) rather than a cached order field — see the long comment in
+    // computeOrdersUncached for why.
+    if (isCustomerTrackingReturn(order)) {
+      var ck = customerKey(order);
+      var trAt = (state.customerTrackingReturnAt && state.customerTrackingReturnAt[ck]) || '';
+      var trStamp = trAt ? '<div style="font-size:10.5px; color:#8a86a3; margin-top:3px; white-space:nowrap;">อัปเดตล่าสุด ' + esc(trAt) + '</div>' : '';
       return '<span style="background:' + hexToRgba('#0b7285', 0.14) + '; color:#0b7285; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">🔎 ติดตามเครื่องคืน</span>' + trStamp;
     }
     if (order.totalOutstandingRaw <= 0.005) return '<span style="background:rgba(18,184,134,0.14); color:#12b886; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">✅ ปิดยอด</span>';
@@ -3286,7 +3363,7 @@
   // Aging report over each order's current (earliest unpaid) installment — mirrors the
   // reference site's "รายงานสินเชื่อที่ครบกำหนด" bucket row.
   function renderDueBuckets(orders) {
-    var active = orders.filter(function (o) { return !o.isCancelled && !o.isSold && !o.isTrackingReturn; });
+    var active = orders.filter(function (o) { return !o.isCancelled && !o.isSold && !isCustomerTrackingReturn(o); });
     var b = { due7: 0, due3: 0, dueToday: 0, od10: 0, od30: 0, odOver30: 0 };
     active.forEach(function (o) {
       var cur = o.installments.find(function (i) { return i.effectiveStatus !== 'ชำระแล้ว'; });
@@ -3523,6 +3600,14 @@
   }
 
   function renderCustomerDetail() {
+    // ติดตามเครื่องคืน tag — customer-level (state.customerTrackingReturn), not part of CV/computeView,
+    // so read directly off state here; safe since renderCustomerDetail only ever runs with a customer
+    // selected.
+    var trActive = !!state.customerTrackingReturn[state.selectedCustomerId];
+    var trAt = state.customerTrackingReturnAt[state.selectedCustomerId] || '';
+    var trackingReturnTagHtml = trActive
+      ? '<button data-action="toggleCustomerTrackingReturn" title="คลิกเพื่อยกเลิกแท็กนี้" style="border:none; cursor:pointer; background:' + hexToRgba('#0b7285', 0.14) + '; color:#0b7285; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">🔎 ติดตามเครื่องคืน' + (trAt ? ' · อัปเดตล่าสุด ' + esc(trAt) : '') + '</button>'
+      : '<button data-action="toggleCustomerTrackingReturn" title="คลิกเพื่อติดแท็กติดตามเครื่องคืน" style="border:1px dashed rgba(11,114,133,0.45); cursor:pointer; background:transparent; color:#0b7285; padding:2px 11px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">+ ติดตามเครื่องคืน</button>';
     var html = '<div id="customerDetailModal" style="position:fixed; inset:0; z-index:9999; background:rgba(43,37,64,0.35); display:flex; align-items:flex-start; justify-content:center; padding:30px 20px; overflow-y:auto;">' +
       '<div style="max-width:1100px; width:100%; background:rgba(255,255,255,0.97); backdrop-filter:blur(24px); -webkit-backdrop-filter:blur(24px); border:1px solid rgba(255,255,255,0.85); border-radius:24px; padding:28px 30px; box-shadow:0 24px 60px rgba(43,37,64,0.3); margin-bottom:30px;">' +
       '<div style="display:flex; align-items:flex-start; gap:16px; margin-bottom:18px;">' +
@@ -3534,7 +3619,7 @@
               '<button data-action="cancelEditCustomerName" style="border:none; background:rgba(0,0,0,0.06); color:#6b6785; padding:5px 12px; border-radius:8px; font-size:12px; font-weight:600; cursor:pointer;">✕ ยกเลิก</button>'
             : '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:19px; color:#2b2540;">' + esc(CV.selectedCustomerName) + '</div>' +
               '<button data-action="startEditCustomerName" title="แก้ไขชื่อลูกค้า" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; width:26px; height:26px; border-radius:8px; font-size:12px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">✏️</button>') +
-          '<div style="background:' + CV.selectedCustomerGradeColor + '1a; color:' + CV.selectedCustomerGradeColor + '; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700;">' + esc(CV.selectedCustomerGradeLabel) + '</div>' + (CV.selectedCustomerFullySettled ? '<div style="background:rgba(18,184,134,0.14); color:#12b886; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700;">✅ ปิดยอด</div>' : '') + '</div>' +
+          '<div style="background:' + CV.selectedCustomerGradeColor + '1a; color:' + CV.selectedCustomerGradeColor + '; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700;">' + esc(CV.selectedCustomerGradeLabel) + '</div>' + (CV.selectedCustomerFullySettled ? '<div style="background:rgba(18,184,134,0.14); color:#12b886; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700;">✅ ปิดยอด</div>' : '') + trackingReturnTagHtml + '</div>' +
           '<div style="font-size:13px; color:#6b6785; margin-top:4px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">รหัสลูกค้า: ' +
           (state.editingCustomerId
             ? '<input type="text" value="' + esc(state.customerIdDraft) + '" data-action="customerIdDraft" style="font-size:13px; color:#2b2540; border:1px solid rgba(124,92,255,0.35); border-radius:6px; padding:2px 8px; outline:none; min-width:120px;" />' +
@@ -3580,7 +3665,6 @@
           '<div style="background:rgba(240,140,0,0.12); color:#c2650a; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">' + esc(ord.purchaseType) + '</div>' +
           (ord.isSold ? '<div style="background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">📤 จำหน่ายชื่อให้บริษัทติดตามหนี้</div>' : '') +
           (ord.isCancelled ? '<div style="background:' + hexToRgba('#4b5563', 0.14) + '; color:#4b5563; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">↩️ ยกเลิกสัญญา คืนเครื่อง</div>' : '') +
-          (ord.isTrackingReturn ? '<div style="background:' + hexToRgba('#0b7285', 0.14) + '; color:#0b7285; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">🔎 ติดตามเครื่องคืน' + (ord.trackingReturnAt ? ' · อัปเดตล่าสุด ' + esc(ord.trackingReturnAt) : '') + '</div>' : '') +
         '</div>' +
         '<div style="display:grid; grid-template-columns:2fr 1fr; gap:16px; margin-bottom:16px;">' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">📦 รายการสินค้า' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:600; color:#2b2540;">' + esc(ord.productList) + '</div></div>' +
@@ -3876,6 +3960,7 @@
         case 'selectCustomer': selectCustomer(t.getAttribute('data-cid')); break;
         case 'closeDetail': if (confirmDiscardIfDirty()) { state.selectedCustomerId = null; render(); } break;
         case 'saveNote': saveCustomerNote(); break;
+        case 'toggleCustomerTrackingReturn': toggleCustomerTrackingReturn(); break;
         case 'startEditCustomerName': startEditCustomerName(); break;
         case 'cancelEditCustomerName': cancelEditCustomerName(); break;
         case 'saveCustomerName': saveCustomerName(); break;
