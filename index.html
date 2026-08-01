@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-01.15';
+  var APP_BUILD = '2026-08-01.16';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -2885,7 +2885,7 @@
       '<div style="font-size:9.5px; color:#8a86a3; margin-top:4px;">ครั้งที่ ' + latest.no + '</div>';
   }
   // ครั้งที่ picker + issue button only (no history list — the tracking-card redesign renders
-  // letterHistory itself, see renderDebtTrackingSection). The <select> offers every EXISTING
+  // letterHistory itself, see renderLetterCard). The <select> offers every EXISTING
   // ครั้งที่ (labeled "แก้ไขของเดิม" — re-issuing keeps that ครั้งที่'s original frozen figures and
   // overwrites only its own file) plus exactly one new number after the current max (labeled
   // "ครั้งใหม่" — takes a fresh live snapshot, gets its own new file, never touches earlier ones).
@@ -2935,7 +2935,10 @@
       bodyHtml +
     '</div>';
   }
-  function renderDebtTrackingSection(ord) {
+  // บันทึกการโทร stays customer-level (one call log per customer, via pickContactOrder — a call is
+  // with the person, not tied to one specific SO) — kept separate from renderSmsCard/renderLetterCard
+  // below, which moved to per-order (2026-08-01, see those functions' comment for why).
+  function renderCallCard(ord) {
     var callHistory = ord.callHistory || [];
     var callBody =
       '<div style="display:flex; gap:8px;">' +
@@ -2948,8 +2951,24 @@
           '<div style="color:#6b6785;">' + esc(h.note) + '</div>' +
         '</div>';
       });
-    var callCard = trackingCard('#4f46e5', '📞', 'บันทึกการโทร', callHistory.length, callBody);
-
+    return trackingCard('#4f46e5', '📞', 'บันทึกการโทร', callHistory.length, callBody);
+  }
+  function renderCallTrackingSection(ord) {
+    return '<div style="border-top:1px dashed rgba(124,92,255,0.15); margin-top:14px; padding-top:14px;">' +
+      '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:15px; color:#2b2540; margin-bottom:12px; display:flex; align-items:center; gap:6px;">📋 ข้อมูลการติดตามหนี้</div>' +
+      renderCallCard(ord) +
+    '</div>';
+  }
+  // ส่ง SMS/จดหมายทวงถามหนี้ moved from customer-header (one shared button for ALL of a customer's
+  // SO/bills, picked arbitrarily via pickContactOrder) to per-order (2026-08-01) — a customer report
+  // showed 2 SO/bills but only one had a working SMS/email send button, because smsHistory/
+  // letterHistory/emailHistory (and the "ยังไม่ถึง 2 งวดค้าง" eligibility gate) are genuinely
+  // per-order fields, not shared across a customer's bills, so a single header-level button could
+  // never represent more than one SO at a time. Rendered inside each order's own card now (see the
+  // CV.selectedCustomerOrders.map loop below), right under that order's own ยอดคงเหลือ figure, so
+  // staff see exactly which SO they're about to message and its outstanding balance in the same
+  // glance — no separate SO picker needed since each card already IS one SO.
+  function renderSmsCard(ord) {
     var smsHistory = ord.smsHistory || [];
     var smsBody =
       '<div>' + renderSendSmsButton('order', ord.orderId, null, null, '📱 ส่ง SMS ทวงหนี้') + '</div>' +
@@ -2959,8 +2978,9 @@
           '<div style="color:#6b6785;">' + esc(h.template || 'ข้อความทวงถาม') + (h.phone ? ' · ' + esc(h.phone) : '') + '</div>' +
         '</div>';
       });
-    var smsCard = trackingCard('#7c5cff', '📱', 'ส่ง SMS ทวงหนี้', smsHistory.length, smsBody);
-
+    return trackingCard('#7c5cff', '📱', 'ส่ง SMS ทวงหนี้', smsHistory.length, smsBody);
+  }
+  function renderLetterCard(ord) {
     var letterHistory = ord.letterHistory || [];
     var emailHistory = ord.emailHistory || [];
     var emailHistoryHtml = !emailHistory.length ? '' :
@@ -2981,11 +3001,12 @@
         '</div>';
       }) +
       emailHistoryHtml;
-    var letterCard = trackingCard('#b3261e', '📄', 'ส่งจดหมายทวงถามหนี้', letterHistory.length, letterBody);
-
-    return '<div style="border-top:1px dashed rgba(124,92,255,0.15); margin-top:14px; padding-top:14px;">' +
-      '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:15px; color:#2b2540; margin-bottom:12px; display:flex; align-items:center; gap:6px;">📋 ข้อมูลการติดตามหนี้</div>' +
-      '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px;">' + callCard + smsCard + letterCard + '</div>' +
+    return trackingCard('#b3261e', '📄', 'ส่งจดหมายทวงถามหนี้', letterHistory.length, letterBody);
+  }
+  function renderSmsLetterSection(ord) {
+    return '<div style="border-top:1px dashed rgba(124,92,255,0.15); margin:16px 0 14px; padding-top:14px;">' +
+      '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:14px; color:#2b2540; margin-bottom:10px; display:flex; align-items:center; gap:6px;">📋 ส่ง SMS / จดหมายทวงถามหนี้ (SO นี้)</div>' +
+      '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px;">' + renderSmsCard(ord) + renderLetterCard(ord) + '</div>' +
     '</div>';
   }
   // An early full-settlement payment often gets recorded entirely against ONE งวด (e.g. "ยอดชำระ
@@ -4697,7 +4718,7 @@
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">👤 ชื่อบุคคลอ้างอิง</div><input type="text" value="' + esc(contactOrder.referenceName || '') + '" data-order-field="referenceName" data-order="' + esc(contactOrder.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">📱 เบอร์ติดต่อบุคคลอ้างอิง</div><input type="text" value="' + esc(contactOrder.referencePhone || '') + '" data-order-field="referencePhone" data-order="' + esc(contactOrder.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
         '</div>' +
-        renderDebtTrackingSection(contactOrder) +
+        renderCallTrackingSection(contactOrder) +
       '</div>';
     var html = '<div id="customerDetailModal" style="position:fixed; inset:0; z-index:9999; background:rgba(43,37,64,0.35); display:flex; align-items:flex-start; justify-content:center; padding:30px 20px; overflow-y:auto;">' +
       '<div style="max-width:1100px; width:100%; background:rgba(255,255,255,0.97); backdrop-filter:blur(24px); -webkit-backdrop-filter:blur(24px); border:1px solid rgba(255,255,255,0.85); border-radius:24px; padding:28px 30px; box-shadow:0 24px 60px rgba(43,37,64,0.3); margin-bottom:30px;">' +
@@ -4773,6 +4794,7 @@
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดรับชำระ' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:700; color:#12b886;">฿' + (ord.hasAccessory ? ord.mainPaidDisp : ord.totalPaidDisp) + '</div></div>' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดคงเหลือ' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:700; color:#e03131;">฿' + (ord.hasAccessory ? ord.mainOutstandingDisp : ord.totalOutstandingDisp) + '</div></div>' +
         '</div>' +
+        renderSmsLetterSection(ord) +
         '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; margin-bottom:14px; padding:14px 16px; background:rgba(124,92,255,0.05); border-radius:14px;">' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">🗓 วันครบกำหนดชำระงวดแรก</div><div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">' +
             '<input type="date" value="' + esc(ord.firstDueDate || '') + '" data-order-field="firstDueDate" data-order="' + esc(ord.orderId) + '" style="border:1px solid rgba(124,92,255,0.25); border-radius:8px; padding:7px 10px; font-size:13px; color:#2b2540; background:#fff; outline:none;" />' +
