@@ -56,6 +56,7 @@ module.exports = async function handler(req, res) {
     const payload = {
       template_uuid: templateId,
       mail_from: senderName,
+      name: 'Salmon Enterprise',
       subject: subject,
       mail_to: [{ email: mailTo }],
       payload: {
