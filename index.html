@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-01.14';
+  var APP_BUILD = '2026-08-01.15';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -2222,8 +2222,15 @@
     var order = state.orders.find(function (o) { return o.orderId === orderId; });
     if (!order) return;
     var cvOrder = (CV.computedOrders || []).find(function (o) { return o.orderId === orderId; });
-    if (!cvOrder || (cvOrder.overdueCount || 0) < LETTER_MIN_OVERDUE_INSTALLMENTS) {
-      window.alert('ออกจดหมายทวงถามได้เฉพาะเมื่อค้างชำระ (จริง) ตั้งแต่ ' + LETTER_MIN_OVERDUE_INSTALLMENTS + ' งวดขึ้นไป');
+    // Uses lateCount (the broader LATE_STATUSES set — ค้างชำระ/เกินกำหนดชำระ/ล็อคเครื่อง/
+    // เปลี่ยนภาพพักหน้าจอ/ค้างชำระ ล็อคเครื่องไม่ได้/หนี้สงสัยจะสูญ/ชำระบางส่วน), not the narrower
+    // overdueCount (STATUS_GROUP_META's 5-status 'ค้างชำระ' group used for the ยอดค้างชำระ report
+    // column). Was overdueCount until 2026-08-01 — a customer report showed a bill with 2 งวด already
+    // escalated to หนี้สงสัยจะสูญ (the WORST status, past ค้างชำระ) still blocked from getting a
+    // letter, because หนี้สงสัยจะสูญ isn't part of the ค้างชำระ group. Per explicit user request
+    // ("ทุกสถานะการชำระเงิน เปิดให้ส่งจดหมายติดตามหนี้ได้"), any of the late-status types now count.
+    if (!cvOrder || (cvOrder.lateCount || 0) < LETTER_MIN_OVERDUE_INSTALLMENTS) {
+      window.alert('ออกจดหมายทวงถามได้เฉพาะเมื่อมีงวดค้างชำระ/เกินกำหนด/หนี้สงสัยจะสูญ ฯลฯ ตั้งแต่ ' + LETTER_MIN_OVERDUE_INSTALLMENTS + ' งวดขึ้นไป');
       return;
     }
     // A demand letter claims "บริษัทฯ" (this company) is the creditor — legally wrong/misleading to
@@ -2885,10 +2892,12 @@
   // The button reads whichever option is selected at click time (see dispatcher, which locates the
   // <select> via the data-letter-row wrapper this function returns).
   function renderIssueLetterControls(ord) {
+    // lateCount (broader LATE_STATUSES set incl. หนี้สงสัยจะสูญ/ชำระบางส่วน), not overdueCount (the
+    // narrower ยอดค้างชำระ-report 'ค้างชำระ' group) — see the matching comment in issueLetter().
     var blockedReason = ord.isCancelled
       ? 'บัญชีนี้ไม่ใช่เจ้าหนี้ของบริษัทฯ อีกต่อไปแล้ว (ยกเลิกสัญญา คืนเครื่อง) — ออกจดหมายอ้างเป็นเจ้าหนี้ไม่ได้'
-      : (ord.overdueCount || 0) < LETTER_MIN_OVERDUE_INSTALLMENTS
-        ? 'ต้องค้างชำระจริงอย่างน้อย ' + LETTER_MIN_OVERDUE_INSTALLMENTS + ' งวด (ตอนนี้ ' + (ord.overdueCount || 0) + ' งวด)'
+      : (ord.lateCount || 0) < LETTER_MIN_OVERDUE_INSTALLMENTS
+        ? 'ต้องมีงวดค้างชำระ/เกินกำหนด/หนี้สงสัยจะสูญ ฯลฯ อย่างน้อย ' + LETTER_MIN_OVERDUE_INSTALLMENTS + ' งวด (ตอนนี้ ' + (ord.lateCount || 0) + ' งวด)'
         : '';
     var eligible = !blockedReason;
     var busy = state.letterIssuing === ord.orderId;
