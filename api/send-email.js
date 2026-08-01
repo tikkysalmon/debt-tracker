@@ -10,10 +10,19 @@
 //
 // Auth: uses a DEDICATED API Key/Secret pair (THAIBULKSMS_EMAIL_API_KEY / THAIBULKSMS_EMAIL_API_SECRET),
 // created via API Key > "ประเภท API: อีเมล" in the Thaibulksms console, not the shared
-// THAIBULKSMS_API_KEY/SECRET used for SMS. Reverted to this (2026-08-01) after payload shape, sender
-// casing, template choice, credit balance, and link-vs-plain-text all ruled out as the cause of a
-// persistent 500 "internal error" on every send attempt — testing whether a key created under the
-// SMS "ประเภท API" type (even though the account has both services enabled) is itself the problem.
+// THAIBULKSMS_API_KEY/SECRET used for SMS.
+//
+// STATUS (2026-08-01): every send attempt gets a 500 "internal error" from Thaibulksms's own
+// server — confirmed NOT caused by anything on our side. Ruled out one at a time: payload field
+// names/shape (template_uuid, mail_to as array, top-level "payload"), sender address casing,
+// 4 different template UUIDs, credit balance (3000+ remaining), link-as-button vs. link-as-plain-
+// text, a dedicated Email-typed API key vs. the shared SMS one, and even dropping the PDF_LINK
+// merge tag entirely (rules out the server crashing while trying to fetch/process that URL).
+// Also tried adding the PDF-documented "name" field — got a clean 400 "property name should not
+// exist" instead of the usual 500, confirming the validator itself works correctly and this field
+// genuinely isn't part of the current schema (the 500 only happens on payloads that pass
+// validation). This is now a Thaibulksms support issue — see project memory / conversation history
+// for the full test log to hand them if it resurfaces.
 //
 // Request shape: Thaibulksms's own developer PDF (assets.thaibulksms.com/documents/developer-manual/
 // nwc/email-api-th.pdf, dated 2024-01-10) documents template_id/Payload/mail_to:string — but the
@@ -56,13 +65,13 @@ module.exports = async function handler(req, res) {
     const payload = {
       template_uuid: templateId,
       mail_from: senderName,
-      name: 'Salmon Enterprise',
       subject: subject,
       mail_to: [{ email: mailTo }],
       payload: {
         CUSTOMER_NAME: customerName || '',
         AMOUNT: amount || '',
         DUE_DATE: dueDate || '',
+        PDF_LINK: pdfLink,
         LETTER_NO: String(letterNo || ''),
         ORDER_ID: orderId || ''
       }
