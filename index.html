@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-01.17';
+  var APP_BUILD = '2026-08-01.18';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -982,13 +982,13 @@
     smsTemplates: (persisted && Array.isArray(persisted.smsTemplates) && persisted.smsTemplates.length) ? persisted.smsTemplates : DEFAULT_SMS_TEMPLATES,
     smsModalTarget: null, smsModalPhone: '', smsModalTemplateId: '', smsModalDraft: '', smsModalManaging: false, smsModalSending: false,
     callDraft: '',
-    trackingOrderId: '',
+    trackingOrderId: '', trackingTrack: '',
     // Letterhead image for จดหมายทวงถามหนี้ (PDF) — one company-wide image, uploaded once via the
     // Upload tab. Falls back to a plain-text company name header (buildLetterHtml) until set.
     letterheadImageUrl: (persisted && persisted.letterheadImageUrl) || '',
-    letterIssuing: null, // orderId currently being generated, or null — disables the button mid-generate
+    letterIssuing: null, // "orderId|main" or "orderId|accessory" currently being generated, or null — disables the button mid-generate
     uploadMsgLetterhead: '',
-    emailModalTarget: null, emailModalTo: '', emailModalLetterNo: null, emailModalSending: false,
+    emailModalTarget: null, emailModalTrack: '', emailModalTo: '', emailModalLetterNo: null, emailModalSending: false,
     appliedQuery: '',
     appliedAccountStatus: 'all',
     appliedDueStatus: 'all',
@@ -1106,6 +1106,22 @@
       }, null);
       var lateInsts = allInstallments.filter(function (i) { return LATE_STATUSES.indexOf(i.effectiveStatus) !== -1; });
       var lateOutstandingRaw = lateInsts.reduce(function (s, i) { return s + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0);
+      // Per-track (main-only / accessory-only) versions of overdueCount/trueOverdueRaw/lateCount
+      // above, added 2026-08-01 so ส่ง SMS/จดหมายทวงถามหนี้ can demand JUST the accessory's own debt
+      // when staff picks the accessory SO in renderSmsLetterTrackingSection, instead of the combined
+      // main+accessory total that overdueCount/trueOverdueRaw/lateCount represent — sending a
+      // separate accessory letter using the combined figure would double-count the accessory debt
+      // (once implicitly inside a main-SO letter, once again explicitly in the accessory one). The
+      // combined fields above are UNCHANGED and still drive the report table / grading / KPIs, which
+      // intentionally stay whole-customer-relationship scoped, not track-split.
+      function trackLateStats(list) {
+        var overdueInsts = list.filter(function (i) { return STATUS_TO_GROUP[i.effectiveStatus] === 'ค้างชำระ'; });
+        var overdueRaw = overdueInsts.reduce(function (s, i) { return s + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0);
+        var lateCount = list.filter(function (i) { return LATE_STATUSES.indexOf(i.effectiveStatus) !== -1; }).length;
+        return { overdueCount: overdueInsts.length, overdueRaw: overdueRaw, lateCount: lateCount };
+      }
+      var mainLate = trackLateStats(installments);
+      var accLate = trackLateStats(accessoryInstallments);
       return Object.assign({}, o, {
         installments: installments,
         accessoryInstallments: accessoryInstallments,
@@ -1135,6 +1151,8 @@
         overdueCount: overdueCount,
         trueOverdueRaw: trueOverdueRaw,
         trueOverdueDisp: fmtMoney(trueOverdueRaw),
+        mainOverdueCount: mainLate.overdueCount, mainOverdueRaw: mainLate.overdueRaw, mainOverdueDisp: fmtMoney(mainLate.overdueRaw), mainLateCount: mainLate.lateCount,
+        accessoryOverdueCount: accLate.overdueCount, accessoryOverdueRaw: accLate.overdueRaw, accessoryOverdueDisp: fmtMoney(accLate.overdueRaw), accessoryLateCount: accLate.lateCount,
         crmVerifiedCount: crmVerifiedCount, crmStatus: crmStatus, crmVerifiedLatestAt: crmVerifiedLatestAt,
         callLatestAt: callLatest ? callLatest.at : '', callLatestNote: callLatest ? callLatest.note : '',
         smsLatestAt: smsLatest ? smsLatest.at : '', smsLatestTemplate: smsLatest ? smsLatest.template : '', smsLatestPhone: smsLatest ? smsLatest.phone : '',
@@ -1723,7 +1741,7 @@
   }
   function selectCustomer(cid) {
     if (!confirmDiscardIfDirty()) return;
-    state.selectedCustomerId = cid; state.customerNoteDraft = ''; state.editingCustomerName = false; state.editingCustomerId = false; state.editingOrderIdFor = null; state.callDraft = ''; state.trackingOrderId = ''; render();
+    state.selectedCustomerId = cid; state.customerNoteDraft = ''; state.editingCustomerName = false; state.editingCustomerId = false; state.editingOrderIdFor = null; state.callDraft = ''; state.trackingOrderId = ''; state.trackingTrack = ''; render();
   }
   function startEditCustomerName() {
     if (!state.selectedCustomerId || !CV) return;
@@ -1869,8 +1887,13 @@
       .replace(/\{งวดที่\}/g, ctx.no != null && ctx.no !== '' ? String(ctx.no) : '')
       .replace(/\{เลขที่สัญญา\}/g, ctx.contractNo || '');
   }
-  function earliestOverdueDueDate(ord) {
-    var all = (ord.installments || []).concat(ord.accessoryInstallments || []);
+  // track: 'accessory' scopes to just accessoryInstallments, anything else (including omitted)
+  // scopes to just the main installments — changed 2026-08-01 from combining both tracks, alongside
+  // the split ส่ง SMS/จดหมาย feature (see trackLateStats in computeOrdersUncached: once an accessory
+  // SO can get its own separate letter/SMS, the main SO's own letter/SMS must stop including the
+  // accessory's debt too, or the accessory portion gets demanded twice across two documents).
+  function earliestOverdueDueDate(ord, track) {
+    var all = track === 'accessory' ? (ord.accessoryInstallments || []) : (ord.installments || []);
     var overdue = all.filter(function (i) { return STATUS_TO_GROUP[i.effectiveStatus] === 'ค้างชำระ'; })
       .sort(function (a, b) { return (a.dueDate || '').localeCompare(b.dueDate || ''); });
     return overdue.length ? overdue[0].dueDate : '';
@@ -1891,9 +1914,18 @@
         contractNo: ord.contractNo || ord.soDisplay, phone: ord.phone, history: inst.smsHistory || []
       };
     }
-    var dd = earliestOverdueDueDate(ord);
+    // 'order'-level context (the general ส่ง SMS ทวงหนี้ button, not tied to one งวด) — track-scoped
+    // since 2026-08-01: the accessory picks its own SO number/amount/history/due date so an accessory
+    // SMS never quotes the combined main+accessory total (see trackLateStats comment above for why).
+    var dd = earliestOverdueDueDate(ord, track);
+    if (track === 'accessory') {
+      return {
+        name: ord.customerName, amount: ord.accessoryOverdueDisp, dueDate: dd ? fmtDate(dd) : '', no: ord.accessoryOverdueCount || '',
+        contractNo: ord.accessoryOrderId || ord.soDisplay, phone: ord.phone, history: ord.accessorySmsHistory || []
+      };
+    }
     return {
-      name: ord.customerName, amount: ord.trueOverdueDisp, dueDate: dd ? fmtDate(dd) : '', no: ord.overdueCount || '',
+      name: ord.customerName, amount: ord.mainOverdueDisp, dueDate: dd ? fmtDate(dd) : '', no: ord.mainOverdueCount || '',
       contractNo: ord.contractNo || ord.soDisplay, phone: ord.phone, history: ord.smsHistory || []
     };
   }
@@ -1985,10 +2017,13 @@
           var history = (inst && inst.smsHistory) || [];
           updateInstallment(target.orderId, target.no, 'smsHistory', history.concat([entry]), target.track);
         } else {
+          // order-level (not tied to one งวด) — routes to accessorySmsHistory when the accessory SO
+          // was picked (2026-08-01), so an accessory send never mixes into the main SO's history.
           var entry = { at: nowTimestamp(), phone: phone, template: tpl ? tpl.name : '', stage: tpl ? tpl.stage || null : null, message: message };
           var ord2 = state.orders.find(function (o) { return o.orderId === target.orderId; });
-          var history2 = (ord2 && ord2.smsHistory) || [];
-          updateOrderField(target.orderId, 'smsHistory', history2.concat([entry]));
+          var field2 = target.track === 'accessory' ? 'accessorySmsHistory' : 'smsHistory';
+          var history2 = (ord2 && ord2[field2]) || [];
+          updateOrderField(target.orderId, field2, history2.concat([entry]));
         }
         state.smsModalTarget = null;
       })
@@ -2118,8 +2153,9 @@
   // Only enabled once ≥2 งวด are genuinely overdue (order.overdueCount, the same "ค้างชำระจริงๆ"
   // definition used everywhere else — see STATUS_GROUP_META) — per explicit user request 2026-07-31.
   var LETTER_MIN_OVERDUE_INSTALLMENTS = 2;
-  function latestOverdueDueDate(ord) {
-    var all = (ord.installments || []).concat(ord.accessoryInstallments || []);
+  // track: same 'accessory' vs main-only split as earliestOverdueDueDate above (changed 2026-08-01).
+  function latestOverdueDueDate(ord, track) {
+    var all = track === 'accessory' ? (ord.accessoryInstallments || []) : (ord.installments || []);
     var overdue = all.filter(function (i) { return STATUS_TO_GROUP[i.effectiveStatus] === 'ค้างชำระ'; })
       .sort(function (a, b) { return (a.dueDate || '').localeCompare(b.dueDate || ''); });
     return overdue.length ? overdue[overdue.length - 1].dueDate : '';
@@ -2144,7 +2180,14 @@
   // WHOLE letter lands on a single page with real margin to spare; the original looser sizing
   // (16px/1.9 line-height/70px padding) ran past that budget and spilled an awkward, ugly page 2
   // (user report 2026-07-31, screenshot showed a mid-letter page-break artifact).
-  function buildLetterHtml(order, letterNo, snapshot) {
+  function buildLetterHtml(order, letterNo, snapshot, track) {
+    var isAcc = track === 'accessory';
+    // Accessory letters (2026-08-01) reference the accessory's OWN SO number/product, not the main
+    // device's — a legal document must cite the correct SO it's actually demanding payment for.
+    // เลขที่สัญญา still refers to the same underlying contract either way (one customer, one contract,
+    // the accessory is just billed on a separate SO per company convention).
+    var docOrderId = isAcc ? (order.accessoryOrderId || order.orderId) : order.orderId;
+    var docProductList = isAcc ? (order.accessoryProductList || order.productList) : order.productList;
     var now = new Date();
     var todayIso = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
     var headerHtml = state.letterheadImageUrl
@@ -2153,13 +2196,13 @@
     return '<div style="width:794px; box-sizing:border-box; padding:42px 55px; background:#ffffff; font-family:\'Sarabun\',\'Noto Sans Thai\',\'Leelawadee UI\',sans-serif; color:#1c1b19; font-size:14px; line-height:1.55;">' +
       headerHtml +
       '<div style="display:flex; justify-content:space-between; font-size:12.5px; color:#5b5750; margin-bottom:18px;">' +
-        '<div>เลขที่หนังสือ: DL-' + esc(order.orderId) + '-' + letterNo + '</div>' +
+        '<div>เลขที่หนังสือ: DL-' + esc(docOrderId) + '-' + letterNo + '</div>' +
         '<div>วันที่: ' + esc(fmtDate(todayIso)) + '</div>' +
       '</div>' +
       '<div style="text-align:center; font-size:16px; font-weight:700; margin-bottom:3px;">หนังสือทวงถามให้ชำระหนี้ค้างชำระ</div>' +
       '<div style="text-align:center; font-size:12.5px; color:#5b5750; margin-bottom:18px;">(ครั้งที่ ' + letterNo + ')</div>' +
       '<div style="margin-bottom:14px;">เรียน คุณ' + esc(order.customerName) + '</div>' +
-      '<p style="margin:0 0 12px; text-align:justify; text-indent:2em;">ตามที่ท่านได้ทำสัญญาเช่าซื้อสินค้ากับบริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด ("บริษัทฯ") ตามคำสั่งซื้อเลขที่ ' + esc(order.orderId) + (order.contractNo ? ' เลขที่สัญญา ' + esc(order.contractNo) : '') + ' ลงวันที่ ' + esc(order.contractDateDisp) + ' รายการสินค้า ' + esc(order.productList) + ' โดยตกลงผ่อนชำระเป็นรายงวดตามที่ระบุในสัญญานั้น</p>' +
+      '<p style="margin:0 0 12px; text-align:justify; text-indent:2em;">ตามที่ท่านได้ทำสัญญาเช่าซื้อสินค้ากับบริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด ("บริษัทฯ") ตามคำสั่งซื้อเลขที่ ' + esc(docOrderId) + (order.contractNo ? ' เลขที่สัญญา ' + esc(order.contractNo) : '') + ' ลงวันที่ ' + esc(order.contractDateDisp) + ' รายการสินค้า ' + esc(docProductList) + ' โดยตกลงผ่อนชำระเป็นรายงวดตามที่ระบุในสัญญานั้น</p>' +
       '<p style="margin:0 0 10px; text-indent:2em;">บัดนี้ปรากฏว่าท่านได้ค้างชำระค่างวดดังกล่าว โดยมีรายละเอียดยอดค้างชำระ ดังนี้</p>' +
       '<table style="width:100%; border-collapse:collapse; margin:0 0 16px; font-size:13.5px;">' +
         '<tr><td style="padding:6px 10px; border:1px solid #efece3; width:38%; color:#5b5750;">จำนวนงวดที่ค้างชำระ</td><td style="padding:6px 10px; border:1px solid #efece3; font-weight:700;">' + snapshot.overdueCount + ' งวด</td></tr>' +
@@ -2218,19 +2261,19 @@
   // its own permanent Storage path (letters/{orderId}-{no}.pdf), so issuing ครั้งที่ 3 can never
   // collide with or overwrite ครั้งที่ 1/2's files — per explicit user request 2026-07-31, to stop a
   // later, larger ยอดค้างชำระ from silently overwriting an earlier notice's already-correct figures.
-  function issueLetter(orderId, letterNo) {
+  function issueLetter(orderId, letterNo, track) {
     if (state.letterIssuing) return;
+    var isAcc = track === 'accessory';
     var order = state.orders.find(function (o) { return o.orderId === orderId; });
     if (!order) return;
     var cvOrder = (CV.computedOrders || []).find(function (o) { return o.orderId === orderId; });
-    // Uses lateCount (the broader LATE_STATUSES set — ค้างชำระ/เกินกำหนดชำระ/ล็อคเครื่อง/
-    // เปลี่ยนภาพพักหน้าจอ/ค้างชำระ ล็อคเครื่องไม่ได้/หนี้สงสัยจะสูญ/ชำระบางส่วน), not the narrower
-    // overdueCount (STATUS_GROUP_META's 5-status 'ค้างชำระ' group used for the ยอดค้างชำระ report
-    // column). Was overdueCount until 2026-08-01 — a customer report showed a bill with 2 งวด already
-    // escalated to หนี้สงสัยจะสูญ (the WORST status, past ค้างชำระ) still blocked from getting a
-    // letter, because หนี้สงสัยจะสูญ isn't part of the ค้างชำระ group. Per explicit user request
-    // ("ทุกสถานะการชำระเงิน เปิดให้ส่งจดหมายติดตามหนี้ได้"), any of the late-status types now count.
-    if (!cvOrder || (cvOrder.lateCount || 0) < LETTER_MIN_OVERDUE_INSTALLMENTS) {
+    // Uses main/accessoryLateCount (the broader LATE_STATUSES set — ค้างชำระ/เกินกำหนดชำระ/ล็อคเครื่อง/
+    // เปลี่ยนภาพพักหน้าจอ/ค้างชำระ ล็อคเครื่องไม่ได้/หนี้สงสัยจะสูญ/ชำระบางส่วน), not overdueCount (the
+    // narrower ยอดค้างชำระ-report 'ค้างชำระ' group). Was the COMBINED lateCount until 2026-08-01, when
+    // this became track-scoped (mainLateCount/accessoryLateCount) alongside the accessory-SO letter
+    // split — each track now gates on its own overdue งวด, not the whole order's combined count.
+    var lateCount = isAcc ? (cvOrder && cvOrder.accessoryLateCount) : (cvOrder && cvOrder.mainLateCount);
+    if (!cvOrder || (lateCount || 0) < LETTER_MIN_OVERDUE_INSTALLMENTS) {
       window.alert('ออกจดหมายทวงถามได้เฉพาะเมื่อมีงวดค้างชำระ/เกินกำหนด/หนี้สงสัยจะสูญ ฯลฯ ตั้งแต่ ' + LETTER_MIN_OVERDUE_INSTALLMENTS + ' งวดขึ้นไป');
       return;
     }
@@ -2248,27 +2291,33 @@
     }
     if (!db) { window.alert('ยังไม่ได้เชื่อมต่อฐานข้อมูลกลาง (Supabase) — ไม่สามารถบันทึกไฟล์ PDF ได้'); return; }
     if (!window.html2canvas || !(window.jspdf && window.jspdf.jsPDF)) { window.alert('ไม่พบไลบรารีสร้าง PDF กรุณาลองรีเฟรชหน้าเว็บ'); return; }
-    var history = order.letterHistory || [];
+    var letterField = isAcc ? 'accessoryLetterHistory' : 'letterHistory';
+    var history = order[letterField] || [];
     var existing = history.find(function (h) { return h.no === letterNo; });
     var nextNo = history.reduce(function (m, h) { return Math.max(m, h.no); }, 0) + 1;
     if (!existing && letterNo !== nextNo) {
       window.alert('เลือกได้เฉพาะครั้งที่มีอยู่แล้ว (แก้ไขของเดิม) หรือครั้งที่ ' + nextNo + ' (ครั้งใหม่) เท่านั้น');
       return;
     }
+    // main/accessoryOverdueCount/Disp (track-scoped since 2026-08-01), not the combined
+    // overdueCount/trueOverdueDisp — an accessory letter must only demand the accessory's own งวด,
+    // never the main device's too (see trackLateStats comment in computeOrdersUncached).
     var snapshot = existing
       ? { overdueCount: existing.overdueCount, amountDisp: existing.amountDisp, dueDate: existing.dueDate }
-      : { overdueCount: cvOrder.overdueCount, amountDisp: cvOrder.trueOverdueDisp, dueDate: latestOverdueDueDate(cvOrder) };
+      : isAcc
+        ? { overdueCount: cvOrder.accessoryOverdueCount, amountDisp: cvOrder.accessoryOverdueDisp, dueDate: latestOverdueDueDate(cvOrder, 'accessory') }
+        : { overdueCount: cvOrder.mainOverdueCount, amountDisp: cvOrder.mainOverdueDisp, dueDate: latestOverdueDueDate(cvOrder) };
     var confirmMsg = existing
-      ? 'ยืนยันออกจดหมายทวงถามหนี้ครั้งที่ ' + letterNo + ' ซ้ำ ให้ลูกค้า ' + cvOrder.customerName + ' ?\n\n' +
+      ? 'ยืนยันออกจดหมายทวงถามหนี้ครั้งที่ ' + letterNo + ' ซ้ำ ให้ลูกค้า ' + cvOrder.customerName + (isAcc ? ' (อุปกรณ์เสริม)' : '') + ' ?\n\n' +
         'จะใช้ยอดค้างชำระเดิมตอนออกครั้งนี้ครั้งแรก (฿' + existing.amountDisp + ' · ' + existing.overdueCount + ' งวด) ไม่ใช่ยอดปัจจุบัน — ไฟล์ PDF เดิมของครั้งที่ ' + letterNo + ' จะถูกแทนที่ ไฟล์ครั้งอื่นไม่ถูกกระทบ'
-      : 'ยืนยันออกจดหมายทวงถามหนี้ครั้งใหม่ (ครั้งที่ ' + letterNo + ') ให้ลูกค้า ' + cvOrder.customerName + ' ?\n\n' +
+      : 'ยืนยันออกจดหมายทวงถามหนี้ครั้งใหม่ (ครั้งที่ ' + letterNo + ') ให้ลูกค้า ' + cvOrder.customerName + (isAcc ? ' (อุปกรณ์เสริม)' : '') + ' ?\n\n' +
         'ยอดค้างชำระปัจจุบัน ฿' + snapshot.amountDisp + ' · ' + snapshot.overdueCount + ' งวด — จะไม่กระทบไฟล์ครั้งก่อนหน้า';
     if (!window.confirm(confirmMsg)) return;
-    state.letterIssuing = orderId;
+    state.letterIssuing = orderId + '|' + (track || 'main');
     render();
     var container = document.createElement('div');
     container.style.cssText = 'position:fixed; left:-99999px; top:0; z-index:-1;';
-    container.innerHTML = buildLetterHtml(cvOrder, letterNo, snapshot);
+    container.innerHTML = buildLetterHtml(cvOrder, letterNo, snapshot, track);
     document.body.appendChild(container);
     var imgEl = container.querySelector('img');
     var ready = (imgEl && !imgEl.complete) ? new Promise(function (res) { imgEl.onload = res; imgEl.onerror = res; }) : Promise.resolve();
@@ -2291,7 +2340,10 @@
         return pdf.output('blob');
       })
       .then(function (blob) {
-        var path = 'letters/' + orderId.replace(/[^a-zA-Z0-9_-]/g, '_') + '-' + letterNo + '.pdf';
+        // -ACC suffix keeps the accessory's own permanent path series (letters/{orderId}-ACC-{no}.pdf)
+        // fully separate from the main track's (letters/{orderId}-{no}.pdf) — same never-collide
+        // guarantee as the per-ครั้งที่ paths above, just one more dimension since 2026-08-01.
+        var path = 'letters/' + orderId.replace(/[^a-zA-Z0-9_-]/g, '_') + (isAcc ? '-ACC' : '') + '-' + letterNo + '.pdf';
         return db.storage.from(CLOUD_BUCKET).upload(path, blob, { upsert: true, contentType: 'application/pdf', cacheControl: '0' }).then(function (res) {
           if (res.error) throw res.error;
           return path;
@@ -2303,7 +2355,7 @@
         var newHistory = existing
           ? history.map(function (h) { return h.no === letterNo ? entry : h; })
           : history.concat([entry]);
-        updateOrderField(orderId, 'letterHistory', newHistory);
+        updateOrderField(orderId, letterField, newHistory);
         state.letterIssuing = null;
         if (container.parentNode) document.body.removeChild(container);
         render();
@@ -2327,36 +2379,42 @@
   // merge tags: {{CUSTOMER_NAME}} {{AMOUNT}} {{DUE_DATE}} {{PDF_LINK}} {{LETTER_NO}} {{ORDER_ID}}.
   // Only an EXISTING letterHistory entry can be emailed (nothing to link to otherwise) — contrast
   // with issueLetter's "existing or next-new" choice, which doesn't apply here.
-  function openSendEmailModal(orderId) {
+  function openSendEmailModal(orderId, track) {
     var order = state.orders.find(function (o) { return o.orderId === orderId; });
     if (!order) return;
-    var history = (order.letterHistory || []).slice().sort(function (a, b) { return b.no - a.no; });
+    var letterField = track === 'accessory' ? 'accessoryLetterHistory' : 'letterHistory';
+    var history = (order[letterField] || []).slice().sort(function (a, b) { return b.no - a.no; });
     if (!history.length) { window.alert('ยังไม่เคยออกจดหมายทวงถามหนี้ให้ SO นี้ — กรุณาออกเอกสารก่อน แล้วจึงส่งอีเมลได้'); return; }
     state.emailModalTarget = orderId;
+    state.emailModalTrack = track || '';
     state.emailModalTo = order.email || '';
     state.emailModalLetterNo = history[0].no;
     render();
   }
   function closeSendEmailModal() {
     state.emailModalTarget = null;
+    state.emailModalTrack = '';
     render();
   }
   function confirmSendEmail() {
     if (!state.emailModalTarget || state.emailModalSending) return;
     var orderId = state.emailModalTarget;
+    var track = state.emailModalTrack;
     var order = state.orders.find(function (o) { return o.orderId === orderId; });
     if (!order) return;
     var to = (state.emailModalTo || '').trim();
     if (!to) { window.alert('กรุณากรอกอีเมลผู้รับ'); return; }
-    var entry = (order.letterHistory || []).find(function (h) { return h.no === state.emailModalLetterNo; });
+    var letterField = track === 'accessory' ? 'accessoryLetterHistory' : 'letterHistory';
+    var entry = (order[letterField] || []).find(function (h) { return h.no === state.emailModalLetterNo; });
     if (!entry) { window.alert('ไม่พบจดหมายครั้งที่เลือก'); return; }
     state.emailModalSending = true;
     render();
+    var docOrderId = track === 'accessory' ? (order.accessoryOrderId || order.orderId) : order.orderId;
     fetch('/api/send-email', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        to: to, orderId: orderId, letterNo: entry.no, pdfLink: entry.url,
+        to: to, orderId: docOrderId, letterNo: entry.no, pdfLink: entry.url,
         customerName: order.customerName, amount: entry.amountDisp, dueDate: fmtDate(entry.dueDate)
       })
     })
@@ -2375,9 +2433,11 @@
           render();
           return;
         }
-        var emailHistory = (order.emailHistory || []).concat([{ at: nowTimestamp(), to: to, letterNo: entry.no }]);
-        updateOrderField(orderId, 'emailHistory', emailHistory);
+        var emailField = track === 'accessory' ? 'accessoryEmailHistory' : 'emailHistory';
+        var emailHistory = (order[emailField] || []).concat([{ at: nowTimestamp(), to: to, letterNo: entry.no }]);
+        updateOrderField(orderId, emailField, emailHistory);
         state.emailModalTarget = null;
+        state.emailModalTrack = '';
         render();
         window.alert('ส่งอีเมลสำเร็จ (ครั้งที่ ' + entry.no + ')');
       })
@@ -2860,14 +2920,17 @@
   }
   // Disabled until at least one จดหมายทวงถามหนี้ ครั้งที่ has actually been issued — nothing to link
   // to via email otherwise (see openSendEmailModal).
-  function renderSendEmailButton(order) {
-    var disabled = !(order.letterHistory && order.letterHistory.length);
+  function renderSendEmailButton(order, track) {
+    var isAcc = track === 'accessory';
+    var letterField = isAcc ? 'accessoryLetterHistory' : 'letterHistory';
+    var emailField = isAcc ? 'accessoryEmailHistory' : 'emailHistory';
+    var disabled = !(order[letterField] && order[letterField].length);
     var enabledStyle = 'border:1.5px solid rgba(124,92,255,0.35); background:#fff; color:#7c5cff;';
     var disabledStyle = 'border:1.5px solid rgba(138,134,163,0.25); background:#f5f4fa; color:#b3b0c4;';
-    return '<button data-action="openSendEmail" data-order="' + esc(order.orderId) + '"' + (disabled ? ' disabled' : '') +
+    return '<button data-action="openSendEmail" data-order="' + esc(order.orderId) + '"' + (track ? ' data-track="' + esc(track) + '"' : '') + (disabled ? ' disabled' : '') +
       ' title="' + (disabled ? 'ต้องออกจดหมายทวงถามหนี้ก่อน ถึงจะส่งอีเมลได้' : 'ส่งอีเมลจดหมายทวงถามหนี้ (แนบไฟล์ PDF จริง)') + '"' +
       ' style="' + (disabled ? disabledStyle : enabledStyle) + ' padding:6px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:' + (disabled ? 'not-allowed' : 'pointer') + '; white-space:nowrap;">📧 ส่งเมลล์จดหมาย</button>' +
-      emailLastSentBadge(order.emailHistory);
+      emailLastSentBadge(order[emailField]);
   }
   function emailLastSentBadge(history) {
     if (!history || !history.length) return '';
@@ -2892,23 +2955,29 @@
   // "ครั้งใหม่" — takes a fresh live snapshot, gets its own new file, never touches earlier ones).
   // The button reads whichever option is selected at click time (see dispatcher, which locates the
   // <select> via the data-letter-row wrapper this function returns).
-  function renderIssueLetterControls(ord) {
+  function renderIssueLetterControls(ord, track) {
+    var isAcc = track === 'accessory';
     // lateCount (broader LATE_STATUSES set incl. หนี้สงสัยจะสูญ/ชำระบางส่วน), not overdueCount (the
     // narrower ยอดค้างชำระ-report 'ค้างชำระ' group) — see the matching comment in issueLetter().
+    // main/accessoryLateCount (not the combined lateCount) since 2026-08-01 — each track's letter now
+    // gates on ITS OWN overdue งวด count, not the whole order's combined count.
+    var lateCount = isAcc ? (ord.accessoryLateCount || 0) : (ord.mainLateCount || 0);
     var blockedReason = ord.isCancelled
       ? 'บัญชีนี้ไม่ใช่เจ้าหนี้ของบริษัทฯ อีกต่อไปแล้ว (ยกเลิกสัญญา คืนเครื่อง) — ออกจดหมายอ้างเป็นเจ้าหนี้ไม่ได้'
-      : (ord.lateCount || 0) < LETTER_MIN_OVERDUE_INSTALLMENTS
-        ? 'ต้องมีงวดค้างชำระ/เกินกำหนด/หนี้สงสัยจะสูญ ฯลฯ อย่างน้อย ' + LETTER_MIN_OVERDUE_INSTALLMENTS + ' งวด (ตอนนี้ ' + (ord.lateCount || 0) + ' งวด)'
+      : lateCount < LETTER_MIN_OVERDUE_INSTALLMENTS
+        ? 'ต้องมีงวดค้างชำระ/เกินกำหนด/หนี้สงสัยจะสูญ ฯลฯ อย่างน้อย ' + LETTER_MIN_OVERDUE_INSTALLMENTS + ' งวด (ตอนนี้ ' + lateCount + ' งวด)'
         : '';
     var eligible = !blockedReason;
-    var busy = state.letterIssuing === ord.orderId;
-    var history = (ord.letterHistory || []).slice().sort(function (a, b) { return a.no - b.no; });
+    var busyKey = ord.orderId + '|' + (track || 'main');
+    var busy = state.letterIssuing === busyKey;
+    var letterField = isAcc ? 'accessoryLetterHistory' : 'letterHistory';
+    var history = (ord[letterField] || []).slice().sort(function (a, b) { return a.no - b.no; });
     var nextNo = history.reduce(function (m, h) { return Math.max(m, h.no); }, 0) + 1;
     var options = history.map(function (h) {
       return '<option value="' + h.no + '">ครั้งที่ ' + h.no + ' (แก้ไขของเดิม — ฿' + esc(h.amountDisp) + ')</option>';
     }).join('') + '<option value="' + nextNo + '" selected>ครั้งที่ ' + nextNo + ' (ครั้งใหม่)</option>';
     var selectHtml = '<select data-role="letterNoSelect"' + (!eligible || busy ? ' disabled' : '') + ' style="padding:6px 10px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fff; font-size:12.5px; color:#2b2540;">' + options + '</select>';
-    var btn = '<button data-action="issueLetter" data-order="' + esc(ord.orderId) + '"' + (!eligible || busy ? ' disabled' : '') +
+    var btn = '<button data-action="issueLetter" data-order="' + esc(ord.orderId) + '"' + (track ? ' data-track="' + esc(track) + '"' : '') + (!eligible || busy ? ' disabled' : '') +
       ' title="' + (eligible ? 'ออกจดหมายทวงถามหนี้ (PDF) ตามครั้งที่เลือกไว้' : blockedReason) + '"' +
       ' style="border:none; background:' + (eligible && !busy ? 'linear-gradient(135deg,#7c5cff,#6647e0)' : '#c3c0d6') + '; color:#fff; padding:6px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:' + (eligible && !busy ? 'pointer' : 'not-allowed') + '; white-space:nowrap; box-shadow:' + (eligible && !busy ? '0 4px 12px rgba(124,92,255,0.3)' : 'none') + ';">' +
       (busy ? '⏳ กำลังสร้าง...' : '📄 ออกเอกสาร') + '</button>';
@@ -2969,21 +3038,23 @@
   // which now owns the "which SO" selection (state.trackingOrderId) and passes the picked order into
   // renderSmsCard/renderLetterCard. These two functions themselves are order-agnostic — just render
   // whatever `ord` they're given — so no changes were needed here for that reversal.
-  function renderSmsCard(ord) {
-    var smsHistory = ord.smsHistory || [];
+  function renderSmsCard(ord, track) {
+    var smsHistory = (track === 'accessory' ? ord.accessorySmsHistory : ord.smsHistory) || [];
     var smsBody =
-      '<div>' + renderSendSmsButton('order', ord.orderId, null, null, '📱 ส่ง SMS ทวงหนี้') + '</div>' +
+      '<div>' + renderSendSmsButton('order', ord.orderId, null, track, '📱 ส่ง SMS ทวงหนี้') + '</div>' +
       trackingHistoryList(smsHistory, function (h) {
         return '<div style="background:rgba(124,92,255,0.05); border:1px solid rgba(124,92,255,0.12); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' +
           '<div style="font-weight:700; color:#7c5cff; margin-bottom:2px;">🕐 ' + esc(h.at) + '</div>' +
           '<div style="color:#6b6785;">' + esc(h.template || 'ข้อความทวงถาม') + (h.phone ? ' · ' + esc(h.phone) : '') + '</div>' +
         '</div>';
       });
-    return trackingCard('#7c5cff', '📱', 'ส่ง SMS ทวงหนี้', smsHistory.length, smsBody);
+    return trackingCard('#7c5cff', '📱', 'ส่ง SMS ทวงหนี้' + (track === 'accessory' ? ' (อุปกรณ์เสริม)' : ''), smsHistory.length, smsBody);
   }
-  function renderLetterCard(ord) {
-    var letterHistory = ord.letterHistory || [];
-    var emailHistory = ord.emailHistory || [];
+  function renderLetterCard(ord, track) {
+    var letterField = track === 'accessory' ? 'accessoryLetterHistory' : 'letterHistory';
+    var emailField = track === 'accessory' ? 'accessoryEmailHistory' : 'emailHistory';
+    var letterHistory = ord[letterField] || [];
+    var emailHistory = ord[emailField] || [];
     var emailHistoryHtml = !emailHistory.length ? '' :
       '<div style="font-size:10.5px; color:#8a86a3; font-weight:700; margin-top:2px;">📧 ประวัติส่งอีเมล</div>' +
       trackingHistoryList(emailHistory, function (h) {
@@ -2993,8 +3064,8 @@
         '</div>';
       });
     var letterBody =
-      renderIssueLetterControls(ord) +
-      '<div>' + renderSendEmailButton(ord) + '</div>' +
+      renderIssueLetterControls(ord, track) +
+      '<div>' + renderSendEmailButton(ord, track) + '</div>' +
       trackingHistoryList(letterHistory, function (h) {
         return '<div style="background:rgba(179,38,30,0.05); border:1px solid rgba(179,38,30,0.12); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' +
           '<div style="font-weight:700; color:#b3261e; margin-bottom:2px;">🕐 ' + esc(h.at) + ' · ครั้งที่ ' + h.no + '</div>' +
@@ -3002,35 +3073,51 @@
         '</div>';
       }) +
       emailHistoryHtml;
-    return trackingCard('#b3261e', '📄', 'ส่งจดหมายทวงถามหนี้', letterHistory.length, letterBody);
+    return trackingCard('#b3261e', '📄', 'ส่งจดหมายทวงถามหนี้' + (track === 'accessory' ? ' (อุปกรณ์เสริม)' : ''), letterHistory.length, letterBody);
   }
   // Back at customer-header level (2026-08-01, reverted from the per-order-card placement above)
   // per explicit user request — but now with a SO picker instead of silently operating on whatever
   // pickContactOrder() happens to return, since smsHistory/letterHistory/emailHistory and the
   // letter-eligibility gate are genuinely per-order fields (a customer with 2+ SO/bills needs to
-  // pick which one before sending). state.trackingOrderId holds the picked orderId (reset to '' on
-  // selectCustomer so a new customer always starts back on their first SO); falls back to the first
-  // order in the list if unset or if it no longer matches this customer's orders. The selected SO's
-  // ยอดคงเหลือ is shown right above the send buttons so staff see the outstanding balance before
-  // sending, without needing to scroll down to that SO's own order card.
-  function renderSmsLetterTrackingSection() {
+  // pick which one before sending). state.trackingOrderId/trackingTrack hold the picked selection
+  // (reset on selectCustomer so a new customer always starts back on their first SO); falls back to
+  // the first entry if unset or no longer valid for this customer. The selected SO's ยอดคงเหลือ is
+  // shown right next to the picker so staff see the outstanding balance before sending.
+  // 2026-08-01: an "อุปกรณ์เสริม" (accessory) sub-bill has its OWN SO number (accessoryOrderId) and
+  // own outstanding balance, but lives on the SAME order object as the main device (not a separate
+  // entry in CV.selectedCustomerOrders) — so it's flattened into its own dropdown ENTRY here whenever
+  // it's been filled in (ord.hasAccessory && ord.accessoryOrderId), each entry carrying {orderId,
+  // track}. The <select>'s value encodes both as "orderId" (main) or "orderId::ACC" (accessory) since
+  // a single <select> can only hold one string per option.
+  function buildTrackingEntries() {
     var orders = CV.selectedCustomerOrders || [];
-    if (!orders.length) return '';
-    var selectedId = (state.trackingOrderId && orders.some(function (o) { return o.orderId === state.trackingOrderId; }))
-      ? state.trackingOrderId : orders[0].orderId;
-    var ord = orders.find(function (o) { return o.orderId === selectedId; }) || orders[0];
-    var options = orders.map(function (o) {
-      return '<option value="' + esc(o.orderId) + '"' + (o.orderId === selectedId ? ' selected' : '') + '>' + esc(o.soDisplay) + ' — ' + esc(o.productList) + '</option>';
+    var entries = [];
+    orders.forEach(function (o) {
+      entries.push({ key: o.orderId, ord: o, track: '', label: o.soDisplay + ' — ' + o.productList });
+      if (o.hasAccessory && o.accessoryOrderId) {
+        entries.push({ key: o.orderId + '::ACC', ord: o, track: 'accessory', label: (o.accessoryOrderId || o.orderId) + ' (อุปกรณ์เสริม) — ' + (o.accessoryProductList || '') });
+      }
+    });
+    return entries;
+  }
+  function renderSmsLetterTrackingSection() {
+    var entries = buildTrackingEntries();
+    if (!entries.length) return '';
+    var currentKey = state.trackingTrack === 'accessory' ? state.trackingOrderId + '::ACC' : state.trackingOrderId;
+    var selected = entries.find(function (e) { return e.key === currentKey; }) || entries[0];
+    var options = entries.map(function (e) {
+      return '<option value="' + esc(e.key) + '"' + (e.key === selected.key ? ' selected' : '') + '>' + esc(e.label) + '</option>';
     }).join('');
     var selectHtml = '<select data-action="selectTrackingOrder" style="flex:1; min-width:220px; box-sizing:border-box; padding:8px 10px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fff; font-size:12.5px; color:#2b2540;">' + options + '</select>';
-    var outstandingDisp = ord.hasAccessory ? ord.mainOutstandingDisp : ord.totalOutstandingDisp;
+    var ord = selected.ord, track = selected.track;
+    var outstandingDisp = track === 'accessory' ? ord.accessoryOutstandingDisp : (ord.hasAccessory ? ord.mainOutstandingDisp : ord.totalOutstandingDisp);
     var balanceHtml = '<span style="font-size:12px; color:#e03131; font-weight:700; white-space:nowrap;">ยอดคงเหลือ SO นี้: ฿' + esc(outstandingDisp) + '</span>';
     return '<div style="border-top:1px dashed rgba(124,92,255,0.15); margin-top:14px; padding-top:14px;">' +
       '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:15px; color:#2b2540; margin-bottom:10px; display:flex; align-items:center; gap:6px;">📋 ส่ง SMS / จดหมายทวงถามหนี้</div>' +
       '<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px;">' +
         '<div style="font-size:12px; color:#6b6785; font-weight:600; white-space:nowrap;">เลือก SO:</div>' + selectHtml + balanceHtml +
       '</div>' +
-      '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px;">' + renderSmsCard(ord) + renderLetterCard(ord) + '</div>' +
+      '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px;">' + renderSmsCard(ord, track) + renderLetterCard(ord, track) + '</div>' +
     '</div>';
   }
   // An early full-settlement payment often gets recorded entirely against ONE งวด (e.g. "ยอดชำระ
@@ -4589,7 +4676,7 @@
     var ctx = smsContextFor(target.level, target.orderId, target.no, target.track);
     if (!ctx) { state.smsModalTarget = null; return ''; }
     var nums = extractPhoneNumbers(ctx.phone);
-    var titleSuffix = target.level === 'installment' ? ('· งวดที่ ' + target.no) : '· ทั้งบัญชี';
+    var titleSuffix = target.level === 'installment' ? ('· งวดที่ ' + target.no) : (target.track === 'accessory' ? '· อุปกรณ์เสริม' : '· ทั้งบัญชี');
     var phoneField = nums.length
       ? '<select data-action="smsModalPhone" style="width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fff; font-size:13.5px; color:#2b2540; outline:none;">' +
           nums.map(function (p) { return '<option value="' + esc(p) + '"' + (p === state.smsModalPhone ? ' selected' : '') + '>' + esc(p) + '</option>'; }).join('') +
@@ -4653,24 +4740,28 @@
 
   function renderSendEmailModal() {
     var orderId = state.emailModalTarget;
+    var track = state.emailModalTrack;
     var order = state.orders.find(function (o) { return o.orderId === orderId; });
     if (!order) { state.emailModalTarget = null; return ''; }
-    var history = (order.letterHistory || []).slice().sort(function (a, b) { return b.no - a.no; });
+    var letterField = track === 'accessory' ? 'accessoryLetterHistory' : 'letterHistory';
+    var emailField = track === 'accessory' ? 'accessoryEmailHistory' : 'emailHistory';
+    var history = (order[letterField] || []).slice().sort(function (a, b) { return b.no - a.no; });
     var options = history.map(function (h) {
       return '<option value="' + h.no + '"' + (h.no === state.emailModalLetterNo ? ' selected' : '') + '>ครั้งที่ ' + h.no + ' · ' + esc(h.at) + ' · ฿' + esc(h.amountDisp) + '</option>';
     }).join('');
+    var emailHistory = order[emailField];
     var emailHistoryHtml = '';
-    if (order.emailHistory && order.emailHistory.length) {
-      emailHistoryHtml = '<div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:8px;">📨 ประวัติการส่ง (' + order.emailHistory.length + ' ครั้ง)</div>' +
+    if (emailHistory && emailHistory.length) {
+      emailHistoryHtml = '<div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:8px;">📨 ประวัติการส่ง (' + emailHistory.length + ' ครั้ง)</div>' +
         '<div style="display:flex; flex-direction:column; gap:6px; margin-bottom:16px; max-height:140px; overflow-y:auto;">' +
-        order.emailHistory.slice().reverse().map(function (h) {
+        emailHistory.slice().reverse().map(function (h) {
           return '<div style="background:rgba(37,99,235,0.05); border:1px solid rgba(37,99,235,0.15); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' + esc(h.at) + ' · ' + esc(h.to) + ' · ครั้งที่ ' + h.letterNo + '</div>';
         }).join('') +
         '</div>';
     }
     return '<div style="position:fixed; inset:0; z-index:9999; background:rgba(43,37,64,0.35); display:flex; align-items:center; justify-content:center; padding:20px;">' +
       '<div style="max-width:460px; width:100%; max-height:90vh; overflow-y:auto; background:#fff; border-radius:20px; padding:26px 26px 22px; box-shadow:0 24px 60px rgba(43,37,64,0.3);">' +
-        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#2b2540; margin-bottom:18px;">📧 ส่งเมลล์จดหมายทวงถามหนี้</div>' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#2b2540; margin-bottom:18px;">📧 ส่งเมลล์จดหมายทวงถามหนี้' + (track === 'accessory' ? ' (อุปกรณ์เสริม)' : '') + '</div>' +
         emailHistoryHtml +
         '<div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:6px;">อีเมลผู้รับ</div>' +
         '<input type="email" value="' + esc(state.emailModalTo) + '" data-action="emailModalTo" placeholder="กรอกอีเมลลูกค้า" style="width:100%; box-sizing:border-box; padding:10px 14px; border-radius:10px; border:1px solid rgba(37,99,235,0.25); background:#fbfaff; font-size:14px; color:#2b2540; outline:none; margin-bottom:14px;" />' +
@@ -5147,11 +5238,11 @@
         case 'issueLetter': {
           var letterRow = t.closest('[data-letter-row]');
           var letterSel = letterRow && letterRow.querySelector('[data-role="letterNoSelect"]');
-          issueLetter(t.getAttribute('data-order'), letterSel ? Number(letterSel.value) : null);
+          issueLetter(t.getAttribute('data-order'), letterSel ? Number(letterSel.value) : null, t.getAttribute('data-track'));
           break;
         }
         case 'cancelOrder': cancelOrder(t.getAttribute('data-order')); break;
-        case 'openSendEmail': openSendEmailModal(t.getAttribute('data-order')); break;
+        case 'openSendEmail': openSendEmailModal(t.getAttribute('data-order'), t.getAttribute('data-track')); break;
         case 'closeSendEmailModal': closeSendEmailModal(); break;
         case 'confirmSendEmail': confirmSendEmail(); break;
         case 'saveCallLog': saveCallLog(); break;
@@ -5208,7 +5299,13 @@
         case 'setInstallmentAmount': setInstallmentAmount(t.getAttribute('data-order'), toNumber(t.value), t.getAttribute('data-track')); break;
         case 'setInstallmentCount': setInstallmentCount(t.getAttribute('data-order'), t.getAttribute('data-track'), toNumber(t.value)); break;
         case 'filter': state[t.getAttribute('data-key')] = t.value; render(); break;
-        case 'selectTrackingOrder': state.trackingOrderId = t.value; render(); break;
+        case 'selectTrackingOrder': {
+          var isAccEntry = t.value.slice(-5) === '::ACC';
+          state.trackingOrderId = isAccEntry ? t.value.slice(0, -5) : t.value;
+          state.trackingTrack = isAccEntry ? 'accessory' : '';
+          render();
+          break;
+        }
         case 'setPageSize': state.pageSize = Number(t.value) || 50; state.page = 1; render(); break;
         case 'onDebtFile': onDebtFileChange(t.files[0]); t.value = ''; break;
         case 'onPaymentFile': onPaymentFileChange(t.files[0]); t.value = ''; break;
