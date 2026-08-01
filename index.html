@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-01.13';
+  var APP_BUILD = '2026-08-01.14';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -88,7 +88,13 @@
     'หนี้สงสัยจะสูญ': { color: '#9c1f4a', order: 10 },
     'จำหน่ายชื่อให้บริษัทติดตามหนี้': { color: '#7c5cff', order: 11 },
     'ยกเลิกสัญญา คืนเครื่อง': { color: '#4b5563', order: 12 },
-    'ค้างชำระ ล็อคเครื่องไม่ได้': { color: '#9a4b1f', order: 13 }
+    // 'ยกเลิกบิล' added 2026-08-01, per user request — a DIFFERENT terminal state from ยกเลิกสัญญา
+    // คืนเครื่อง (that one means a real contract existed, customer had the device, then returned it;
+    // this one means the bill/SO itself was opened by mistake and a replacement SO was created — no
+    // real debt relationship, no device return involved). Kept as its own status/color throughout
+    // rather than reusing ยกเลิกสัญญา คืนเครื่อง's cascade, so reporting doesn't conflate the two.
+    'ยกเลิกบิล': { color: '#0c8599', order: 13 },
+    'ค้างชำระ ล็อคเครื่องไม่ได้': { color: '#9a4b1f', order: 14 }
   };
   var STATUS_OPTIONS = Object.keys(STATUS_META).sort(function (a, b) { return STATUS_META[a].order - STATUS_META[b].order; });
   // เปลี่ยนภาพพักหน้าจอ (ระบบ)/ล็อคเครื่อง (ระบบ) are never staff-pickable — they exist purely as
@@ -107,7 +113,8 @@
     { label: 'ค้างชำระ', color: '#e03131', icon: '⚠️', statuses: ['ค้างชำระ', 'เกินกำหนดชำระ', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้'] },
     { label: 'หนี้สงสัยจะสูญ', color: '#9c1f4a', icon: '🚫', statuses: ['หนี้สงสัยจะสูญ'] },
     { label: 'จำหน่ายชื่อให้บริษัทติดตามหนี้', color: '#7c5cff', icon: '📤', statuses: ['จำหน่ายชื่อให้บริษัทติดตามหนี้'] },
-    { label: 'ยกเลิกสัญญา คืนเครื่อง', color: '#4b5563', icon: '↩️', statuses: ['ยกเลิกสัญญา คืนเครื่อง'] }
+    { label: 'ยกเลิกสัญญา คืนเครื่อง', color: '#4b5563', icon: '↩️', statuses: ['ยกเลิกสัญญา คืนเครื่อง'] },
+    { label: 'ยกเลิกบิล', color: '#0c8599', icon: '🗑️', statuses: ['ยกเลิกบิล'] }
   ];
   var STATUS_TO_GROUP = {};
   STATUS_GROUP_META.forEach(function (g) { g.statuses.forEach(function (s) { STATUS_TO_GROUP[s] = g.label; }); });
@@ -124,7 +131,7 @@
   // dueDate alone. See PAYMENT_CLEARS_OVERRIDE_STATUSES below for how this override still expires
   // once the customer actually pays the งวด, unlike the other manual-only statuses which need a
   // staff member to click "รีเซ็ตสถานะเป็นอัตโนมัติ" (⟲) to clear.
-  var MANUAL_ONLY_STATUSES = { 'หนี้สงสัยจะสูญ': true, 'จำหน่ายชื่อให้บริษัทติดตามหนี้': true, 'ยกเลิกสัญญา คืนเครื่อง': true, 'ค้างชำระ ล็อคเครื่องไม่ได้': true, 'เปลี่ยนภาพพักหน้าจอ': true };
+  var MANUAL_ONLY_STATUSES = { 'หนี้สงสัยจะสูญ': true, 'จำหน่ายชื่อให้บริษัทติดตามหนี้': true, 'ยกเลิกสัญญา คืนเครื่อง': true, 'ยกเลิกบิล': true, 'ค้างชำระ ล็อคเครื่องไม่ได้': true, 'เปลี่ยนภาพพักหน้าจอ': true };
   // A statusOverride for one of these becomes stale the moment the งวด itself receives any
   // payment (amountPaid > 0) — that's the signal the customer settled the outstanding installment,
   // so the manual hold should release on its own instead of needing a staff member to notice and
@@ -940,6 +947,7 @@
     showCancelledDetail: false,
     showMultiOrderDetail: false,
     showSoldDetail: false,
+    showBillCancelledDetail: false,
     showFilters: true,
     openFilterDropdown: null, // filterKey of the currently-open multi-select dropdown ('paymentStatus'|'purchaseType'), or null
     page: 1,
@@ -1046,6 +1054,7 @@
       // account-status badge disappear — see stickyAccountStatusPatch for why.
       var isCancelled = !!o.wasCancelled || allInstallments.some(function (i) { return i.effectiveStatus === 'ยกเลิกสัญญา คืนเครื่อง'; });
       var isSold = !!o.wasSold || allInstallments.some(function (i) { return i.effectiveStatus === 'จำหน่ายชื่อให้บริษัทติดตามหนี้'; });
+      var isBillCancelled = !!o.wasBillCancelled || allInstallments.some(function (i) { return i.effectiveStatus === 'ยกเลิกบิล'; });
       // ติดตามเครื่องคืน is a CUSTOMER-level tag now (state.customerTrackingReturn, keyed by
       // customerKey — see toggleCustomerTrackingReturn), not an order/งวด status, so it deliberately
       // does NOT get derived here — computeOrdersUncached's result is cached on state.orders'
@@ -1130,6 +1139,7 @@
         smsLatestAt: smsLatest ? smsLatest.at : '', smsLatestTemplate: smsLatest ? smsLatest.template : '', smsLatestPhone: smsLatest ? smsLatest.phone : '',
         isCancelled: isCancelled,
         isSold: isSold,
+        isBillCancelled: isBillCancelled,
         lateCount: lateInsts.length,
         lateOutstandingRaw: lateOutstandingRaw,
         installmentCount: installments.length,
@@ -1139,7 +1149,7 @@
   }
 
   function computeDashboard(orders) {
-    var activeOrders = orders.filter(function (o) { return !o.isCancelled && !o.isSold; });
+    var activeOrders = orders.filter(function (o) { return !o.isCancelled && !o.isSold && !o.isBillCancelled; });
     var cancelledOrders = orders.filter(function (o) { return o.isCancelled; });
     var soldOrders = orders.filter(function (o) { return o.isSold; });
 
@@ -1169,18 +1179,26 @@
     });
     var cancelledSum = cancelledOrders.reduce(function (s, o) { return s + o.totalContractRaw; }, 0);
     var soldSum = soldOrders.reduce(function (s, o) { return s + o.totalContractRaw; }, 0);
-    var totalContract = orders.reduce(function (s, o) { return s + o.totalContractRaw; }, 0);
+    // ยกเลิกบิล orders (mistakenly-opened SO, replaced by a new one — see cancelOrder) never
+    // represented real business, unlike ยกเลิกสัญญา/จำหน่ายชื่อ which stay inside totalContract as a
+    // write-off record — so these are excluded from ยอดรวมสัญญา/จำนวนสัญญา entirely, not just
+    // bucketed like cancelledSum/soldSum, per explicit user request 2026-08-01.
+    var billCancelledOrders = orders.filter(function (o) { return o.isBillCancelled; });
+    var billCancelledSum = billCancelledOrders.reduce(function (s, o) { return s + o.totalContractRaw; }, 0);
+    var contractOrders = orders.filter(function (o) { return !o.isBillCancelled; });
+    var totalContract = contractOrders.reduce(function (s, o) { return s + o.totalContractRaw; }, 0);
     var netRemaining = Math.max(0, totalContract - paidSum);
     var paidRatePercent = totalContract > 0 ? (paidSum / totalContract * 100) : 0;
 
     var kpi = {
-      totalContractDisp: fmtMoney(totalContract), contractCount: orders.length,
+      totalContractDisp: fmtMoney(totalContract), contractCount: contractOrders.length,
       paidDisp: fmtMoney(paidSum), paidCustomerCount: Object.keys(paidCustomerSet).length,
       netRemainingDisp: fmtMoney(netRemaining),
       overdueDisp: fmtMoney(overdueSum), overdueCustomerCount: Object.keys(overdueCustomerSet).length,
       badDebtDisp: fmtMoney(badDebtSum), badDebtCustomerCount: Object.keys(badDebtCustomerSet).length,
       cancelledDisp: fmtMoney(cancelledSum), cancelledCount: cancelledOrders.length,
       soldDisp: fmtMoney(soldSum), soldCount: soldOrders.length,
+      billCancelledDisp: fmtMoney(billCancelledSum), billCancelledCount: billCancelledOrders.length,
       notDueDisp: fmtMoney(notDueSum), notDueCustomerCount: Object.keys(notDueCustomerSet).length,
       paidRatePercent: paidRatePercent.toFixed(1)
     };
@@ -1351,10 +1369,14 @@
     });
     var purchaseTypeGroups = Object.keys(ptMap).map(function (type) {
       var list = ptMap[type].orders;
-      var activeList = list.filter(function (o) { return !o.isCancelled && !o.isSold; });
+      var activeList = list.filter(function (o) { return !o.isCancelled && !o.isSold && !o.isBillCancelled; });
       var cancelledList = list.filter(function (o) { return o.isCancelled; });
       var soldList = list.filter(function (o) { return o.isSold; });
-      var contractRaw = list.reduce(function (s, o) { return s + o.totalContractRaw; }, 0);
+      var billCancelledList = list.filter(function (o) { return o.isBillCancelled; });
+      // ยกเลิกบิล excluded from this type's contractRaw/count same as the top-level totalContract —
+      // a mistakenly-opened bill isn't real business volume for this purchase type either.
+      var contractList = list.filter(function (o) { return !o.isBillCancelled; });
+      var contractRaw = contractList.reduce(function (s, o) { return s + o.totalContractRaw; }, 0);
       var paidRaw = activeList.reduce(function (s, o) { return s + o.totalPaidFullRaw; }, 0);
       // ค้างชำระ/หนี้สงสัยจะสูญ here must use the same STATUS_TO_GROUP grouping as "แยกสถานะการชำระ"
       // and the top ยอดค้างชำระ/หนี้สงสัยจะสูญ KPI cards (fixed 2026-07-30) — this used to sum
@@ -1373,16 +1395,18 @@
       });
       var cancelledRaw = cancelledList.reduce(function (s, o) { return s + o.totalContractRaw; }, 0);
       var soldRaw = soldList.reduce(function (s, o) { return s + o.totalContractRaw; }, 0);
+      var billCancelledRaw = billCancelledList.reduce(function (s, o) { return s + o.totalContractRaw; }, 0);
       var gCounts = { A: 0, B: 0, 'หนี้สงสัยจะสูญ': 0 };
       activeList.forEach(function (o) { var g = o.lateCount === 0 ? 'A' : o.lateCount === 1 ? 'B' : 'หนี้สงสัยจะสูญ'; gCounts[g]++; });
       var gTotal = activeList.length;
       var gSegs = ['A', 'B', 'หนี้สงสัยจะสูญ'].map(function (g) { return { label: g, color: GRADE_COLORS[g], count: gCounts[g], pct: gTotal > 0 ? (gCounts[g] / gTotal * 100) : 0 }; });
       return {
-        type: type, count: list.length,
+        type: type, count: contractList.length,
         contractDisp: fmtMoney(contractRaw), paidDisp: fmtMoney(paidRaw),
         overdueDisp: fmtMoney(overdueRaw), notDueDisp: fmtMoney(notDueRaw),
         badDebtDisp: fmtMoney(badDebtRaw),
         cancelledDisp: fmtMoney(cancelledRaw), soldDisp: fmtMoney(soldRaw),
+        billCancelledDisp: fmtMoney(billCancelledRaw),
         gradeDonut: { conic: buildConicGradient(gSegs), segments: gSegs.map(function (s) { return Object.assign({}, s, { pctDisp: s.pct.toFixed(1) }); }) }
       };
     });
@@ -1404,6 +1428,7 @@
     }
     var cancelledSummary = buildLifecycleSummary(cancelledOrders);
     var soldSummary = buildLifecycleSummary(soldOrders);
+    var billCancelledSummary = buildLifecycleSummary(billCancelledOrders);
 
     // ลูกค้าที่มีคำสั่งซื้อมากกว่า 1 คำสั่งซื้อจริงๆ (2026-07-30) — excludes "ดาวน์+อุปกรณ์เสริม"
     // orders from the count entirely: that purchase type always opens a 2nd SO for what's really
@@ -1460,7 +1485,7 @@
       gradeCards: gradeCards, gradeDonut: gradeDonut, gradeTotal: gradeTotal,
       ageOverdueSummary: ageOverdueSummary, ageBadDebtSummary: ageBadDebtSummary,
       purchaseTypeGroups: purchaseTypeGroups,
-      cancelledSummary: cancelledSummary, soldSummary: soldSummary,
+      cancelledSummary: cancelledSummary, soldSummary: soldSummary, billCancelledSummary: billCancelledSummary,
       multiOrderSummary: multiOrderSummary
     };
   }
@@ -1497,8 +1522,9 @@
       filteredOrders = filteredOrders.filter(function (o) {
         if (f.filterAccountStatus === 'cancelled') return o.isCancelled;
         if (f.filterAccountStatus === 'sold') return o.isSold;
+        if (f.filterAccountStatus === 'billCancelled') return o.isBillCancelled;
         if (f.filterAccountStatus === 'trackingReturn') return isCustomerTrackingReturn(o);
-        return !o.isCancelled && !o.isSold && !isCustomerTrackingReturn(o);
+        return !o.isCancelled && !o.isSold && !o.isBillCancelled && !isCustomerTrackingReturn(o);
       });
     }
     // Combine main + accessory (ดาวน์+อุปกรณ์เสริม) installments for every per-installment filter
@@ -1527,7 +1553,7 @@
     }
     if (f.filterGrade !== 'all') {
       filteredOrders = filteredOrders.filter(function (o) {
-        if (o.isCancelled || o.isSold) return false;
+        if (o.isCancelled || o.isSold || o.isBillCancelled) return false;
         var g = o.lateCount === 0 ? 'A' : o.lateCount === 1 ? 'B' : 'หนี้สงสัยจะสูญ';
         return g === f.filterGrade;
       });
@@ -1610,7 +1636,7 @@
     // ปิดยอด — ยอดคงเหลือรวมทุกบิลของลูกค้าคนนี้เป็น 0 แล้ว (จ่ายครบ/ปิดยอดแล้วทุกสัญญา)
     var selectedCustomerFullySettled = hasSelectedCustomer && selectedCustomerOrders.reduce(function (s, o) { return s + o.totalOutstandingRaw; }, 0) <= 0.005;
     if (hasSelectedCustomer) {
-      var activeSel = selectedCustomerOrders.filter(function (o) { return !o.isCancelled && !o.isSold; });
+      var activeSel = selectedCustomerOrders.filter(function (o) { return !o.isCancelled && !o.isSold && !o.isBillCancelled; });
       if (activeSel.some(function (o) { return o.lateCount >= 2; })) selectedCustomerGrade = 'หนี้สงสัยจะสูญ';
       else if (activeSel.some(function (o) { return o.lateCount === 1; })) selectedCustomerGrade = 'B';
     }
@@ -1822,6 +1848,7 @@
   function stickyAccountStatusPatch(status) {
     if (status === 'จำหน่ายชื่อให้บริษัทติดตามหนี้') return { wasSold: true };
     if (status === 'ยกเลิกสัญญา คืนเครื่อง') return { wasCancelled: true };
+    if (status === 'ยกเลิกบิล') return { wasBillCancelled: true };
     return null;
   }
   function trackKey(track) { return track === 'accessory' ? 'accessoryInstallments' : 'installments'; }
@@ -2042,7 +2069,7 @@
     state.smsTemplates.forEach(function (t) { if (t.stage && !templatesByStage[t.stage]) templatesByStage[t.stage] = t; });
     var out = [];
     computedOrders.forEach(function (o) {
-      if (o.isCancelled || o.isSold) return;
+      if (o.isCancelled || o.isSold || o.isBillCancelled) return;
       (o.installments || []).concat(o.accessoryInstallments || []).forEach(function (inst) {
         if (inst.effectiveStatus !== 'ล็อคเครื่อง (ระบบ)') return;
         var sentStages = {};
@@ -2201,11 +2228,14 @@
     }
     // A demand letter claims "บริษัทฯ" (this company) is the creditor — legally wrong/misleading to
     // send once the account is already ยกเลิกสัญญา คืนเครื่อง (contract voided, device returned — no
-    // debt relationship left to demand against) or จำหน่ายชื่อให้บริษัทติดตามหนี้ (debt SOLD — a
-    // different entity is now the actual creditor). Found during 2026-07-31 legal-gap review; the UI
+    // debt relationship left to demand against). Found during 2026-07-31 legal-gap review; the UI
     // button gate (renderIssueLetterControls) mirrors this same check.
-    if (cvOrder.isCancelled || cvOrder.isSold) {
-      window.alert('ออกจดหมายทวงถามไม่ได้ — บัญชีนี้อยู่ในสถานะ "' + (cvOrder.isCancelled ? 'ยกเลิกสัญญา คืนเครื่อง' : 'จำหน่ายชื่อให้บริษัทติดตามหนี้') + '" ซึ่งบริษัทฯ ไม่ใช่เจ้าหนี้ตามสัญญาอีกต่อไปแล้ว การออกจดหมายอ้างเป็นเจ้าหนี้จะไม่ถูกต้อง');
+    // 2026-08-01: user explicitly reopened this for จำหน่ายชื่อให้บริษัทติดตามหนี้ (debt sold to a
+    // collections agency) and the new ยกเลิกบิล status (mistakenly-opened bill) — only ยกเลิกสัญญา
+    // คืนเครื่อง still blocks letter issuance now. Flagged the จำหน่ายชื่อฯ reversal's legal-gap
+    // implication back to the user before applying; they confirmed "เปิดไว้ก่อน" (leave it open).
+    if (cvOrder.isCancelled) {
+      window.alert('ออกจดหมายทวงถามไม่ได้ — บัญชีนี้อยู่ในสถานะ "ยกเลิกสัญญา คืนเครื่อง" ซึ่งบริษัทฯ ไม่ใช่เจ้าหนี้ตามสัญญาอีกต่อไปแล้ว การออกจดหมายอ้างเป็นเจ้าหนี้จะไม่ถูกต้อง');
       return;
     }
     if (!db) { window.alert('ยังไม่ได้เชื่อมต่อฐานข้อมูลกลาง (Supabase) — ไม่สามารถบันทึกไฟล์ PDF ได้'); return; }
@@ -2375,7 +2405,7 @@
   // 2026-07-30). statusOverride:true on every งวด keeps them pinned — neither status is in
   // PAYMENT_CLEARS_OVERRIDE_STATUSES, so a later payment-file import can never silently flip one
   // back to something else.
-  var ACCOUNT_LEVEL_STATUSES = ['ยกเลิกสัญญา คืนเครื่อง', 'จำหน่ายชื่อให้บริษัทติดตามหนี้'];
+  var ACCOUNT_LEVEL_STATUSES = ['ยกเลิกสัญญา คืนเครื่อง', 'จำหน่ายชื่อให้บริษัทติดตามหนี้', 'ยกเลิกบิล'];
   // Fields that change what a งวด's ยอดค้างชำระ actually IS — if any of these change on a งวด
   // already marked ตรวจสอบ CRM แล้ว, that confirmation was for the OLD figure and no longer applies
   // (per user request 2026-07-30: a customer paying off a previously-verified ล็อคเครื่อง งวด the
@@ -2414,19 +2444,26 @@
     render();
   }
   // Order-level "ยกเลิกบิล" shortcut (added 2026-08-01, per user request after a reference-system
-  // screenshot showed an order cancelled there but still live in debt-tracker) — same end-state as
-  // manually opening any one งวด and setting its status to ยกเลิกสัญญา คืนเครื่อง (which already
-  // cascades to every งวด on both tracks, see ACCOUNT_LEVEL_STATUSES/updateInstallment above), just
-  // without needing to hunt for a งวด to click into first. Picks the first main-track installment as
-  // the cascade anchor, falling back to the first accessory-track one for accessory-only orders.
+  // screenshot showed an order cancelled there but still live in debt-tracker). Originally cascaded
+  // to the ยกเลิกสัญญา คืนเครื่อง status, but the user then clarified "ยกเลิกบิล" is a genuinely
+  // DIFFERENT terminal state, not an alias for it — it means the bill/SO itself was opened by
+  // mistake and a replacement SO exists (no real debt, no device-return involved), vs. ยกเลิกสัญญา
+  // คืนเครื่อง meaning a real contract existed and the device was returned. So this now cascades to
+  // its own 'ยกเลิกบิล' status (added to ACCOUNT_LEVEL_STATUSES, so every งวด on both tracks still
+  // gets it the same way ยกเลิกสัญญา คืนเครื่อง/จำหน่ายชื่อฯ already cascade). Picks the first
+  // main-track installment as the cascade anchor, falling back to the first accessory-track one for
+  // accessory-only orders. Excluded from ยอดค้างชำระ/grading/aging like the other 2 terminal
+  // statuses (see isBillCancelled in computeOrdersUncached + activeOrders filters), but — unlike
+  // ยกเลิกสัญญา คืนเครื่อง — does NOT block issuing จดหมายทวงถามหนี้/SMS, per explicit user decision
+  // 2026-08-01 (a mis-opened bill has no legal-creditor conflict the way a voided/sold contract does).
   function cancelOrder(orderId) {
     var order = state.orders.find(function (o) { return o.orderId === orderId; });
-    if (!order || order.isCancelled) return;
+    if (!order || order.isBillCancelled) return;
     var anchor = (order.installments && order.installments[0]) || (order.accessoryInstallments && order.accessoryInstallments[0]);
     if (!anchor) { window.alert('บิลนี้ยังไม่มีงวดชำระเลย — เพิ่มงวดอย่างน้อย 1 งวดก่อน จึงจะยกเลิกบิลได้'); return; }
-    if (!window.confirm('ยืนยันยกเลิกบิล SO ' + (order.soDisplay || order.orderId) + ' ของลูกค้า ' + order.customerName + ' ?\n\nทุกงวดในบิลนี้ (ทั้งเครื่องหลักและอุปกรณ์เสริมถ้ามี) จะถูกตั้งสถานะเป็น "ยกเลิกสัญญา คืนเครื่อง" ทันที')) return;
+    if (!window.confirm('ยืนยันยกเลิกบิล SO ' + (order.soDisplay || order.orderId) + ' ของลูกค้า ' + order.customerName + ' ?\n\nทุกงวดในบิลนี้ (ทั้งเครื่องหลักและอุปกรณ์เสริมถ้ามี) จะถูกตั้งสถานะเป็น "ยกเลิกบิล" ทันที (คนละสถานะกับ "ยกเลิกสัญญา คืนเครื่อง") และจะไม่นับเป็นยอดค้างชำระของบริษัทฯ อีกต่อไป')) return;
     var track = order.installments && order.installments.length ? 'main' : 'accessory';
-    updateInstallment(orderId, anchor.no, 'status', 'ยกเลิกสัญญา คืนเครื่อง', track);
+    updateInstallment(orderId, anchor.no, 'status', 'ยกเลิกบิล', track);
   }
   function updateOrderField(orderId, field, value) {
     state.orders = state.orders.map(function (o) {
@@ -2848,8 +2885,8 @@
   // The button reads whichever option is selected at click time (see dispatcher, which locates the
   // <select> via the data-letter-row wrapper this function returns).
   function renderIssueLetterControls(ord) {
-    var blockedReason = (ord.isCancelled || ord.isSold)
-      ? 'บัญชีนี้ไม่ใช่เจ้าหนี้ของบริษัทฯ อีกต่อไปแล้ว (' + (ord.isCancelled ? 'ยกเลิกสัญญา คืนเครื่อง' : 'จำหน่ายชื่อให้บริษัทติดตามหนี้') + ') — ออกจดหมายอ้างเป็นเจ้าหนี้ไม่ได้'
+    var blockedReason = ord.isCancelled
+      ? 'บัญชีนี้ไม่ใช่เจ้าหนี้ของบริษัทฯ อีกต่อไปแล้ว (ยกเลิกสัญญา คืนเครื่อง) — ออกจดหมายอ้างเป็นเจ้าหนี้ไม่ได้'
       : (ord.overdueCount || 0) < LETTER_MIN_OVERDUE_INSTALLMENTS
         ? 'ต้องค้างชำระจริงอย่างน้อย ' + LETTER_MIN_OVERDUE_INSTALLMENTS + ' งวด (ตอนนี้ ' + (ord.overdueCount || 0) + ' งวด)'
         : '';
@@ -3877,6 +3914,7 @@
     html += kpiCard('#9c1f4a', '', '1px solid rgba(156,31,74,0.15)', '0 4px 14px rgba(156,31,74,0.06)', 'หนี้สงสัยจะสูญ', '#9c1f4a', '฿' + k.badDebtDisp, k.badDebtCustomerCount + ' ราย');
     html += kpiCard('#d6336c', '', '1px solid rgba(214,51,108,0.15)', '0 4px 14px rgba(214,51,108,0.06)', 'ยกเลิกสัญญา คืนเครื่อง', '#d6336c', '฿' + k.cancelledDisp, k.cancelledCount + ' สัญญา');
     html += kpiCard('#f08c00', '', '1px solid rgba(240,140,0,0.15)', '0 4px 14px rgba(240,140,0,0.06)', 'จำหน่ายชื่อให้บริษัทติดตามหนี้', '#f08c00', '฿' + k.soldDisp, k.soldCount + ' สัญญา');
+    html += kpiCard('#0c8599', '', '1px solid rgba(12,133,153,0.15)', '0 4px 14px rgba(12,133,153,0.06)', 'ยกเลิกบิล (เปิดผิด)', '#0c8599', '฿' + k.billCancelledDisp, k.billCancelledCount + ' สัญญา');
     html += kpiCard('#adb5bd', '', '1px solid rgba(173,181,189,0.25)', '0 4px 14px rgba(0,0,0,0.04)', 'ยังไม่ถึงกำหนด', '#6b6785', '฿' + k.notDueDisp, k.notDueCustomerCount + ' ราย');
     html += '<div style="background:#fff; border-radius:14px; border:1px solid rgba(79,70,229,0.15); border-left:4px solid #4f46e5; padding:16px 18px; box-shadow:0 4px 14px rgba(79,70,229,0.06);">' +
       '<div style="font-size:12.5px; color:#6b6785; margin-bottom:8px;">อัตราการชำระจากยอดรวมสัญญา</div>' +
@@ -4017,6 +4055,7 @@
               '<div style="background:rgba(156,31,74,0.10); border-radius:10px; padding:8px; text-align:center;"><div style="font-size:11px; color:#6b6785;">หนี้สงสัยจะสูญ</div><div style="font-size:12.5px; font-weight:600; color:#9c1f4a;">฿' + pt.badDebtDisp + '</div></div>' +
               '<div style="background:rgba(214,51,108,0.10); border-radius:10px; padding:8px; text-align:center;"><div style="font-size:11px; color:#6b6785;">ยกเลิกสัญญา คืนเครื่อง</div><div style="font-size:12.5px; font-weight:600; color:#d6336c;">฿' + pt.cancelledDisp + '</div></div>' +
               '<div style="background:rgba(240,140,0,0.10); border-radius:10px; padding:8px; text-align:center;"><div style="font-size:11px; color:#6b6785;">จำหน่ายชื่อฯ ติดตามหนี้</div><div style="font-size:12.5px; font-weight:600; color:#f08c00;">฿' + pt.soldDisp + '</div></div>' +
+              '<div style="background:rgba(12,133,153,0.10); border-radius:10px; padding:8px; text-align:center;"><div style="font-size:11px; color:#6b6785;">ยกเลิกบิล (เปิดผิด)</div><div style="font-size:12.5px; font-weight:600; color:#0c8599;">฿' + pt.billCancelledDisp + '</div></div>' +
             '</div>' +
             '<div style="display:flex; align-items:center; gap:18px;">' +
               donut(90, 15, pt.gradeDonut.conic) +
@@ -4034,6 +4073,7 @@
     // Lifecycle summaries (cancelled + sold)
     html += lifecycleCard('📄 ยกเลิกสัญญา คืนเครื่อง', d.cancelledSummary, '#d6336c', 'rgba(214,51,108,0.10)', state.showCancelledDetail, 'toggleCancelledDetail', 'rgba(214,51,108,0.05)', '8px');
     html += lifecycleCard('📄 จำหน่ายชื่อให้บริษัทติดตามหนี้', d.soldSummary, '#f08c00', 'rgba(240,140,0,0.10)', state.showSoldDetail, 'toggleSoldDetail', 'rgba(240,140,0,0.05)', '8px');
+    html += lifecycleCard('📄 ยกเลิกบิล (เปิดผิด)', d.billCancelledSummary, '#0c8599', 'rgba(12,133,153,0.10)', state.showBillCancelledDetail, 'toggleBillCancelledDetail', 'rgba(12,133,153,0.05)', '8px');
     html += renderMultiOrderCard(d.multiOrderSummary);
 
     html += '</div>';
@@ -4195,6 +4235,7 @@
   function orderAccountStatusBadge(order) {
     if (order.isSold) return '<span style="background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 8px; border-radius:20px; font-size:11px; font-weight:600; white-space:nowrap;">📤 จำหน่ายชื่อฯ</span>';
     if (order.isCancelled) return '<span style="background:' + hexToRgba('#4b5563', 0.14) + '; color:#4b5563; padding:3px 8px; border-radius:20px; font-size:11px; font-weight:600; white-space:nowrap;">↩️ ยกเลิกสัญญา</span>';
+    if (order.isBillCancelled) return '<span style="background:' + hexToRgba('#0c8599', 0.14) + '; color:#0c8599; padding:3px 8px; border-radius:20px; font-size:11px; font-weight:600; white-space:nowrap;">🗑 ยกเลิกบิล</span>';
     // ติดตามเครื่องคืน (customer-account tag, redesigned 2026-07-31) — shown with an "อัปเดตล่าสุด"
     // stamp (same pattern as crmStatusPill below) so staff pulling this report can see how fresh the
     // tag is, not just that it's flagged. Looked up live off state.customerTrackingReturn (see
@@ -4245,7 +4286,7 @@
   // Aging report over each order's current (earliest unpaid) installment — mirrors the
   // reference site's "รายงานสินเชื่อที่ครบกำหนด" bucket row.
   function renderDueBuckets(orders) {
-    var active = orders.filter(function (o) { return !o.isCancelled && !o.isSold; });
+    var active = orders.filter(function (o) { return !o.isCancelled && !o.isSold && !o.isBillCancelled; });
     var b = { due7: 0, due3: 0, dueToday: 0, od10: 0, od30: 0, odOver30: 0 };
     active.forEach(function (o) {
       // When a per-งวด filter (ครบกำหนดตั้งแต่-ถึง / สถานะการชำระ) is active, computeView() attaches
@@ -4337,7 +4378,7 @@
         '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:14px; margin-bottom:14px;">' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">👤 สถานะบัญชีลูกค้า</div>' +
             '<select data-action="filter" data-key="filterAccountStatus" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13.5px; color:#2b2540;">' +
-              selOpt('all', 'ทุกสถานะ', state.filterAccountStatus === 'all') + selOpt('active', 'ปกติ', state.filterAccountStatus === 'active') + selOpt('cancelled', 'ยกเลิกสัญญา คืนเครื่อง', state.filterAccountStatus === 'cancelled') + selOpt('sold', 'จำหน่ายชื่อให้บริษัทติดตามหนี้', state.filterAccountStatus === 'sold') + selOpt('trackingReturn', 'ติดตามเครื่องคืน', state.filterAccountStatus === 'trackingReturn') +
+              selOpt('all', 'ทุกสถานะ', state.filterAccountStatus === 'all') + selOpt('active', 'ปกติ', state.filterAccountStatus === 'active') + selOpt('cancelled', 'ยกเลิกสัญญา คืนเครื่อง', state.filterAccountStatus === 'cancelled') + selOpt('sold', 'จำหน่ายชื่อให้บริษัทติดตามหนี้', state.filterAccountStatus === 'sold') + selOpt('billCancelled', 'ยกเลิกบิล (เปิดผิด)', state.filterAccountStatus === 'billCancelled') + selOpt('trackingReturn', 'ติดตามเครื่องคืน', state.filterAccountStatus === 'trackingReturn') +
             '</select></div>' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">🗓 สถานะวันครบกำหนด</div>' +
             '<select data-action="filter" data-key="filterDueStatus" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13.5px; color:#2b2540;">' +
@@ -4706,8 +4747,9 @@
           '<div style="font-size:13px; color:#6b6785;">🗓 วันที่ออกสัญญา: <span style="color:#2b2540; font-weight:600;">' + esc(ord.contractDateDisp) + '</span></div>' +
           '<div style="background:rgba(240,140,0,0.12); color:#c2650a; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">' + esc(ord.purchaseType) + '</div>' +
           (ord.isSold ? '<div style="background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">📤 จำหน่ายชื่อให้บริษัทติดตามหนี้</div>' : '') +
-          (ord.isCancelled ? '<div style="background:' + hexToRgba('#4b5563', 0.14) + '; color:#4b5563; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">↩️ ยกเลิกสัญญา คืนเครื่อง</div>'
-            : '<button data-action="cancelOrder" data-order="' + esc(ord.orderId) + '" title="ตั้งทุกงวดในบิลนี้เป็น \'ยกเลิกสัญญา คืนเครื่อง\' — เหมือนไปแก้ทีละงวด แต่ทำครั้งเดียวจบทั้งบิล" style="border:1px solid rgba(214,51,108,0.35); background:#fff; color:#d6336c; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;">🗑 ยกเลิกบิล</button>') +
+          (ord.isCancelled ? '<div style="background:' + hexToRgba('#4b5563', 0.14) + '; color:#4b5563; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">↩️ ยกเลิกสัญญา คืนเครื่อง</div>' : '') +
+          (ord.isBillCancelled ? '<div style="background:' + hexToRgba('#0c8599', 0.14) + '; color:#0c8599; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">🗑 ยกเลิกบิล</div>'
+            : (ord.isCancelled ? '' : '<button data-action="cancelOrder" data-order="' + esc(ord.orderId) + '" title="ตั้งทุกงวดในบิลนี้เป็น \'ยกเลิกบิล\' — บิลที่เปิดผิด/มีบิลใหม่แทนแล้ว ไม่นับเป็นหนี้ของบริษัทฯ อีกต่อไป (คนละสถานะกับยกเลิกสัญญา คืนเครื่อง)" style="border:1px solid rgba(12,133,153,0.35); background:#fff; color:#0c8599; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;">🗑 ยกเลิกบิล</button>')) +
         '</div>' +
         '<div style="display:grid; grid-template-columns:2fr 1fr; gap:16px; margin-bottom:16px;">' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">📦 รายการสินค้า' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:600; color:#2b2540;">' + esc(ord.productList) + '</div></div>' +
@@ -4999,6 +5041,7 @@
         case 'resetToSample': if (window.confirm('ล้างข้อมูลทั้งหมด และกลับไปเป็นข้อมูลตัวอย่าง?\n(ยกเลิกไม่ได้)')) resetAllData(true); break;
         case 'toggleCancelledDetail': state.showCancelledDetail = !state.showCancelledDetail; render(); break;
         case 'toggleSoldDetail': state.showSoldDetail = !state.showSoldDetail; render(); break;
+        case 'toggleBillCancelledDetail': state.showBillCancelledDetail = !state.showBillCancelledDetail; render(); break;
         case 'toggleMultiOrderDetail': state.showMultiOrderDetail = !state.showMultiOrderDetail; render(); break;
         case 'toggleUnverifiedCRM': state.filterUnverifiedCRM = t.checked; render(); break;
         case 'commitChanges': commitChanges(); break;
