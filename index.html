@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-01.10';
+  var APP_BUILD = '2026-08-01.11';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -2820,10 +2820,10 @@
   // N+1 that's already gone out.
   function letterStatusPill(order) {
     var history = order.letterHistory || [];
-    if (!history.length) return '<span style="color:#c3c0d6; font-size:12px;">—</span>';
+    if (!history.length) return '<span style="color:#c3c0d6; font-size:11px;">—</span>';
     var latest = history.reduce(function (m, h) { return (!m || h.no > m.no) ? h : m; }, null);
-    return '<span style="background:rgba(179,38,30,0.10); color:#b3261e; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap; display:inline-block;">📄 ' + esc(latest.at) + '</span>' +
-      '<div style="font-size:10.5px; color:#8a86a3; margin-top:4px;">ครั้งที่ ' + latest.no + '</div>';
+    return '<span style="background:rgba(179,38,30,0.10); color:#b3261e; padding:3px 8px; border-radius:20px; font-size:11px; font-weight:700; white-space:nowrap; display:inline-block;">📄 ' + esc(latest.at) + '</span>' +
+      '<div style="font-size:9.5px; color:#8a86a3; margin-top:4px;">ครั้งที่ ' + latest.no + '</div>';
   }
   // ครั้งที่ picker + issue button only (no history list — the tracking-card redesign renders
   // letterHistory itself, see renderDebtTrackingSection). The <select> offers every EXISTING
@@ -4175,8 +4175,8 @@
     return '<a href="' + CRM_ORDER_BASE_URL + esc(order.orderId) + '" target="_blank" rel="noopener" onclick="event.stopPropagation();" style="color:#7c5cff; font-weight:600; text-decoration:none;" title="เปิดดูคำสั่งซื้อนี้ในระบบ CRM">' + esc(order.soDisplay) + ' 🔗</a>';
   }
   function orderAccountStatusBadge(order) {
-    if (order.isSold) return '<span style="background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">📤 จำหน่ายชื่อฯ</span>';
-    if (order.isCancelled) return '<span style="background:' + hexToRgba('#4b5563', 0.14) + '; color:#4b5563; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">↩️ ยกเลิกสัญญา</span>';
+    if (order.isSold) return '<span style="background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 8px; border-radius:20px; font-size:11px; font-weight:600; white-space:nowrap;">📤 จำหน่ายชื่อฯ</span>';
+    if (order.isCancelled) return '<span style="background:' + hexToRgba('#4b5563', 0.14) + '; color:#4b5563; padding:3px 8px; border-radius:20px; font-size:11px; font-weight:600; white-space:nowrap;">↩️ ยกเลิกสัญญา</span>';
     // ติดตามเครื่องคืน (customer-account tag, redesigned 2026-07-31) — shown with an "อัปเดตล่าสุด"
     // stamp (same pattern as crmStatusPill below) so staff pulling this report can see how fresh the
     // tag is, not just that it's flagged. Looked up live off state.customerTrackingReturn (see
@@ -4185,28 +4185,28 @@
     if (isCustomerTrackingReturn(order)) {
       var ck = customerKey(order);
       var trAt = (state.customerTrackingReturnAt && state.customerTrackingReturnAt[ck]) || '';
-      var trStamp = trAt ? '<div style="font-size:10.5px; color:#8a86a3; margin-top:3px; white-space:nowrap;">อัปเดตล่าสุด ' + esc(trAt) + '</div>' : '';
-      return '<span style="background:' + hexToRgba('#0b7285', 0.14) + '; color:#0b7285; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">🔎 ติดตามเครื่องคืน</span>' + trStamp;
+      var trStamp = trAt ? '<div style="font-size:9.5px; color:#8a86a3; margin-top:3px; white-space:nowrap;">อัปเดตล่าสุด ' + esc(trAt) + '</div>' : '';
+      return '<span style="background:' + hexToRgba('#0b7285', 0.14) + '; color:#0b7285; padding:3px 8px; border-radius:20px; font-size:11px; font-weight:600; white-space:nowrap;">🔎 ติดตามเครื่องคืน</span>' + trStamp;
     }
-    if (order.totalOutstandingRaw <= 0.005) return '<span style="background:rgba(18,184,134,0.14); color:#12b886; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">✅ ปิดยอด</span>';
-    return '<span style="background:rgba(43,37,64,0.06); color:#6b6785; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">ปกติ</span>';
+    if (order.totalOutstandingRaw <= 0.005) return '<span style="background:rgba(18,184,134,0.14); color:#12b886; padding:3px 8px; border-radius:20px; font-size:11px; font-weight:600; white-space:nowrap;">✅ ปิดยอด</span>';
+    return '<span style="background:rgba(43,37,64,0.06); color:#6b6785; padding:3px 8px; border-radius:20px; font-size:11px; font-weight:600; white-space:nowrap;">ปกติ</span>';
   }
   // Monthly manual QA step (2026-07-30): staff cross-check each ค้างชำระ งวด against the reference
   // CRM once, so a customer still overdue next month only needs the newly-due งวด re-checked, not
   // the whole history again. Nothing to check at all (order isn't overdue) shows no pill.
   function crmStatusPill(order) {
-    var stamp = order.crmVerifiedLatestAt ? '<div style="font-size:10.5px; color:#8a86a3; margin-top:3px; white-space:nowrap;">อัปเดตล่าสุด ' + esc(order.crmVerifiedLatestAt) + '</div>' : '';
-    if (order.crmStatus === 'none') return '<span style="color:#c3c0d6; font-size:12px;">—</span>';
-    if (order.crmStatus === 'verified') return '<span style="background:rgba(18,184,134,0.12); color:#12b886; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">✓ ตรวจครบ</span>' + stamp;
-    if (order.crmStatus === 'partial') return '<span style="background:rgba(240,140,0,0.12); color:#f08c00; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">◐ บางส่วน ' + order.crmVerifiedCount + '/' + order.overdueCount + '</span>' + stamp;
-    return '<span style="background:rgba(138,134,163,0.12); color:#8a86a3; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">○ ยังไม่ตรวจ</span>';
+    var stamp = order.crmVerifiedLatestAt ? '<div style="font-size:9.5px; color:#8a86a3; margin-top:3px; white-space:nowrap;">อัปเดตล่าสุด ' + esc(order.crmVerifiedLatestAt) + '</div>' : '';
+    if (order.crmStatus === 'none') return '<span style="color:#c3c0d6; font-size:11px;">—</span>';
+    if (order.crmStatus === 'verified') return '<span style="background:rgba(18,184,134,0.12); color:#12b886; padding:3px 8px; border-radius:20px; font-size:11px; font-weight:700; white-space:nowrap;">✓ ตรวจครบ</span>' + stamp;
+    if (order.crmStatus === 'partial') return '<span style="background:rgba(240,140,0,0.12); color:#f08c00; padding:3px 8px; border-radius:20px; font-size:11px; font-weight:700; white-space:nowrap;">◐ บางส่วน ' + order.crmVerifiedCount + '/' + order.overdueCount + '</span>' + stamp;
+    return '<span style="background:rgba(138,134,163,0.12); color:#8a86a3; padding:3px 8px; border-radius:20px; font-size:11px; font-weight:700; white-space:nowrap;">○ ยังไม่ตรวจ</span>';
   }
   // "สถานะการโทร"/"สถานะส่ง SMS" report columns — latest entry only (see callLatestAt/smsLatestAt
   // in computeOrdersUncached); full history stays in the customer detail modal, not this table.
   function callStatusPill(order) {
-    if (!order.callLatestAt) return '<span style="color:#c3c0d6; font-size:12px;">—</span>';
-    return '<span style="background:rgba(79,70,229,0.10); color:#4f46e5; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap; display:inline-block;">📞 ' + esc(order.callLatestAt) + '</span>' +
-      (order.callLatestNote ? '<div style="font-size:10.5px; color:#8a86a3; margin-top:4px; max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-left:auto; margin-right:auto;">' + esc(order.callLatestNote) + '</div>' : '');
+    if (!order.callLatestAt) return '<span style="color:#c3c0d6; font-size:11px;">—</span>';
+    return '<span style="background:rgba(79,70,229,0.10); color:#4f46e5; padding:3px 8px; border-radius:20px; font-size:11px; font-weight:700; white-space:nowrap; display:inline-block;">📞 ' + esc(order.callLatestAt) + '</span>' +
+      (order.callLatestNote ? '<div style="font-size:9.5px; color:#8a86a3; margin-top:4px; max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-left:auto; margin-right:auto;">' + esc(order.callLatestNote) + '</div>' : '');
   }
   function smsStatusPill(order) {
     // Same list the 🔔 banner reads (CV.pendingSmsReminders) — an order with a งวด currently due
@@ -4217,12 +4217,12 @@
     // separate "mark as done" step needed.
     var pending = (CV.pendingSmsReminders || []).find(function (r) { return r.orderId === order.orderId; });
     if (pending) {
-      return '<button data-action="openSendSms" data-level="installment" data-order="' + esc(pending.orderId) + '" data-no="' + pending.no + '" data-track="' + pending.track + '" data-template="' + esc(pending.templateId) + '" title="ครบกำหนดส่งตั้งแต่ ' + esc(pending.dueSinceDisp) + '" style="border:none; background:rgba(240,140,0,0.14); color:#c2650a; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap; cursor:pointer;">🔔 ควรส่ง ' + esc(pending.templateName) + '</button>' +
-        (order.smsLatestAt ? '<div style="font-size:10px; color:#8a86a3; margin-top:4px;">ส่งล่าสุด ' + esc(order.smsLatestAt) + '</div>' : '');
+      return '<button data-action="openSendSms" data-level="installment" data-order="' + esc(pending.orderId) + '" data-no="' + pending.no + '" data-track="' + pending.track + '" data-template="' + esc(pending.templateId) + '" title="ครบกำหนดส่งตั้งแต่ ' + esc(pending.dueSinceDisp) + '" style="border:none; background:rgba(240,140,0,0.14); color:#c2650a; padding:3px 8px; border-radius:20px; font-size:11px; font-weight:700; white-space:nowrap; cursor:pointer;">🔔 ควรส่ง ' + esc(pending.templateName) + '</button>' +
+        (order.smsLatestAt ? '<div style="font-size:9px; color:#8a86a3; margin-top:4px;">ส่งล่าสุด ' + esc(order.smsLatestAt) + '</div>' : '');
     }
-    if (!order.smsLatestAt) return '<span style="color:#c3c0d6; font-size:12px;">—</span>';
-    return '<span style="background:rgba(12,166,120,0.10); color:#0b7a5b; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap; display:inline-block;">📱 ' + esc(order.smsLatestAt) + '</span>' +
-      (order.smsLatestTemplate ? '<div style="font-size:10.5px; color:#8a86a3; margin-top:4px;">' + esc(order.smsLatestTemplate) + '</div>' : '');
+    if (!order.smsLatestAt) return '<span style="color:#c3c0d6; font-size:11px;">—</span>';
+    return '<span style="background:rgba(12,166,120,0.10); color:#0b7a5b; padding:3px 8px; border-radius:20px; font-size:11px; font-weight:700; white-space:nowrap; display:inline-block;">📱 ' + esc(order.smsLatestAt) + '</span>' +
+      (order.smsLatestTemplate ? '<div style="font-size:9.5px; color:#8a86a3; margin-top:4px;">' + esc(order.smsLatestTemplate) + '</div>' : '');
   }
   // Aging report over each order's current (earliest unpaid) installment — mirrors the
   // reference site's "รายงานสินเชื่อที่ครบกำหนด" bucket row.
@@ -4378,23 +4378,23 @@
       var pageStart = (page - 1) * pageSize;
       var pageRows = CV.filteredOrders.slice(pageStart, pageStart + pageSize);
       html += '<div style="background:rgba(255,255,255,0.55); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.8); border-radius:20px; padding:6px; margin-bottom:28px; box-shadow:0 8px 30px rgba(124,92,255,0.08); overflow-x:auto;">' +
-        '<table style="width:100%; border-collapse:collapse; min-width:1220px;"><thead><tr style="text-align:left; font-size:10px; color:#7c5cff; text-transform:uppercase; letter-spacing:0.2px; border-bottom:2px solid rgba(124,92,255,0.14);">' +
-          ['รหัสลูกค้า','ชื่อลูกค้า','สถานะบัญชี','คำสั่งซื้อ','วันที่ทำสัญญา'].map(function (h) { return '<th style="padding:14px 12px; font-weight:700; white-space:nowrap;">' + h + '</th>'; }).join('') +
-          ['ยอดค้างชำระ','งวดค้าง','ตรวจสอบ CRM','สถานะการโทร','สถานะส่ง SMS','สถานะจดหมายทวงถาม'].map(function (h) { return '<th style="padding:14px 10px; font-weight:700; text-align:center; white-space:nowrap;">' + h + '</th>'; }).join('') +
+        '<table style="width:100%; border-collapse:collapse; min-width:1100px;"><thead><tr style="text-align:left; font-size:10px; color:#7c5cff; text-transform:uppercase; letter-spacing:0.2px; border-bottom:2px solid rgba(124,92,255,0.14);">' +
+          ['รหัสลูกค้า','ชื่อลูกค้า','สถานะบัญชี','คำสั่งซื้อ','วันที่ทำสัญญา'].map(function (h) { return '<th style="padding:12px 8px; font-weight:700; white-space:nowrap;">' + h + '</th>'; }).join('') +
+          ['ยอดค้างชำระ','งวดค้าง','ตรวจสอบ CRM','สถานะการโทร','สถานะส่ง SMS','สถานะจดหมายทวงถาม'].map(function (h) { return '<th style="padding:12px 6px; font-weight:700; text-align:center; white-space:nowrap;">' + h + '</th>'; }).join('') +
         '</tr></thead><tbody>' +
           pageRows.map(function (order) {
-            return '<tr data-action="selectCustomer" data-cid="' + esc(customerKey(order)) + '" style="cursor:pointer; font-size:13.5px; color:#2b2540; border-top:1px solid rgba(124,92,255,0.08);">' +
-              '<td style="padding:14px 16px; font-weight:700; color:#4f46e5;">' + esc(order.customerId) + '</td>' +
-              '<td style="padding:14px 16px; font-weight:600;">' + esc(order.customerName) + '</td>' +
-              '<td style="padding:14px 16px;">' + orderAccountStatusBadge(order) + '</td>' +
-              '<td style="padding:14px 16px;">' + soDisplayLink(order) + '</td>' +
-              '<td style="padding:14px 16px; color:#8a86a3;">🗓 ' + esc(order.contractDateDisp) + '</td>' +
-              '<td style="padding:14px 16px; text-align:center;"><span style="background:rgba(224,49,49,0.10); color:#e03131; padding:5px 12px; border-radius:20px; font-size:13px; font-weight:700; white-space:nowrap;">฿' + order.trueOverdueDisp + '</span></td>' +
-              '<td style="padding:14px 16px; text-align:center;">' + (order.overdueCount ? '<span style="background:rgba(224,49,49,0.12); color:#e03131; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">' + order.overdueCount + ' งวด</span>' : '<span style="color:#c3c0d6; font-size:12px;">—</span>') + '</td>' +
-              '<td style="padding:14px 16px; text-align:center;">' + crmStatusPill(order) + '</td>' +
-              '<td style="padding:14px 16px; text-align:center;">' + callStatusPill(order) + '</td>' +
-              '<td style="padding:14px 16px; text-align:center;">' + smsStatusPill(order) + '</td>' +
-              '<td style="padding:14px 16px; text-align:center;">' + letterStatusPill(order) + '</td>' +
+            return '<tr data-action="selectCustomer" data-cid="' + esc(customerKey(order)) + '" style="cursor:pointer; font-size:12.5px; color:#2b2540; border-top:1px solid rgba(124,92,255,0.08);">' +
+              '<td style="padding:10px 8px; font-weight:700; color:#4f46e5; white-space:nowrap;">' + esc(order.customerId) + '</td>' +
+              '<td style="padding:10px 8px; font-weight:600; white-space:nowrap;">' + esc(order.customerName) + '</td>' +
+              '<td style="padding:10px 8px;">' + orderAccountStatusBadge(order) + '</td>' +
+              '<td style="padding:10px 8px; white-space:nowrap;">' + soDisplayLink(order) + '</td>' +
+              '<td style="padding:10px 8px; color:#8a86a3; white-space:nowrap;">🗓 ' + esc(order.contractDateDisp) + '</td>' +
+              '<td style="padding:10px 6px; text-align:center;"><span style="background:rgba(224,49,49,0.10); color:#e03131; padding:4px 8px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">฿' + order.trueOverdueDisp + '</span></td>' +
+              '<td style="padding:10px 6px; text-align:center;">' + (order.overdueCount ? '<span style="background:rgba(224,49,49,0.12); color:#e03131; padding:3px 8px; border-radius:20px; font-size:11px; font-weight:700; white-space:nowrap;">' + order.overdueCount + ' งวด</span>' : '<span style="color:#c3c0d6; font-size:11px;">—</span>') + '</td>' +
+              '<td style="padding:10px 6px; text-align:center;">' + crmStatusPill(order) + '</td>' +
+              '<td style="padding:10px 6px; text-align:center;">' + callStatusPill(order) + '</td>' +
+              '<td style="padding:10px 6px; text-align:center;">' + smsStatusPill(order) + '</td>' +
+              '<td style="padding:10px 6px; text-align:center; overflow:hidden;">' + letterStatusPill(order) + '</td>' +
             '</tr>';
           }).join('') +
         '</tbody></table>' +
