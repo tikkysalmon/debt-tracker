@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-01.11';
+  var APP_BUILD = '2026-08-01.12';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -3709,7 +3709,10 @@
       soNumber: ['เลข so', 'so', 'so number', 'เลขที่ so', 'orderid', 'order id'],
       contractNo: ['เลขที่สัญญา', 'contract no', 'contractno', 'contract number'],
       phone: ['เบอร์ติดต่อลูกค้า', 'เบอร์โทรศัพท์', 'เบอร์โทร', 'เบอร์มือถือ', 'เบอร์ติดต่อ', 'โทรศัพท์', 'เบอร์', 'phone', 'tel', 'mobile'],
-      email: ['อีเมลลูกค้า', 'อีเมล', 'อีเมลล์', 'email', 'e-mail'],
+      // 'อีเมล์' (การันต์ on ล, no double-ล — the actual header on the "อัพเดทเมลล์" source files,
+      // found 2026-08-01 when a real customer's email silently failed to import: exact-string
+      // matching in resolveField means this spelling didn't hit any of the other 3 Thai variants.
+      email: ['อีเมลลูกค้า', 'อีเมล', 'อีเมลล์', 'อีเมล์', 'email', 'e-mail'],
       shippedAt: ['วันเวลาที่ส่งเครื่อง', 'วันที่ส่งเครื่อง', 'shipped at', 'ship date', 'shipdate'],
       referenceName: ['ชื่อบุคคลอ้างอิง', 'บุคคลอ้างอิง', 'reference name', 'referencename'],
       referencePhone: ['เบอร์ติดต่อบุคคลอ้างอิง', 'เบอร์บุคคลอ้างอิง', 'reference phone', 'referencephone']
