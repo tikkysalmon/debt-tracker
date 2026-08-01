@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-01.7';
+  var APP_BUILD = '2026-08-01.8';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -2805,7 +2805,7 @@
     var enabledStyle = 'border:1.5px solid rgba(124,92,255,0.35); background:#fff; color:#7c5cff;';
     var disabledStyle = 'border:1.5px solid rgba(138,134,163,0.25); background:#f5f4fa; color:#b3b0c4;';
     return '<button data-action="openSendEmail" data-order="' + esc(order.orderId) + '"' + (disabled ? ' disabled' : '') +
-      ' title="' + (disabled ? 'ต้องออกจดหมายทวงถามหนี้ก่อน ถึงจะส่งอีเมลได้' : 'ส่งอีเมลจดหมายทวงถามหนี้ (แนบลิงก์ดาวน์โหลด PDF)') + '"' +
+      ' title="' + (disabled ? 'ต้องออกจดหมายทวงถามหนี้ก่อน ถึงจะส่งอีเมลได้' : 'ส่งอีเมลจดหมายทวงถามหนี้ (แนบไฟล์ PDF จริง)') + '"' +
       ' style="' + (disabled ? disabledStyle : enabledStyle) + ' padding:6px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:' + (disabled ? 'not-allowed' : 'pointer') + '; white-space:nowrap;">📧 ส่งเมลล์จดหมาย</button>' +
       emailLastSentBadge(order.emailHistory);
   }
@@ -4495,7 +4495,7 @@
         '<input type="email" value="' + esc(state.emailModalTo) + '" data-action="emailModalTo" placeholder="กรอกอีเมลลูกค้า" style="width:100%; box-sizing:border-box; padding:10px 14px; border-radius:10px; border:1px solid rgba(37,99,235,0.25); background:#fbfaff; font-size:14px; color:#2b2540; outline:none; margin-bottom:14px;" />' +
         '<div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:6px;">เลือกจดหมาย (ครั้งที่)</div>' +
         '<select data-action="emailModalLetterNo" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid rgba(37,99,235,0.25); background:#fff; font-size:13.5px; color:#2b2540; outline:none; margin-bottom:8px;">' + options + '</select>' +
-        '<div style="font-size:11px; color:#8a86a3; margin-bottom:20px;">อีเมลจะมีลิงก์ดาวน์โหลด PDF ของครั้งที่เลือกแนบไปด้วย (Thaibulksms Email API ไม่รองรับไฟล์แนบจริง)</div>' +
+        '<div style="font-size:11px; color:#8a86a3; margin-bottom:20px;">อีเมลจะแนบไฟล์ PDF ของครั้งที่เลือกไปด้วย พร้อมลิงก์ดาวน์โหลดสำรองในเนื้อหาอีเมล</div>' +
         '<div style="display:flex; justify-content:flex-end; gap:10px;">' +
           '<div data-action="closeSendEmailModal" style="padding:11px 20px; border-radius:10px; color:#6b6785; font-size:13.5px; font-weight:600; cursor:pointer;">ยกเลิก</div>' +
           '<div data-action="confirmSendEmail" style="background:' + (state.emailModalSending ? '#8a86a3' : 'linear-gradient(135deg,#2563eb,#1d4ed8)') + '; color:#fff; padding:11px 22px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer;">' + (state.emailModalSending ? '⏳ กำลังส่ง...' : '📤 ส่งอีเมล') + '</div>' +

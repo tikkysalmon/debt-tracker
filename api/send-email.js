@@ -1,40 +1,30 @@
 // Vercel serverless function — proxies debt-letter email requests to the Thaibulksms Email API.
 // Keeps credentials server-side; index.html (public static file) must never see these directly.
 //
-// This hits a SEPARATE gateway from the SMS API (different domain) and is TEMPLATE-based only —
-// no raw body/HTML parameter and NO file-attachment parameter, so this sends a DOWNLOAD LINK to
-// the PDF (already public on Supabase Storage) via a merge tag instead of a real attachment — per
-// explicit user decision. Staff build the email's actual content as a Template in the Thaibulksms
-// Email console (thaibulkmail.com) using these merge tags:
-// {{CUSTOMER_NAME}} {{AMOUNT}} {{DUE_DATE}} {{PDF_LINK}} {{LETTER_NO}} {{ORDER_ID}}
+// This hits a SEPARATE gateway from the SMS API and is template-based. Staff build the email's
+// content as a Template in the Thaibulksms Email console (thaibulkmail.com) using these merge
+// tags: {{CUSTOMER_NAME}} {{AMOUNT}} {{DUE_DATE}} {{PDF_LINK}} {{LETTER_NO}} {{ORDER_ID}}
 //
 // Auth: uses a DEDICATED API Key/Secret pair (THAIBULKSMS_EMAIL_API_KEY / THAIBULKSMS_EMAIL_API_SECRET),
 // created via API Key > "ประเภท API: อีเมล" in the Thaibulksms console, not the shared
 // THAIBULKSMS_API_KEY/SECRET used for SMS.
 //
-// STATUS (2026-08-01): every send attempt gets a 500 "internal error" from Thaibulksms's own
-// server — confirmed NOT caused by anything on our side. Ruled out one at a time: payload field
-// names/shape (template_uuid, mail_to as array, top-level "payload"), sender address casing,
-// 4 different template UUIDs, credit balance (3000+ remaining), link-as-button vs. link-as-plain-
-// text, a dedicated Email-typed API key vs. the shared SMS one, and even dropping the PDF_LINK
-// merge tag entirely (rules out the server crashing while trying to fetch/process that URL).
-// Also tried adding the PDF-documented "name" field — got a clean 400 "property name should not
-// exist" instead of the usual 500, confirming the validator itself works correctly and this field
-// genuinely isn't part of the current schema (the 500 only happens on payloads that pass
-// validation). This is now a Thaibulksms support issue — see project memory / conversation history
-// for the full test log to hand them if it resurfaces.
-//
-// Request shape: Thaibulksms's own developer PDF (assets.thaibulksms.com/documents/developer-manual/
-// nwc/email-api-th.pdf, dated 2024-01-10) documents template_id/Payload/mail_to:string — but the
-// LIVE gateway rejects that exact shape (tested directly 2026-08-01, response:
-// {"message":"Bad Request Exception","required":["property template_id should not exist",
-// "property Payload should not exist","template_uuid must be a UUID", "each value in nested
-// property mail_to must be either object or array"]}). The PDF is stale vs. the deployed API. This
-// now sends template_uuid + mail_to as an array of {email, payload} objects instead — the array
-// shape is confirmed by that error, but the exact per-recipient merge-tag field name ("payload"
-// below) is still an educated guess, not confirmed. If sends still fail, read the `detail` field
-// of the error the app now surfaces — it's the raw response straight from Thaibulksms's validator
-// and will spell out exactly what's still wrong — or check with Thaibulksms support directly.
+// ROOT CAUSE FOUND (2026-08-01): every request to https://tbs-email-api-gateway.omb.to returned a
+// generic 500 "internal error" no matter what changed — payload shape, sender, 5 different
+// templates, 2 API key pairs, with/without the PDF link, plain-text vs. hyperlink vs. button.
+// Turned out that domain was simply WRONG. Thaibulksms's real, current OpenAPI spec (pulled
+// straight from developer.thaibulksms.com/tbs-api-en.json, which is what their own interactive
+// reference page loads) gives the actual base URL: https://email-api.thaibulksms.com — a
+// different host than the one in their old developer-manual PDF and every prior guess. The spec
+// also shows the real shape differs from what the stale docs said:
+//   - mail_from is an OBJECT { email, name? }, not a bare string
+//   - mail_to is a single OBJECT { email }, not an array (the old gateway's validator accepted an
+//     array without complaint, which in hindsight was itself a sign it wasn't the real backend)
+//   - attachments IS supported — an "attachments" array of either { type:'url', filename, fileUrl }
+//     or { type:'uuid', uuid } (from the separate Upload Attachment API), up to 5 files / 5MB total
+// Since attachments are real now, this sends the debt letter PDF as an actual attachment (not just
+// a download-link merge tag) — closer to what was originally asked for before "no attachment
+// support" turned out to be based on stale documentation.
 module.exports = async function handler(req, res) {
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method not allowed' });
@@ -64,9 +54,9 @@ module.exports = async function handler(req, res) {
     const subject = 'หนังสือทวงถามให้ชำระหนี้ค้างชำระ (ครั้งที่ ' + (letterNo || '') + ') เลขที่คำสั่งซื้อ ' + (orderId || '');
     const payload = {
       template_uuid: templateId,
-      mail_from: senderName,
+      mail_from: { email: senderName },
+      mail_to: { email: mailTo },
       subject: subject,
-      mail_to: [{ email: mailTo }],
       payload: {
         CUSTOMER_NAME: customerName || '',
         AMOUNT: amount || '',
@@ -74,9 +64,12 @@ module.exports = async function handler(req, res) {
         PDF_LINK: pdfLink,
         LETTER_NO: String(letterNo || ''),
         ORDER_ID: orderId || ''
-      }
+      },
+      attachments: [
+        { type: 'url', filename: 'debt-letter-' + (orderId || 'unknown') + '.pdf', fileUrl: pdfLink }
+      ]
     };
-    const emailRes = await fetch('https://tbs-email-api-gateway.omb.to/email/v1/send_template', {
+    const emailRes = await fetch('https://email-api.thaibulksms.com/email/v1/send_template', {
       method: 'POST',
       headers: {
         'Authorization': 'Basic ' + auth,
@@ -86,7 +79,6 @@ module.exports = async function handler(req, res) {
       body: JSON.stringify(payload)
     });
     const data = await emailRes.json().catch(function () { return null; });
-    // Error shape per Thaibulksms's own example: {"statusCode":404,"message":"ERROR_EMAIL_SENDER_NOT_FOUND",...}
     const errMsg = data && (data.message || data.error) ? (data.message || data.error) : 'Thaibulksms Email API error';
     if (!emailRes.ok) {
       res.status(emailRes.status).json({ error: errMsg, detail: data });
