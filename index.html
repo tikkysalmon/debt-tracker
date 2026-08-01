@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-01.12';
+  var APP_BUILD = '2026-08-01.13';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -2413,6 +2413,21 @@
     state.hasUnsavedChanges = true;
     render();
   }
+  // Order-level "ยกเลิกบิล" shortcut (added 2026-08-01, per user request after a reference-system
+  // screenshot showed an order cancelled there but still live in debt-tracker) — same end-state as
+  // manually opening any one งวด and setting its status to ยกเลิกสัญญา คืนเครื่อง (which already
+  // cascades to every งวด on both tracks, see ACCOUNT_LEVEL_STATUSES/updateInstallment above), just
+  // without needing to hunt for a งวด to click into first. Picks the first main-track installment as
+  // the cascade anchor, falling back to the first accessory-track one for accessory-only orders.
+  function cancelOrder(orderId) {
+    var order = state.orders.find(function (o) { return o.orderId === orderId; });
+    if (!order || order.isCancelled) return;
+    var anchor = (order.installments && order.installments[0]) || (order.accessoryInstallments && order.accessoryInstallments[0]);
+    if (!anchor) { window.alert('บิลนี้ยังไม่มีงวดชำระเลย — เพิ่มงวดอย่างน้อย 1 งวดก่อน จึงจะยกเลิกบิลได้'); return; }
+    if (!window.confirm('ยืนยันยกเลิกบิล SO ' + (order.soDisplay || order.orderId) + ' ของลูกค้า ' + order.customerName + ' ?\n\nทุกงวดในบิลนี้ (ทั้งเครื่องหลักและอุปกรณ์เสริมถ้ามี) จะถูกตั้งสถานะเป็น "ยกเลิกสัญญา คืนเครื่อง" ทันที')) return;
+    var track = order.installments && order.installments.length ? 'main' : 'accessory';
+    updateInstallment(orderId, anchor.no, 'status', 'ยกเลิกสัญญา คืนเครื่อง', track);
+  }
   function updateOrderField(orderId, field, value) {
     state.orders = state.orders.map(function (o) {
       if (o.orderId !== orderId) return o;
@@ -4691,7 +4706,8 @@
           '<div style="font-size:13px; color:#6b6785;">🗓 วันที่ออกสัญญา: <span style="color:#2b2540; font-weight:600;">' + esc(ord.contractDateDisp) + '</span></div>' +
           '<div style="background:rgba(240,140,0,0.12); color:#c2650a; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">' + esc(ord.purchaseType) + '</div>' +
           (ord.isSold ? '<div style="background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">📤 จำหน่ายชื่อให้บริษัทติดตามหนี้</div>' : '') +
-          (ord.isCancelled ? '<div style="background:' + hexToRgba('#4b5563', 0.14) + '; color:#4b5563; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">↩️ ยกเลิกสัญญา คืนเครื่อง</div>' : '') +
+          (ord.isCancelled ? '<div style="background:' + hexToRgba('#4b5563', 0.14) + '; color:#4b5563; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">↩️ ยกเลิกสัญญา คืนเครื่อง</div>'
+            : '<button data-action="cancelOrder" data-order="' + esc(ord.orderId) + '" title="ตั้งทุกงวดในบิลนี้เป็น \'ยกเลิกสัญญา คืนเครื่อง\' — เหมือนไปแก้ทีละงวด แต่ทำครั้งเดียวจบทั้งบิล" style="border:1px solid rgba(214,51,108,0.35); background:#fff; color:#d6336c; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;">🗑 ยกเลิกบิล</button>') +
         '</div>' +
         '<div style="display:grid; grid-template-columns:2fr 1fr; gap:16px; margin-bottom:16px;">' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">📦 รายการสินค้า' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:600; color:#2b2540;">' + esc(ord.productList) + '</div></div>' +
@@ -5036,6 +5052,7 @@
           issueLetter(t.getAttribute('data-order'), letterSel ? Number(letterSel.value) : null);
           break;
         }
+        case 'cancelOrder': cancelOrder(t.getAttribute('data-order')); break;
         case 'openSendEmail': openSendEmailModal(t.getAttribute('data-order')); break;
         case 'closeSendEmailModal': closeSendEmailModal(); break;
         case 'confirmSendEmail': confirmSendEmail(); break;
