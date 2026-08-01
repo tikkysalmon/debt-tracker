@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-01.8';
+  var APP_BUILD = '2026-08-01.9';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -973,7 +973,7 @@
     noteModalTarget: null, noteModalDraft: '',
     smsTemplates: (persisted && Array.isArray(persisted.smsTemplates) && persisted.smsTemplates.length) ? persisted.smsTemplates : DEFAULT_SMS_TEMPLATES,
     smsModalTarget: null, smsModalPhone: '', smsModalTemplateId: '', smsModalDraft: '', smsModalManaging: false, smsModalSending: false,
-    callDraft: '', callHistoryOpen: false,
+    callDraft: '',
     // Letterhead image for จดหมายทวงถามหนี้ (PDF) — one company-wide image, uploaded once via the
     // Upload tab. Falls back to a plain-text company name header (buildLetterHtml) until set.
     letterheadImageUrl: (persisted && persisted.letterheadImageUrl) || '',
@@ -1696,7 +1696,7 @@
   }
   function selectCustomer(cid) {
     if (!confirmDiscardIfDirty()) return;
-    state.selectedCustomerId = cid; state.customerNoteDraft = ''; state.editingCustomerName = false; state.editingCustomerId = false; state.editingOrderIdFor = null; state.callDraft = ''; state.callHistoryOpen = false; render();
+    state.selectedCustomerId = cid; state.customerNoteDraft = ''; state.editingCustomerName = false; state.editingCustomerId = false; state.editingOrderIdFor = null; state.callDraft = ''; render();
   }
   function startEditCustomerName() {
     if (!state.selectedCustomerId || !CV) return;
@@ -2203,7 +2203,7 @@
     // send once the account is already ยกเลิกสัญญา คืนเครื่อง (contract voided, device returned — no
     // debt relationship left to demand against) or จำหน่ายชื่อให้บริษัทติดตามหนี้ (debt SOLD — a
     // different entity is now the actual creditor). Found during 2026-07-31 legal-gap review; the UI
-    // button gate (renderIssueLetterRow) mirrors this same check.
+    // button gate (renderIssueLetterControls) mirrors this same check.
     if (cvOrder.isCancelled || cvOrder.isSold) {
       window.alert('ออกจดหมายทวงถามไม่ได้ — บัญชีนี้อยู่ในสถานะ "' + (cvOrder.isCancelled ? 'ยกเลิกสัญญา คืนเครื่อง' : 'จำหน่ายชื่อให้บริษัทติดตามหนี้') + '" ซึ่งบริษัทฯ ไม่ใช่เจ้าหนี้ตามสัญญาอีกต่อไปแล้ว การออกจดหมายอ้างเป็นเจ้าหนี้จะไม่ถูกต้อง');
       return;
@@ -2825,12 +2825,14 @@
     return '<span style="background:rgba(179,38,30,0.10); color:#b3261e; padding:4px 10px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap; display:inline-block;">📄 ' + esc(latest.at) + '</span>' +
       '<div style="font-size:10.5px; color:#8a86a3; margin-top:4px;">ครั้งที่ ' + latest.no + '</div>';
   }
-  // Order-card button + ครั้งที่ picker + per-ครั้งที่ history list. The <select> offers every
-  // EXISTING ครั้งที่ (labeled "แก้ไขของเดิม" — re-issuing keeps that ครั้งที่'s original frozen
-  // figures and overwrites only its own file) plus exactly one new number after the current max
-  // (labeled "ครั้งใหม่" — takes a fresh live snapshot, gets its own new file, never touches earlier
-  // ones). The button reads whichever option is selected at click time (see dispatcher).
-  function renderIssueLetterRow(ord) {
+  // ครั้งที่ picker + issue button only (no history list — the tracking-card redesign renders
+  // letterHistory itself, see renderDebtTrackingSection). The <select> offers every EXISTING
+  // ครั้งที่ (labeled "แก้ไขของเดิม" — re-issuing keeps that ครั้งที่'s original frozen figures and
+  // overwrites only its own file) plus exactly one new number after the current max (labeled
+  // "ครั้งใหม่" — takes a fresh live snapshot, gets its own new file, never touches earlier ones).
+  // The button reads whichever option is selected at click time (see dispatcher, which locates the
+  // <select> via the data-letter-row wrapper this function returns).
+  function renderIssueLetterControls(ord) {
     var blockedReason = (ord.isCancelled || ord.isSold)
       ? 'บัญชีนี้ไม่ใช่เจ้าหนี้ของบริษัทฯ อีกต่อไปแล้ว (' + (ord.isCancelled ? 'ยกเลิกสัญญา คืนเครื่อง' : 'จำหน่ายชื่อให้บริษัทติดตามหนี้') + ') — ออกจดหมายอ้างเป็นเจ้าหนี้ไม่ได้'
       : (ord.overdueCount || 0) < LETTER_MIN_OVERDUE_INSTALLMENTS
@@ -2848,15 +2850,81 @@
       ' title="' + (eligible ? 'ออกจดหมายทวงถามหนี้ (PDF) ตามครั้งที่เลือกไว้' : blockedReason) + '"' +
       ' style="border:none; background:' + (eligible && !busy ? 'linear-gradient(135deg,#7c5cff,#6647e0)' : '#c3c0d6') + '; color:#fff; padding:6px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:' + (eligible && !busy ? 'pointer' : 'not-allowed') + '; white-space:nowrap; box-shadow:' + (eligible && !busy ? '0 4px 12px rgba(124,92,255,0.3)' : 'none') + ';">' +
       (busy ? '⏳ กำลังสร้าง...' : '📄 ออกเอกสาร') + '</button>';
-    var historyList = !history.length ? '' :
-      '<div style="display:flex; flex-direction:column; gap:4px; margin-top:8px;">' +
-        history.slice().reverse().map(function (h) {
-          return '<div style="font-size:11.5px; color:#8a86a3;">ครั้งที่ ' + h.no + ' · ' + esc(h.at) + ' · ฿' + esc(h.amountDisp) + ' (' + h.overdueCount + ' งวด) · <a href="' + esc(h.url) + '" target="_blank" rel="noopener" style="color:#7c5cff; font-weight:600; text-decoration:none;">⬇ ดาวน์โหลด</a></div>';
-        }).join('') +
-      '</div>';
-    return '<div data-letter-row="' + esc(ord.orderId) + '" style="margin-top:16px; margin-bottom:14px;">' +
-      '<div style="display:flex; align-items:center; gap:18px; flex-wrap:wrap;">' + selectHtml + btn + '</div>' +
-      historyList +
+    return '<div data-letter-row="' + esc(ord.orderId) + '" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">' + selectHtml + btn + '</div>';
+  }
+  // ---------- ข้อมูลการติดตามหนี้ (redesigned 2026-08-01): บันทึกการโทร / ส่ง SMS / ส่งจดหมาย as 3
+  // separate cards, each showing its own append-only history with timestamps — replaces the old
+  // single-column stack of a SMS/email button row + letter row + call log block. ----------
+  function trackingCountBadge(n, color) {
+    if (!n) return '';
+    return '<span style="background:' + hexToRgba(color, 0.12) + '; color:' + color + '; padding:2px 9px; border-radius:12px; font-size:10.5px; font-weight:700;">' + n + '</span>';
+  }
+  function trackingHistoryList(items, renderItem) {
+    if (!items || !items.length) return '<div style="font-size:11.5px; color:#b3b0c4; padding:4px 2px;">ยังไม่มีประวัติ</div>';
+    return '<div style="display:flex; flex-direction:column; gap:6px; max-height:190px; overflow-y:auto;">' +
+      items.slice().reverse().map(renderItem).join('') +
+    '</div>';
+  }
+  function trackingCard(accentColor, icon, title, count, bodyHtml) {
+    return '<div style="background:#fff; border:1px solid rgba(124,92,255,0.14); border-left:4px solid ' + accentColor + '; border-radius:16px; padding:14px 16px; box-shadow:0 4px 14px rgba(124,92,255,0.06); display:flex; flex-direction:column; gap:10px; min-width:0;">' +
+      '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:13.5px; color:#2b2540; display:flex; align-items:center; gap:6px;">' + icon + ' ' + esc(title) + '</div>' +
+        trackingCountBadge(count, accentColor) +
+      '</div>' +
+      bodyHtml +
+    '</div>';
+  }
+  function renderDebtTrackingSection(ord) {
+    var callHistory = ord.callHistory || [];
+    var callBody =
+      '<div style="display:flex; gap:8px;">' +
+        '<input type="text" value="' + esc(state.callDraft) + '" data-action="callDraft" placeholder="พิมพ์ผลการโทร เช่น รับสาย/ไม่รับสาย/นัดชำระ..." style="flex:1; box-sizing:border-box; padding:8px 10px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:12.5px; color:#2b2540; outline:none;" />' +
+        '<button data-action="saveCallLog" style="border:none; background:linear-gradient(135deg,#4f46e5,#4338ca); color:#fff; padding:8px 14px; border-radius:10px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;">บันทึก</button>' +
+      '</div>' +
+      trackingHistoryList(callHistory, function (h) {
+        return '<div style="background:rgba(79,70,229,0.05); border:1px solid rgba(79,70,229,0.12); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' +
+          '<div style="font-weight:700; color:#4f46e5; margin-bottom:2px;">🕐 ' + esc(h.at) + '</div>' +
+          '<div style="color:#6b6785;">' + esc(h.note) + '</div>' +
+        '</div>';
+      });
+    var callCard = trackingCard('#4f46e5', '📞', 'บันทึกการโทร', callHistory.length, callBody);
+
+    var smsHistory = ord.smsHistory || [];
+    var smsBody =
+      '<div>' + renderSendSmsButton('order', ord.orderId, null, null, '📱 ส่ง SMS ทวงหนี้') + '</div>' +
+      trackingHistoryList(smsHistory, function (h) {
+        return '<div style="background:rgba(124,92,255,0.05); border:1px solid rgba(124,92,255,0.12); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' +
+          '<div style="font-weight:700; color:#7c5cff; margin-bottom:2px;">🕐 ' + esc(h.at) + '</div>' +
+          '<div style="color:#6b6785;">' + esc(h.template || 'ข้อความทวงถาม') + (h.phone ? ' · ' + esc(h.phone) : '') + '</div>' +
+        '</div>';
+      });
+    var smsCard = trackingCard('#7c5cff', '📱', 'ส่ง SMS ทวงหนี้', smsHistory.length, smsBody);
+
+    var letterHistory = ord.letterHistory || [];
+    var emailHistory = ord.emailHistory || [];
+    var emailHistoryHtml = !emailHistory.length ? '' :
+      '<div style="font-size:10.5px; color:#8a86a3; font-weight:700; margin-top:2px;">📧 ประวัติส่งอีเมล</div>' +
+      trackingHistoryList(emailHistory, function (h) {
+        return '<div style="background:rgba(29,78,216,0.05); border:1px solid rgba(29,78,216,0.12); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' +
+          '<div style="font-weight:700; color:#1d4ed8; margin-bottom:2px;">🕐 ' + esc(h.at) + ' · ครั้งที่ ' + h.letterNo + '</div>' +
+          '<div style="color:#6b6785;">ถึง ' + esc(h.to) + '</div>' +
+        '</div>';
+      });
+    var letterBody =
+      renderIssueLetterControls(ord) +
+      '<div>' + renderSendEmailButton(ord) + '</div>' +
+      trackingHistoryList(letterHistory, function (h) {
+        return '<div style="background:rgba(179,38,30,0.05); border:1px solid rgba(179,38,30,0.12); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' +
+          '<div style="font-weight:700; color:#b3261e; margin-bottom:2px;">🕐 ' + esc(h.at) + ' · ครั้งที่ ' + h.no + '</div>' +
+          '<div style="color:#6b6785;">฿' + esc(h.amountDisp) + ' (' + h.overdueCount + ' งวด) · <a href="' + esc(h.url) + '" target="_blank" rel="noopener" style="color:#7c5cff; font-weight:600; text-decoration:none;">⬇ ดาวน์โหลด</a></div>' +
+        '</div>';
+      }) +
+      emailHistoryHtml;
+    var letterCard = trackingCard('#b3261e', '📄', 'ส่งจดหมายทวงถามหนี้', letterHistory.length, letterBody);
+
+    return '<div style="border-top:1px dashed rgba(124,92,255,0.15); margin-top:14px; padding-top:14px;">' +
+      '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:15px; color:#2b2540; margin-bottom:12px; display:flex; align-items:center; gap:6px;">📋 ข้อมูลการติดตามหนี้</div>' +
+      '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px;">' + callCard + smsCard + letterCard + '</div>' +
     '</div>';
   }
   // An early full-settlement payment often gets recorded entirely against ONE งวด (e.g. "ยอดชำระ
@@ -4551,28 +4619,6 @@
     // of the per-order/SO card below); the fields still live on a specific order underneath, so
     // picks whichever order actually has data (falling back to the first order) to edit.
     var contactOrder = pickContactOrder();
-    var callHistory = (contactOrder && contactOrder.callHistory) || [];
-    var callHistoryHtml = !state.callHistoryOpen || !callHistory.length ? '' :
-      '<div style="display:flex; flex-direction:column; gap:6px; margin:8px 0; max-height:160px; overflow-y:auto;">' +
-        callHistory.slice().reverse().map(function (h) {
-          return '<div style="background:rgba(124,92,255,0.05); border:1px solid rgba(124,92,255,0.12); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' +
-            '<div style="font-weight:700; color:#4f46e5; margin-bottom:2px;">' + esc(h.at) + '</div>' +
-            '<div style="color:#6b6785;">' + esc(h.note) + '</div>' +
-          '</div>';
-        }).join('') +
-      '</div>';
-    var callLogHtml = !contactOrder ? '' :
-      '<div style="border-top:1px dashed rgba(124,92,255,0.15); margin-top:14px; padding-top:14px;">' +
-        '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">' +
-          '<div style="font-size:11.5px; color:#6b6785; font-weight:600; display:flex; align-items:center; gap:6px;">📞 อัพเดทการโทรหาลูกค้า' + (callHistory.length ? ' · ล่าสุด ' + esc(callHistory[callHistory.length - 1].at) : '') + '</div>' +
-          (callHistory.length ? '<div data-action="toggleCallHistory" style="font-size:11px; color:#7c5cff; font-weight:600; cursor:pointer;">' + (state.callHistoryOpen ? 'ซ่อนประวัติ' : 'ดูประวัติทั้งหมด (' + callHistory.length + ')') + '</div>' : '') +
-        '</div>' +
-        callHistoryHtml +
-        '<div style="display:flex; gap:8px;">' +
-          '<input type="text" value="' + esc(state.callDraft) + '" data-action="callDraft" placeholder="พิมพ์ผลการโทร เช่น รับสาย/ไม่รับสาย/นัดชำระ..." style="flex:1; box-sizing:border-box; padding:8px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13px; color:#2b2540; outline:none;" />' +
-          '<button data-action="saveCallLog" style="border:none; background:linear-gradient(135deg,#4f46e5,#4338ca); color:#fff; padding:8px 16px; border-radius:10px; font-size:12.5px; font-weight:600; cursor:pointer; white-space:nowrap;">📞 บันทึกการโทร</button>' +
-        '</div>' +
-      '</div>';
     var contactFieldHtml = !contactOrder ? '' :
       '<div style="border-top:1px solid rgba(124,92,255,0.10); padding-top:14px; margin-top:14px;">' +
         '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:14px;">' +
@@ -4583,12 +4629,7 @@
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">👤 ชื่อบุคคลอ้างอิง</div><input type="text" value="' + esc(contactOrder.referenceName || '') + '" data-order-field="referenceName" data-order="' + esc(contactOrder.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">📱 เบอร์ติดต่อบุคคลอ้างอิง</div><input type="text" value="' + esc(contactOrder.referencePhone || '') + '" data-order-field="referencePhone" data-order="' + esc(contactOrder.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
         '</div>' +
-        '<div style="margin-top:14px; padding-top:14px; border-top:1px dashed rgba(124,92,255,0.15); display:flex; flex-wrap:wrap; gap:28px;">' +
-          '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">' + renderSendSmsButton('order', contactOrder.orderId, null, null, '📱 ส่ง SMS ทวงหนี้') + smsLastSentBadge(contactOrder.smsHistory) + '</div>' +
-          '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">' + renderSendEmailButton(contactOrder) + '</div>' +
-        '</div>' +
-        renderIssueLetterRow(contactOrder) +
-        callLogHtml +
+        renderDebtTrackingSection(contactOrder) +
       '</div>';
     var html = '<div id="customerDetailModal" style="position:fixed; inset:0; z-index:9999; background:rgba(43,37,64,0.35); display:flex; align-items:flex-start; justify-content:center; padding:30px 20px; overflow-y:auto;">' +
       '<div style="max-width:1100px; width:100%; background:rgba(255,255,255,0.97); backdrop-filter:blur(24px); -webkit-backdrop-filter:blur(24px); border:1px solid rgba(255,255,255,0.85); border-radius:24px; padding:28px 30px; box-shadow:0 24px 60px rgba(43,37,64,0.3); margin-bottom:30px;">' +
@@ -4996,7 +5037,6 @@
         case 'closeSendEmailModal': closeSendEmailModal(); break;
         case 'confirmSendEmail': confirmSendEmail(); break;
         case 'saveCallLog': saveCallLog(); break;
-        case 'toggleCallHistory': state.callHistoryOpen = !state.callHistoryOpen; render(); break;
       }
     });
 
