@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-01.16';
+  var APP_BUILD = '2026-08-01.17';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -982,6 +982,7 @@
     smsTemplates: (persisted && Array.isArray(persisted.smsTemplates) && persisted.smsTemplates.length) ? persisted.smsTemplates : DEFAULT_SMS_TEMPLATES,
     smsModalTarget: null, smsModalPhone: '', smsModalTemplateId: '', smsModalDraft: '', smsModalManaging: false, smsModalSending: false,
     callDraft: '',
+    trackingOrderId: '',
     // Letterhead image for จดหมายทวงถามหนี้ (PDF) — one company-wide image, uploaded once via the
     // Upload tab. Falls back to a plain-text company name header (buildLetterHtml) until set.
     letterheadImageUrl: (persisted && persisted.letterheadImageUrl) || '',
@@ -1722,7 +1723,7 @@
   }
   function selectCustomer(cid) {
     if (!confirmDiscardIfDirty()) return;
-    state.selectedCustomerId = cid; state.customerNoteDraft = ''; state.editingCustomerName = false; state.editingCustomerId = false; state.editingOrderIdFor = null; state.callDraft = ''; render();
+    state.selectedCustomerId = cid; state.customerNoteDraft = ''; state.editingCustomerName = false; state.editingCustomerId = false; state.editingOrderIdFor = null; state.callDraft = ''; state.trackingOrderId = ''; render();
   }
   function startEditCustomerName() {
     if (!state.selectedCustomerId || !CV) return;
@@ -2959,15 +2960,15 @@
       renderCallCard(ord) +
     '</div>';
   }
-  // ส่ง SMS/จดหมายทวงถามหนี้ moved from customer-header (one shared button for ALL of a customer's
-  // SO/bills, picked arbitrarily via pickContactOrder) to per-order (2026-08-01) — a customer report
-  // showed 2 SO/bills but only one had a working SMS/email send button, because smsHistory/
-  // letterHistory/emailHistory (and the "ยังไม่ถึง 2 งวดค้าง" eligibility gate) are genuinely
-  // per-order fields, not shared across a customer's bills, so a single header-level button could
-  // never represent more than one SO at a time. Rendered inside each order's own card now (see the
-  // CV.selectedCustomerOrders.map loop below), right under that order's own ยอดคงเหลือ figure, so
-  // staff see exactly which SO they're about to message and its outstanding balance in the same
-  // glance — no separate SO picker needed since each card already IS one SO.
+  // ส่ง SMS/จดหมายทวงถามหนี้ (2026-08-01): originally one shared button at customer-header level,
+  // picked arbitrarily via pickContactOrder — broke for customers with 2+ SO/bills since smsHistory/
+  // letterHistory/emailHistory (and the letter-eligibility gate) are genuinely per-order fields, so a
+  // single button could only ever represent one SO. First fix moved these cards into each order's own
+  // card (one instance per SO), but the user preferred keeping a single header-level location with an
+  // explicit SO picker instead of duplicating the cards — see renderSmsLetterTrackingSection below,
+  // which now owns the "which SO" selection (state.trackingOrderId) and passes the picked order into
+  // renderSmsCard/renderLetterCard. These two functions themselves are order-agnostic — just render
+  // whatever `ord` they're given — so no changes were needed here for that reversal.
   function renderSmsCard(ord) {
     var smsHistory = ord.smsHistory || [];
     var smsBody =
@@ -3003,9 +3004,32 @@
       emailHistoryHtml;
     return trackingCard('#b3261e', '📄', 'ส่งจดหมายทวงถามหนี้', letterHistory.length, letterBody);
   }
-  function renderSmsLetterSection(ord) {
-    return '<div style="border-top:1px dashed rgba(124,92,255,0.15); margin:16px 0 14px; padding-top:14px;">' +
-      '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:14px; color:#2b2540; margin-bottom:10px; display:flex; align-items:center; gap:6px;">📋 ส่ง SMS / จดหมายทวงถามหนี้ (SO นี้)</div>' +
+  // Back at customer-header level (2026-08-01, reverted from the per-order-card placement above)
+  // per explicit user request — but now with a SO picker instead of silently operating on whatever
+  // pickContactOrder() happens to return, since smsHistory/letterHistory/emailHistory and the
+  // letter-eligibility gate are genuinely per-order fields (a customer with 2+ SO/bills needs to
+  // pick which one before sending). state.trackingOrderId holds the picked orderId (reset to '' on
+  // selectCustomer so a new customer always starts back on their first SO); falls back to the first
+  // order in the list if unset or if it no longer matches this customer's orders. The selected SO's
+  // ยอดคงเหลือ is shown right above the send buttons so staff see the outstanding balance before
+  // sending, without needing to scroll down to that SO's own order card.
+  function renderSmsLetterTrackingSection() {
+    var orders = CV.selectedCustomerOrders || [];
+    if (!orders.length) return '';
+    var selectedId = (state.trackingOrderId && orders.some(function (o) { return o.orderId === state.trackingOrderId; }))
+      ? state.trackingOrderId : orders[0].orderId;
+    var ord = orders.find(function (o) { return o.orderId === selectedId; }) || orders[0];
+    var options = orders.map(function (o) {
+      return '<option value="' + esc(o.orderId) + '"' + (o.orderId === selectedId ? ' selected' : '') + '>' + esc(o.soDisplay) + ' — ' + esc(o.productList) + '</option>';
+    }).join('');
+    var selectHtml = '<select data-action="selectTrackingOrder" style="flex:1; min-width:220px; box-sizing:border-box; padding:8px 10px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fff; font-size:12.5px; color:#2b2540;">' + options + '</select>';
+    var outstandingDisp = ord.hasAccessory ? ord.mainOutstandingDisp : ord.totalOutstandingDisp;
+    var balanceHtml = '<span style="font-size:12px; color:#e03131; font-weight:700; white-space:nowrap;">ยอดคงเหลือ SO นี้: ฿' + esc(outstandingDisp) + '</span>';
+    return '<div style="border-top:1px dashed rgba(124,92,255,0.15); margin-top:14px; padding-top:14px;">' +
+      '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:15px; color:#2b2540; margin-bottom:10px; display:flex; align-items:center; gap:6px;">📋 ส่ง SMS / จดหมายทวงถามหนี้</div>' +
+      '<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px;">' +
+        '<div style="font-size:12px; color:#6b6785; font-weight:600; white-space:nowrap;">เลือก SO:</div>' + selectHtml + balanceHtml +
+      '</div>' +
       '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px;">' + renderSmsCard(ord) + renderLetterCard(ord) + '</div>' +
     '</div>';
   }
@@ -4718,6 +4742,7 @@
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">👤 ชื่อบุคคลอ้างอิง</div><input type="text" value="' + esc(contactOrder.referenceName || '') + '" data-order-field="referenceName" data-order="' + esc(contactOrder.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">📱 เบอร์ติดต่อบุคคลอ้างอิง</div><input type="text" value="' + esc(contactOrder.referencePhone || '') + '" data-order-field="referencePhone" data-order="' + esc(contactOrder.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
         '</div>' +
+        renderSmsLetterTrackingSection() +
         renderCallTrackingSection(contactOrder) +
       '</div>';
     var html = '<div id="customerDetailModal" style="position:fixed; inset:0; z-index:9999; background:rgba(43,37,64,0.35); display:flex; align-items:flex-start; justify-content:center; padding:30px 20px; overflow-y:auto;">' +
@@ -4794,7 +4819,6 @@
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดรับชำระ' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:700; color:#12b886;">฿' + (ord.hasAccessory ? ord.mainPaidDisp : ord.totalPaidDisp) + '</div></div>' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดคงเหลือ' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:700; color:#e03131;">฿' + (ord.hasAccessory ? ord.mainOutstandingDisp : ord.totalOutstandingDisp) + '</div></div>' +
         '</div>' +
-        renderSmsLetterSection(ord) +
         '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; margin-bottom:14px; padding:14px 16px; background:rgba(124,92,255,0.05); border-radius:14px;">' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:5px;">🗓 วันครบกำหนดชำระงวดแรก</div><div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">' +
             '<input type="date" value="' + esc(ord.firstDueDate || '') + '" data-order-field="firstDueDate" data-order="' + esc(ord.orderId) + '" style="border:1px solid rgba(124,92,255,0.25); border-radius:8px; padding:7px 10px; font-size:13px; color:#2b2540; background:#fff; outline:none;" />' +
@@ -5184,6 +5208,7 @@
         case 'setInstallmentAmount': setInstallmentAmount(t.getAttribute('data-order'), toNumber(t.value), t.getAttribute('data-track')); break;
         case 'setInstallmentCount': setInstallmentCount(t.getAttribute('data-order'), t.getAttribute('data-track'), toNumber(t.value)); break;
         case 'filter': state[t.getAttribute('data-key')] = t.value; render(); break;
+        case 'selectTrackingOrder': state.trackingOrderId = t.value; render(); break;
         case 'setPageSize': state.pageSize = Number(t.value) || 50; state.page = 1; render(); break;
         case 'onDebtFile': onDebtFileChange(t.files[0]); t.value = ''; break;
         case 'onPaymentFile': onPaymentFileChange(t.files[0]); t.value = ''; break;
