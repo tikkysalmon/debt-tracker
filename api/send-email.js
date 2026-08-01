@@ -62,7 +62,6 @@ module.exports = async function handler(req, res) {
         CUSTOMER_NAME: customerName || '',
         AMOUNT: amount || '',
         DUE_DATE: dueDate || '',
-        PDF_LINK: pdfLink,
         LETTER_NO: String(letterNo || ''),
         ORDER_ID: orderId || ''
       }
