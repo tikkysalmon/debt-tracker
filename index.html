@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-01.20';
+  var APP_BUILD = '2026-08-01.21';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -131,7 +131,14 @@
   // dueDate alone. See PAYMENT_CLEARS_OVERRIDE_STATUSES below for how this override still expires
   // once the customer actually pays the งวด, unlike the other manual-only statuses which need a
   // staff member to click "รีเซ็ตสถานะเป็นอัตโนมัติ" (⟲) to clear.
-  var MANUAL_ONLY_STATUSES = { 'หนี้สงสัยจะสูญ': true, 'จำหน่ายชื่อให้บริษัทติดตามหนี้': true, 'ยกเลิกสัญญา คืนเครื่อง': true, 'ยกเลิกบิล': true, 'ค้างชำระ ล็อคเครื่องไม่ได้': true, 'เปลี่ยนภาพพักหน้าจอ': true };
+  // 'ล็อคเครื่อง' added 2026-08-01 — it was already staff-pickable in the per-งวด dropdown (not in
+  // SYSTEM_ONLY_STATUSES, so EDITABLE_STATUS_OPTIONS included it) but missing from THIS whitelist,
+  // so the moment staff picked it, repairInvalidStatusOverrides() (which runs on every load) treated
+  // the override as leftover bad data from the old payment-import bug and silently wiped it straight
+  // back to computeStatus()'s auto value — a user report of "ตั้งเป็นล็อคเครื่องแล้ว ระบบดีดกลับเหมือนเดิม"
+  // (set it, then it reverted) traced directly to this gap. 'ล็อคเครื่อง (ระบบ)' correctly stays OUT
+  // of this list — that variant is computeStatus()'s own pure diffDays output and must never freeze.
+  var MANUAL_ONLY_STATUSES = { 'หนี้สงสัยจะสูญ': true, 'จำหน่ายชื่อให้บริษัทติดตามหนี้': true, 'ยกเลิกสัญญา คืนเครื่อง': true, 'ยกเลิกบิล': true, 'ค้างชำระ ล็อคเครื่องไม่ได้': true, 'เปลี่ยนภาพพักหน้าจอ': true, 'ล็อคเครื่อง': true };
   // A statusOverride for one of these becomes stale the moment the งวด itself receives any
   // payment (amountPaid > 0) — that's the signal the customer settled the outstanding installment,
   // so the manual hold should release on its own instead of needing a staff member to notice and
