@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-01.19';
+  var APP_BUILD = '2026-08-01.20';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -3772,16 +3772,30 @@
         return;
       }
 
-      var added = 0, addedPenalty = 0, missed = 0, duplicate = 0, updatedOnly = 0;
-      rows.forEach(function (r) {
+      // Row targeting rewritten 2026-08-01 per explicit user request, after a customer's งวด 1
+      // showed double the normal amount (4,741.66 instead of 2,370.83). Root cause: when a file DID
+      // carry a "งวดที่" column, the old code trusted that number blindly and just accumulated onto
+      // whatever งวด it named — with zero check for whether that งวด was already fully paid. Two
+      // payment files/rows both (mis)labeled "งวด 1" for the same order — plausible across the
+      // several overlapping รับชำระ(1)/(2)/(3)/ฯลฯ files uploaded over time — would both land on
+      // งวด 1 forever, never advancing. New rule, confirmed with the user: "หน้าเว็บถือเป็นหลัก" — the
+      // table's OWN current state (paidDate already on file, which งวด is still open) decides where a
+      // payment lands, never the file's own งวดที่ label (which is no longer read for targeting at
+      // all, only used as a duplicate-safety net alongside amount below).
+      // Sorted by paidDate first so multiple rows for the same order land on consecutive งวด in the
+      // right order regardless of the file's own row order.
+      var sortedRows = rows.slice().sort(function (a, b) {
+        return toDateString(resolveField(a, ALIASES.paidDate)).localeCompare(toDateString(resolveField(b, ALIASES.paidDate)));
+      });
+      var added = 0, addedPenalty = 0, missed = 0, duplicate = 0, duplicateDate = 0, updatedOnly = 0;
+      sortedRows.forEach(function (r) {
         var orderId = String(resolveField(r, ALIASES.orderId) || '').trim();
-        var noRaw = resolveField(r, ALIASES.installmentNo);
-        var no = Number(noRaw || 0);
         var match = findOrderAndTrack(orderId, String(resolveField(r, ALIASES.customerId) || '').trim());
         if (!match) { missed++; return; }
         var order = match.order, trackList = match.list;
         var amountPaid = resolveField(r, ALIASES.amountPaid);
         var paidDate = resolveField(r, ALIASES.paidDate);
+        var paidDateStr = toDateString(paidDate);
         var status = resolveField(r, ALIASES.status);
         var discount = resolveField(r, ALIASES.discount);
         var note = resolveField(r, ALIASES.note);
@@ -3789,34 +3803,36 @@
         // (installment + penalty COMBINED into one amount — not two separate rows).
         var hasPenalty = /ปรับ/.test(String(resolveField(r, ALIASES.type) || ''));
 
-        var inst, payKey;
-        if (no > 0) {
-          inst = trackList.find(function (i) { return i.no === no; });
-          if (!inst) { missed++; return; }
-          payKey = orderId + '|' + no + '|' + toDateString(paidDate) + '|' + toNumber(amountPaid);
-        } else {
-          // No งวดที่ column in this export. Penalty-tagged rows should land on an installment
-          // that still owes a fee (it may already be fully paid on the amountDue side and so
-          // would otherwise get skipped) — fall back to the earliest not-fully-paid installment
-          // for everything else, same approach as the debtor-file paidTotal distribution.
-          var sortedInsts = trackList.slice().sort(function (a, b) { return (a.no || 0) - (b.no || 0); });
-          if (hasPenalty) {
-            inst = sortedInsts.find(function (i) { return (toNumber(i.lateFee) + toNumber(i.unlockFee)) > toNumber(i.penaltyPaid) + 0.005; });
-          }
-          if (!inst) {
-            inst = sortedInsts.find(function (i) { return toNumber(i.amountPaid) < (toNumber(i.amountDue) - toNumber(i.discount) - 0.01); }) || trackList[trackList.length - 1];
-          }
-          if (!inst) { missed++; return; }
-          payKey = orderId + '|noinst|' + String(paidDate) + '|' + toNumber(amountPaid);
+        // NEW duplicate guard: this exact paid date already recorded on SOME งวด of this order/track
+        // → the customer already has this payment on file, skip outright (per explicit user rule —
+        // don't try to reconcile a differing amount, just drop it). Checked before targeting, and
+        // independent of the file's งวดที่ column (which is no longer trusted for this at all).
+        if (paidDateStr && trackList.some(function (i) { return i.paidDate === paidDateStr; })) {
+          duplicateDate++;
+          return;
         }
+
+        // Penalty-tagged rows should land on a งวด that still owes a fee (it may already be fully
+        // paid on the amountDue side and so would otherwise get skipped) — fall back to the earliest
+        // not-yet-fully-paid งวด for everything else, same target used for the settlement spread below.
+        var sortedInsts = trackList.slice().sort(function (a, b) { return (a.no || 0) - (b.no || 0); });
+        var inst;
+        if (hasPenalty) {
+          inst = sortedInsts.find(function (i) { return (toNumber(i.lateFee) + toNumber(i.unlockFee)) > toNumber(i.penaltyPaid) + 0.005; });
+        }
+        if (!inst) {
+          inst = sortedInsts.find(function (i) { return toNumber(i.amountPaid) < (toNumber(i.amountDue) - toNumber(i.discount) - 0.01); }) || trackList[trackList.length - 1];
+        }
+        if (!inst) { missed++; return; }
+        var payKey = orderId + '|' + inst.no + '|' + paidDateStr + '|' + toNumber(amountPaid);
 
         // ACCUMULATE the paid amount onto the running total, with duplicate-row protection.
         // A penalty-tagged row's amount is bigger than the installment actually owes — the
         // excess over what's still due on this installment IS the fee (late fee / unlock fee
         // are fixed at ฿500 each occurrence), no need to already have a "charged" figure on record.
         var multiInsts = [inst]; // งวด actually touched by this row — normally just `inst`, but a
-        // combined no-งวดที่ payment can spread across several (see below), and paidDate/discount/
-        // note/status below must stamp every one of them, not just the first.
+        // combined payment can spread across several (see below), and paidDate/discount/note/status
+        // below must stamp every one of them, not just the first.
         if (amountPaid !== '') {
           if (appliedPaymentKeys[payKey]) { duplicate++; return; } // same row already added before → skip
           appliedPaymentKeys[payKey] = true;
@@ -3838,28 +3854,32 @@
               addedPenalty++;
             }
             if (installmentPortion > 0) added++;
-          } else if (no <= 0) {
-            // No งวดที่ column — this one row's amount may cover more than one งวด at once (e.g. a
-            // customer settling several งวด in a single transaction). Spread it starting at `inst`
-            // instead of dumping everything on just that one งวด, which used to leave later งวด
-            // stuck unpaid despite the money for them having already arrived.
+          } else {
+            // Always spread via distributeCombinedPayment now (not just when the file lacked a
+            // งวดที่ column) — this one function already gives exactly the two behaviors the user
+            // confirmed: a SLIGHT overpayment (e.g. งวดละ 2,000 จ่าย 2,500) has nowhere further to
+            // go once `inst` alone absorbs it, so the extra ฿500 just shows as เกิน on that one งวด;
+            // a payment big enough to cover every remaining งวด fills each one in turn — a genuine
+            // ปิดยอด additionally gets its final redistribution/remainder pass from cascadeOverpayment
+            // at the end of this import (order-total-scoped, so it's the source of truth for "is this
+            // really a full settlement," not this per-row spread).
             var pool = sortedInsts.slice(sortedInsts.indexOf(inst));
             var touchedByFill = distributeCombinedPayment(pool, rowAmount);
             multiInsts = touchedByFill.length ? touchedByFill : [inst];
-            added++;
-          } else {
-            inst.amountPaid = toNumber(inst.amountPaid) + rowAmount;
             added++;
           }
         } else {
           updatedOnly++;
         }
-        multiInsts.forEach(function (mi) {
+        multiInsts.forEach(function (mi, idx) {
           // This row touched mi's amountPaid (or is about to touch discount below) — a prior
           // ตรวจสอบ CRM confirmation was for the pre-payment figure and no longer applies.
           if (mi.verifiedCRM && (amountPaid !== '' || discount !== '')) { mi.verifiedCRM = false; mi.verifiedCRMAt = ''; }
-          if (paidDate !== '') mi.paidDate = toDateString(paidDate); // latest payment date wins
-          if (discount !== '') mi.discount = toNumber(discount);
+          if (paidDate !== '') mi.paidDate = paidDateStr; // latest payment date wins
+          // ส่วนลดปิดยอด (closing/settlement discount) belongs on the LAST งวด this row touched only —
+          // per explicit user rule — never repeated onto every spread-across งวด, which would multiply
+          // the discount by however many งวด a combined payment happened to fill.
+          if (discount !== '' && idx === multiInsts.length - 1) mi.discount = toNumber(discount);
           if (note !== '') mi.note = String(note);
           // Regular payment exports tag every row's "สถานะการชำระ" as "สำเร็จ" (the bank/QR
           // transaction succeeded) — that's not a debt-collection status and must NOT override the
@@ -3872,7 +3892,7 @@
         if (status !== '' && STATUS_META[String(status)]) Object.assign(order, stickyAccountStatusPatch(String(status)));
       });
       // Nothing matched at all (not even duplicates) → likely wrong columns OR debtor not imported yet.
-      if (added === 0 && addedPenalty === 0 && updatedOnly === 0 && duplicate === 0) {
+      if (added === 0 && addedPenalty === 0 && updatedOnly === 0 && duplicate === 0 && duplicateDate === 0) {
         state.uploadMsgPayment = '⚠️ อ่านไฟล์ได้ ' + rows.length + ' แถว แต่จับคู่กับข้อมูลลูกหนี้ไม่ได้ (ยังไม่บันทึก) — '
           + (state.orders.length === 0 ? 'ยังไม่มีข้อมูลลูกหนี้ในระบบ กรุณาอัปโหลด “ไฟล์ลูกหนี้” ก่อน' : ('ตรวจว่าคอลัมน์ “คำสั่งซื้อ” และ “งวดที่” ตรงกับไฟล์ลูกหนี้ — หัวคอลัมน์ในไฟล์นี้คือ: ' + (headers.length ? headers.join(' | ') : '(ไม่พบหัวคอลัมน์)')));
         render();
@@ -3889,6 +3909,7 @@
       state.uploadMsgPayment = 'บวกยอดสำเร็จ ' + added + ' งวด'
         + (addedPenalty ? (' · ค่าปรับ ' + addedPenalty + ' งวด') : '')
         + (updatedOnly ? (' · อัปเดตข้อมูลอื่น ' + updatedOnly + ' แถว') : '')
+        + (duplicateDate ? (' · ข้ามแถววันที่ซ้ำ ' + duplicateDate + ' แถว (มีอยู่ในระบบแล้ว)') : '')
         + (duplicate ? (' · ข้ามแถวซ้ำ ' + duplicate + ' แถว (บวกไปแล้ว)') : '')
         + (missed ? (' · ไม่พบ ' + missed + ' แถว') : '');
       render();
