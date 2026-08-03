@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-01.18';
+  var APP_BUILD = '2026-08-01.19';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1106,19 +1106,27 @@
       }, null);
       var lateInsts = allInstallments.filter(function (i) { return LATE_STATUSES.indexOf(i.effectiveStatus) !== -1; });
       var lateOutstandingRaw = lateInsts.reduce(function (s, i) { return s + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0);
-      // Per-track (main-only / accessory-only) versions of overdueCount/trueOverdueRaw/lateCount
-      // above, added 2026-08-01 so ส่ง SMS/จดหมายทวงถามหนี้ can demand JUST the accessory's own debt
-      // when staff picks the accessory SO in renderSmsLetterTrackingSection, instead of the combined
-      // main+accessory total that overdueCount/trueOverdueRaw/lateCount represent — sending a
-      // separate accessory letter using the combined figure would double-count the accessory debt
-      // (once implicitly inside a main-SO letter, once again explicitly in the accessory one). The
-      // combined fields above are UNCHANGED and still drive the report table / grading / KPIs, which
-      // intentionally stay whole-customer-relationship scoped, not track-split.
+      // Per-track (main-only / accessory-only) figures for ส่ง SMS/จดหมายทวงถามหนี้, added 2026-08-01
+      // — two distinct fixes layered on the same helper:
+      // 1) Track-split: so a customer with an accessory SO can get billed separately without
+      //    double-counting the accessory's debt (once implicitly inside a main-SO letter/SMS, once
+      //    again explicitly in the accessory one). The combined overdueCount/trueOverdueRaw/lateCount
+      //    above are UNCHANGED and still drive the report table / grading / KPIs, which intentionally
+      //    stay whole-customer-relationship scoped, not track-split.
+      // 2) overdueCount/overdueRaw here now use LATE_STATUSES (same set as lateCount — หนี้สงสัยจะสูญ/
+      //    ชำระบางส่วน/ล็อคเครื่อง/เปลี่ยนภาพพักหน้าจอ/ค้างชำระ ล็อคเครื่องไม่ได้ ล้วนนับ), NOT the
+      //    narrow STATUS_GROUP_META 'ค้างชำระ' group the top-level trueOverdueRaw/overdueCount use for
+      //    the ยอดค้างชำระ report column. A collection letter/SMS must demand the customer's FULL real
+      //    debt regardless of which internal risk bucket a งวด is classified into — เกรด/บัญชี
+      //    หนี้สงสัยจะสูญ is a risk classification, not forgiveness. Before this fix the letter could
+      //    print ฿0 / an understated total for an order whose only overdue งวด had escalated to
+      //    หนี้สงสัยจะสูญ, even though the eligibility gate (which already used lateCount) let staff
+      //    click "ออกเอกสาร" in the first place — confirmed by the user this scope covers both
+      //    หนี้สงสัยจะสูญ AND ชำระบางส่วน's remaining balance, and applies to SMS too, not just letters.
       function trackLateStats(list) {
-        var overdueInsts = list.filter(function (i) { return STATUS_TO_GROUP[i.effectiveStatus] === 'ค้างชำระ'; });
-        var overdueRaw = overdueInsts.reduce(function (s, i) { return s + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0);
-        var lateCount = list.filter(function (i) { return LATE_STATUSES.indexOf(i.effectiveStatus) !== -1; }).length;
-        return { overdueCount: overdueInsts.length, overdueRaw: overdueRaw, lateCount: lateCount };
+        var lateInsts = list.filter(function (i) { return LATE_STATUSES.indexOf(i.effectiveStatus) !== -1; });
+        var lateRaw = lateInsts.reduce(function (s, i) { return s + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0);
+        return { overdueCount: lateInsts.length, overdueRaw: lateRaw, lateCount: lateInsts.length };
       }
       var mainLate = trackLateStats(installments);
       var accLate = trackLateStats(accessoryInstallments);
