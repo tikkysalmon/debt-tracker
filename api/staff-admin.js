@@ -31,23 +31,36 @@ function passwordPolicyError(pw) {
   return '';
 }
 
+// Temporary extra detail on the 401/500 branches below (2026-08 troubleshooting a reported
+// "เซสชันไม่ถูกต้องหรือหมดอายุ" that reproduced immediately after a fresh login, which rules out an
+// actually-expired token) — surfaces Supabase's own upstream status/response body instead of just
+// the generic friendly message, so the real cause (bad SUPABASE_SERVICE_ROLE_KEY value, wrong
+// endpoint, etc.) is visible in the UI without needing server log access. Safe to leave in
+// long-term (never includes the key itself, just Supabase's own error text), but can be trimmed
+// back to the plain friendly message once this class of issue is confirmed gone.
 async function verifyCallerIsAdmin(callerToken, serviceRoleKey) {
   if (!callerToken) return { ok: false, status: 401, error: 'ไม่ได้ล็อกอิน' };
   const userRes = await fetch(SUPABASE_URL + '/auth/v1/user', {
     headers: { 'Authorization': 'Bearer ' + callerToken, 'apikey': serviceRoleKey }
   });
-  if (!userRes.ok) return { ok: false, status: 401, error: 'เซสชันไม่ถูกต้องหรือหมดอายุ กรุณาล็อกอินใหม่' };
+  if (!userRes.ok) {
+    const body = await userRes.text().catch(function () { return ''; });
+    return { ok: false, status: 401, error: 'เซสชันไม่ถูกต้องหรือหมดอายุ กรุณาล็อกอินใหม่ [debug: /auth/v1/user -> ' + userRes.status + ' ' + body.slice(0, 300) + ']' };
+  }
   const user = await userRes.json().catch(function () { return null; });
-  if (!user || !user.id) return { ok: false, status: 401, error: 'เซสชันไม่ถูกต้อง' };
+  if (!user || !user.id) return { ok: false, status: 401, error: 'เซสชันไม่ถูกต้อง [debug: /auth/v1/user returned no user id]' };
 
   const rowRes = await fetch(SUPABASE_URL + '/rest/v1/staff_users?id=eq.' + user.id + '&select=is_admin,is_active', {
     headers: { 'Authorization': 'Bearer ' + serviceRoleKey, 'apikey': serviceRoleKey }
   });
-  if (!rowRes.ok) return { ok: false, status: 500, error: 'ตรวจสอบสิทธิ์ผู้ใช้ไม่สำเร็จ' };
+  if (!rowRes.ok) {
+    const body = await rowRes.text().catch(function () { return ''; });
+    return { ok: false, status: 500, error: 'ตรวจสอบสิทธิ์ผู้ใช้ไม่สำเร็จ [debug: /rest/v1/staff_users -> ' + rowRes.status + ' ' + body.slice(0, 300) + ']' };
+  }
   const rows = await rowRes.json().catch(function () { return []; });
   const row = rows && rows[0];
   if (!row || !row.is_admin || row.is_active === false) {
-    return { ok: false, status: 403, error: 'ต้องเป็นผู้ดูแลระบบ (Admin) ที่ยังใช้งานได้เท่านั้น' };
+    return { ok: false, status: 403, error: 'ต้องเป็นผู้ดูแลระบบ (Admin) ที่ยังใช้งานได้เท่านั้น [debug: row=' + JSON.stringify(row) + ']' };
   }
   return { ok: true, callerId: user.id };
 }
