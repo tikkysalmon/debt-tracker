@@ -791,6 +791,19 @@
     if (cloudSaveInFlight) { cloudSavePending = true; return; }
     cloudSaveInFlight = true;
     cloudStatus = 'saving'; updateCloudStatus();
+    // Safety-net: even with the try/catch in proceed() below, a Supabase call that never settles
+    // (flaky connection, browser tab backgrounded mid-request, etc.) would otherwise leave this
+    // stuck on "กำลังบันทึก…" forever with no way out except reloading the page. If THIS save
+    // hasn't resolved within 30s — well beyond the ~15-20MB payload's normal round-trip — force a
+    // reset so staff see an actionable offline state instead of a frozen spinner.
+    var watchdogTimer = setTimeout(function () {
+      cloudSaveInFlight = false;
+      cloudStatus = 'offline';
+      cloudErrorDetail = 'บันทึกใช้เวลานานเกินไป (หมดเวลา 30 วินาที) — ระบบรีเซ็ตสถานะให้แล้ว ลองบันทึกอีกครั้ง';
+      console.error('[cloudSaveNow] watchdog fired — save never resolved within 30s');
+      updateCloudStatus();
+      if (cloudSavePending) { cloudSavePending = false; cloudSaveNow(); }
+    }, 30000);
     var baseOrders = lastServerSnapshot.orders;
     var baseNotes = lastServerSnapshot.customerNotes;
     var baseTrackingReturn = lastServerSnapshot.customerTrackingReturn;
@@ -807,6 +820,7 @@
     // and it actually succeeded — on failure or when another save is already queued, local state
     // still isn't confirmed saved, so cloudPoll() must keep refusing incoming snapshots.
     function finishSave(success, merged) {
+      clearTimeout(watchdogTimer);
       cloudSaveInFlight = false;
       if (success && merged) {
         lastServerSnapshot = merged;
@@ -842,7 +856,7 @@
         var remoteTs = item ? item.updated_at : null;
         downloadCloudFile().then(function (res) {
           if (res.error) { proceed(remoteTs, null); return; }
-          res.data.text().then(function (t) {
+          return res.data.text().then(function (t) {
             var remote = null;
             try { remote = JSON.parse(t); } catch (e) {}
             proceed(remoteTs, remote);
@@ -852,27 +866,42 @@
 
       // remoteTs is the updated_at this merge's `remote` reflects (null = no remote file yet, or
       // the fetch failed and we're merging onto an empty base — same effect as the old bootstrap).
+      // Everything below is synchronous local work (JS merge + JSON.stringify) — under concurrent
+      // edits from other clients it's exactly the code path most likely to hit an unexpected shape
+      // and throw. Wrapped in try/catch so that can NEVER leave cloudSaveInFlight stuck true /
+      // cloudStatus stuck at 'saving' forever (which is what staff were seeing — a throw here used
+      // to be swallowed by an unreturned/unchained promise, so finishSave() was never reached and
+      // the pill never left "กำลังบันทึก…" until a full page reload).
       function proceed(remoteTs, remote) {
-        var remoteOrders = (remote && Array.isArray(remote.orders)) ? remote.orders : [];
-        var remoteNotes = (remote && remote.customerNotes) ? remote.customerNotes : {};
-        var remoteTrackingReturn = (remote && remote.customerTrackingReturn) ? remote.customerTrackingReturn : {};
-        var remoteTrackingReturnAt = (remote && remote.customerTrackingReturnAt) ? remote.customerTrackingReturnAt : {};
-        var remoteKeys = (remote && remote.appliedPaymentKeys) ? remote.appliedPaymentKeys : [];
-        var mergedOrders = mergeOrdersList(baseOrders, localOrdersSnapshot, remoteOrders);
-        var mergedNotes = mergeNotes(baseNotes, localNotesSnapshot, remoteNotes);
-        // mergeNotes is fully generic (any scalar-valued map keyed by customerKey, not notes-
-        // specific) — reused as-is for these two rather than duplicating the same merge logic.
-        var mergedTrackingReturn = mergeNotes(baseTrackingReturn, localTrackingReturnSnapshot, remoteTrackingReturn);
-        var mergedTrackingReturnAt = mergeNotes(baseTrackingReturnAt, localTrackingReturnAtSnapshot, remoteTrackingReturnAt);
-        var mergedKeys = unionKeys(remoteKeys, localKeysSnapshot);
-        // isSampleData travels WITH the payload so applySnapshot can trust it explicitly instead of
-        // guessing from orders.length — a freshly-seeded bucket's built-in demo data (generateMock())
-        // is non-empty too, and inferring "no longer sample" from length alone meant the demo orders
-        // silently got treated as real and merged alongside the first genuine upload (see
-        // repairStaleSampleOrders below for cleaning up datasets already affected by this).
-        var payload = { orders: mergedOrders, customerNotes: mergedNotes, customerTrackingReturn: mergedTrackingReturn, customerTrackingReturnAt: mergedTrackingReturnAt, appliedPaymentKeys: mergedKeys, isSampleData: state.isSampleData, smsTemplates: state.smsTemplates, letterheadImageUrl: state.letterheadImageUrl, _meta: { updatedAt: new Date().toISOString(), updatedBy: myClientId } };
-        var text = JSON.stringify(payload);
-        var blob = new Blob([text], { type: 'application/json' });
+        try {
+          var remoteOrders = (remote && Array.isArray(remote.orders)) ? remote.orders : [];
+          var remoteNotes = (remote && remote.customerNotes) ? remote.customerNotes : {};
+          var remoteTrackingReturn = (remote && remote.customerTrackingReturn) ? remote.customerTrackingReturn : {};
+          var remoteTrackingReturnAt = (remote && remote.customerTrackingReturnAt) ? remote.customerTrackingReturnAt : {};
+          var remoteKeys = (remote && remote.appliedPaymentKeys) ? remote.appliedPaymentKeys : [];
+          var mergedOrders = mergeOrdersList(baseOrders, localOrdersSnapshot, remoteOrders);
+          var mergedNotes = mergeNotes(baseNotes, localNotesSnapshot, remoteNotes);
+          // mergeNotes is fully generic (any scalar-valued map keyed by customerKey, not notes-
+          // specific) — reused as-is for these two rather than duplicating the same merge logic.
+          var mergedTrackingReturn = mergeNotes(baseTrackingReturn, localTrackingReturnSnapshot, remoteTrackingReturn);
+          var mergedTrackingReturnAt = mergeNotes(baseTrackingReturnAt, localTrackingReturnAtSnapshot, remoteTrackingReturnAt);
+          var mergedKeys = unionKeys(remoteKeys, localKeysSnapshot);
+          // isSampleData travels WITH the payload so applySnapshot can trust it explicitly instead of
+          // guessing from orders.length — a freshly-seeded bucket's built-in demo data (generateMock())
+          // is non-empty too, and inferring "no longer sample" from length alone meant the demo orders
+          // silently got treated as real and merged alongside the first genuine upload (see
+          // repairStaleSampleOrders below for cleaning up datasets already affected by this).
+          var payload = { orders: mergedOrders, customerNotes: mergedNotes, customerTrackingReturn: mergedTrackingReturn, customerTrackingReturnAt: mergedTrackingReturnAt, appliedPaymentKeys: mergedKeys, isSampleData: state.isSampleData, smsTemplates: state.smsTemplates, letterheadImageUrl: state.letterheadImageUrl, _meta: { updatedAt: new Date().toISOString(), updatedBy: myClientId } };
+          var text = JSON.stringify(payload);
+          var blob = new Blob([text], { type: 'application/json' });
+        } catch (mergeErr) {
+          cloudStatus = 'offline';
+          cloudErrorDetail = 'ผสานข้อมูลล้มเหลว (merge error): ' + (mergeErr && mergeErr.message ? mergeErr.message : String(mergeErr));
+          console.error('[cloudSaveNow] proceed() threw during merge:', mergeErr);
+          updateCloudStatus();
+          finishSave(false);
+          return;
+        }
         if (retriesLeft <= 0) { doUpload(mergedOrders, mergedNotes, mergedTrackingReturn, mergedTrackingReturnAt, mergedKeys, blob, text); return; }
         findCloudFileMeta().then(function (freshItem) {
           var freshTs = freshItem ? freshItem.updated_at : null;
