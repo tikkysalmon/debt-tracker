@@ -152,6 +152,8 @@
   // admin account creates sub-accounts and picks exactly what each one can do). is_admin is a
   // separate flag, not one of these checkboxes — it always grants everything AND is the only way to
   // reach "จัดการผู้ใช้งาน" itself, so a permission-scoped account can never grant itself more access.
+  // Fixed list per explicit user request — Department/ตำแหน่ง is a closed set, not free text.
+  var DEPARTMENT_OPTIONS = ['เร่งรัดหนี้สิน', 'ธุรการบัญชี', 'ผู้ดูแลระบบ', 'ผู้บริหาร / บุคคลภายนอก'];
   var PERMISSION_CATALOG = [
     { key: 'tracking_view', label: 'ดูเมนู "ติดตามหนี้"', desc: 'ดูรายชื่อ/รายละเอียดลูกหนี้ (จำเป็นก่อนจะแก้ไขอะไรในเมนูนี้ได้)' },
     { key: 'tracking_edit', label: 'แก้ไขข้อมูลติดตามหนี้', desc: 'แก้ไขงวด/ยอดชำระ/เลื่อนวันชำระ/หมายเหตุ/ข้อมูลลูกค้าและคำสั่งซื้อ' },
@@ -4416,7 +4418,7 @@
     var d = state.userMgmtDraft;
     if (!d) return;
     if (state.userMgmtEditing === 'new') {
-      if (!d.employeeCode || !d.firstName || !d.lastName || !d.nickname) { state.userMgmtError = 'กรอกรหัสพนักงาน/ชื่อ/นามสกุล/ชื่อเล่นให้ครบ'; render(); return; }
+      if (!d.employeeCode || !d.firstName || !d.lastName || !d.nickname || !d.department) { state.userMgmtError = 'กรอกรหัสพนักงาน/ชื่อ/นามสกุล/ชื่อเล่น/ตำแหน่งให้ครบ'; render(); return; }
       var pwErr = passwordPolicyError(d.password);
       if (pwErr) { state.userMgmtError = pwErr; render(); return; }
       if (d.password !== d.confirmPassword) { state.userMgmtError = 'รหัสผ่านทั้ง 2 ช่องต้องเหมือนกัน'; render(); return; }
@@ -4431,7 +4433,7 @@
       }).catch(function (err) { state.userMgmtBusy = false; state.userMgmtError = err && err.message ? err.message : String(err); render(); });
       return;
     }
-    if (!d.firstName || !d.lastName || !d.nickname) { state.userMgmtError = 'กรอกชื่อ/นามสกุล/ชื่อเล่นให้ครบ'; render(); return; }
+    if (!d.firstName || !d.lastName || !d.nickname || !d.department) { state.userMgmtError = 'กรอกชื่อ/นามสกุล/ชื่อเล่น/ตำแหน่งให้ครบ'; render(); return; }
     if (d.newPassword && d.newPassword !== d.confirmNewPassword) { state.userMgmtError = 'รหัสผ่านใหม่ทั้ง 2 ช่องต้องเหมือนกัน'; render(); return; }
     if (d.newPassword) {
       var pwErr2 = passwordPolicyError(d.newPassword);
@@ -4478,6 +4480,12 @@
     var textInput = function (dataField, value, placeholder) {
       return '<input type="text" value="' + esc(value || '') + '" data-action="staffDraftField" data-field="' + dataField + '" placeholder="' + (placeholder || '') + '" style="width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); font-size:14px; outline:none;" />';
     };
+    var departmentSelect = function (value) {
+      return '<select data-action="staffDraftField" data-field="department" style="width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); font-size:14px; color:#2b2540; background:#fff; outline:none;">' +
+        '<option value=""' + (!value ? ' selected' : '') + '>เลือกตำแหน่ง</option>' +
+        DEPARTMENT_OPTIONS.map(function (opt) { return '<option value="' + esc(opt) + '"' + (value === opt ? ' selected' : '') + '>' + esc(opt) + '</option>'; }).join('') +
+      '</select>';
+    };
     return '<div style="position:fixed; inset:0; z-index:9999; background:rgba(43,37,64,0.35); display:flex; align-items:center; justify-content:center; padding:20px;">' +
       '<div style="max-width:520px; width:100%; max-height:90vh; overflow-y:auto; background:#fff; border-radius:20px; padding:26px 26px 22px; box-shadow:0 24px 60px rgba(43,37,64,0.3);">' +
         '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#2b2540; margin-bottom:18px;">' + (isNew ? '👤 เพิ่มข้อมูลพนักงาน' : '✏️ แก้ไขข้อมูลพนักงาน') + '</div>' +
@@ -4490,7 +4498,7 @@
         field('ชื่อเล่น', textInput('nickname', d.nickname, 'โปรดกรอกชื่อเล่น')) +
         '<div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">' +
           (isNew ? field('รหัสพนักงาน', textInput('employeeCode', d.employeeCode, 'เช่น ACC001')) : field('รหัสพนักงาน', '<div style="padding:9px 12px; border-radius:10px; background:rgba(124,92,255,0.06); font-size:14px; color:#2b2540; font-weight:600;">' + esc(d.employeeCode) + '</div>')) +
-          field('Department/ตำแหน่ง', textInput('department', d.department, 'พิมพ์แผนก/ตำแหน่ง')) +
+          field('Department/ตำแหน่ง', departmentSelect(d.department)) +
         '</div>' +
         '<div style="font-size:12px; color:#8a86a3; font-weight:700; margin:16px 0 10px; text-transform:uppercase; letter-spacing:0.03em;">ข้อมูลการเข้าสู่ระบบ</div>' +
         (isNew

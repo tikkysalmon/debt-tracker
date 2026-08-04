@@ -9,6 +9,10 @@
 // the service-role key itself has no notion of "who's asking", so that check is entirely on us.
 const SUPABASE_URL = 'https://mddtfcganbuxzfendgfi.supabase.co';
 
+// Must stay in sync with DEPARTMENT_OPTIONS in index.html — the dropdown there already limits
+// input to this set, this is the server-side backstop against a direct (non-UI) API call sending
+// an arbitrary string.
+const DEPARTMENT_OPTIONS = ['เร่งรัดหนี้สิน', 'ธุรการบัญชี', 'ผู้ดูแลระบบ', 'ผู้บริหาร / บุคคลภายนอก'];
 // Must stay byte-for-byte identical to employeeCodeToEmail() in index.html — both sides compute
 // the same fake Auth-identity email from a รหัสพนักงาน with zero DB lookup involved.
 function employeeCodeToEmail(code) {
@@ -76,7 +80,8 @@ module.exports = async function handler(req, res) {
       const lastName = String(p.lastName || '').trim();
       const nickname = String(p.nickname || '').trim();
       const department = String(p.department || '').trim();
-      if (!employeeCode || !firstName || !lastName || !nickname) { res.status(400).json({ error: 'กรอกรหัสพนักงาน/ชื่อ/นามสกุล/ชื่อเล่นให้ครบ' }); return; }
+      if (!employeeCode || !firstName || !lastName || !nickname || !department) { res.status(400).json({ error: 'กรอกรหัสพนักงาน/ชื่อ/นามสกุล/ชื่อเล่น/ตำแหน่งให้ครบ' }); return; }
+      if (DEPARTMENT_OPTIONS.indexOf(department) === -1) { res.status(400).json({ error: 'ตำแหน่งไม่ถูกต้อง' }); return; }
       const pwErr = passwordPolicyError(password);
       if (pwErr) { res.status(400).json({ error: pwErr }); return; }
       const email = employeeCodeToEmail(employeeCode);
@@ -123,7 +128,11 @@ module.exports = async function handler(req, res) {
       if (p.firstName !== undefined) patch.first_name = String(p.firstName).trim();
       if (p.lastName !== undefined) patch.last_name = String(p.lastName).trim();
       if (p.nickname !== undefined) patch.nickname = String(p.nickname).trim();
-      if (p.department !== undefined) patch.department = String(p.department).trim();
+      if (p.department !== undefined) {
+        const dept = String(p.department).trim();
+        if (DEPARTMENT_OPTIONS.indexOf(dept) === -1) { res.status(400).json({ error: 'ตำแหน่งไม่ถูกต้อง' }); return; }
+        patch.department = dept;
+      }
       if (p.isAdmin !== undefined) patch.is_admin = !!p.isAdmin;
       if (p.permissions !== undefined) patch.permissions = p.permissions;
       if (p.isActive !== undefined) patch.is_active = !!p.isActive;
