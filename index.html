@@ -170,6 +170,33 @@
     var b = parseInt(h.substring(4, 6), 16);
     return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
   }
+  // Copies text to clipboard and briefly flashes btnEl to confirm — no full render() so the
+  // transient "copied" state doesn't need to live in app state.
+  function copyTextToClipboard(text, btnEl) {
+    function flash() {
+      if (!btnEl) return;
+      var original = btnEl.innerHTML;
+      btnEl.innerHTML = '✅';
+      setTimeout(function () { btnEl.innerHTML = original; }, 1200);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(flash, function () { fallbackCopy(text); flash(); });
+    } else {
+      fallbackCopy(text);
+      flash();
+    }
+  }
+  function fallbackCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try { document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta);
+  }
   function fmtMoney(n) {
     var v = Number(n || 0);
     if (!isFinite(v)) return '0.00';
@@ -4925,7 +4952,8 @@
                 '<button data-action="saveOrderId" title="ยืนยันเลข SO ใหม่ — ยังต้องกดปุ่ม 💾 บันทึกการเปลี่ยนแปลง ด้วยเพื่อบันทึกจริง" style="border:none; background:#12b886; color:#fff; padding:3px 10px; border-radius:6px; font-size:11.5px; font-weight:600; cursor:pointer;">✓</button>' +
                 '<button data-action="cancelEditOrderId" style="border:none; background:rgba(0,0,0,0.06); color:#6b6785; padding:3px 10px; border-radius:6px; font-size:11.5px; font-weight:600; cursor:pointer;">✕</button></div>'
             : '<div style="font-size:13px; color:#6b6785; display:flex; align-items:center; gap:6px;">🔗 SO: <span style="color:#2b2540; font-weight:600;">' + esc(ord.soDisplay) + '</span>' +
-                '<button data-action="startEditOrderId" data-order="' + esc(ord.orderId) + '" title="แก้ไขเลขคำสั่งซื้อ" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; width:20px; height:20px; border-radius:5px; font-size:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">✏️</button></div>') +
+                '<button data-action="startEditOrderId" data-order="' + esc(ord.orderId) + '" title="แก้ไขเลขคำสั่งซื้อ" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; width:20px; height:20px; border-radius:5px; font-size:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">✏️</button>' +
+                '<button data-action="copyOrderInfo" data-customer-name="' + esc(CV.selectedCustomerName) + '" data-customer-id="' + esc(CV.selectedCustomerIdDisp) + '" data-so="' + esc(ord.soDisplay) + '" title="คัดลอกชื่อลูกค้า/รหัสลูกค้า/เลขคำสั่งซื้อ" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; width:20px; height:20px; border-radius:5px; font-size:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">📋</button></div>') +
           '<div style="font-size:13px; color:#6b6785;">🗓 วันที่ออกสัญญา: <span style="color:#2b2540; font-weight:600;">' + esc(ord.contractDateDisp) + '</span></div>' +
           '<div style="background:rgba(240,140,0,0.12); color:#c2650a; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">' + esc(ord.purchaseType) + '</div>' +
           (ord.isSold ? '<div style="background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">📤 จำหน่ายชื่อให้บริษัทติดตามหนี้</div>' : '') +
@@ -5240,6 +5268,13 @@
         case 'startEditOrderId': startEditOrderId(t.getAttribute('data-order')); break;
         case 'cancelEditOrderId': cancelEditOrderId(); break;
         case 'saveOrderId': saveOrderId(); break;
+        case 'copyOrderInfo': {
+          var copyText = 'ชื่อลูกค้า: ' + t.getAttribute('data-customer-name') +
+            '\nรหัสลูกค้า: ' + t.getAttribute('data-customer-id') +
+            '\nเลขคำสั่งซื้อ: ' + t.getAttribute('data-so');
+          copyTextToClipboard(copyText, t);
+          break;
+        }
         case 'resetOverride': resetOverride(t.getAttribute('data-order'), Number(t.getAttribute('data-no')), t.getAttribute('data-track')); break;
         case 'addInstallment': addInstallment(t.getAttribute('data-order'), t.getAttribute('data-track')); break;
         case 'deleteInstallment': deleteInstallment(t.getAttribute('data-order'), Number(t.getAttribute('data-no')), t.getAttribute('data-track')); break;
