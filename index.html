@@ -129,8 +129,10 @@
   // still unpaid, and staff need to manually hold the status there so the device doesn't get
   // re-locked — computeStatus has no way to see "the fees are settled" from amountDue/amountPaid/
   // dueDate alone. See PAYMENT_CLEARS_OVERRIDE_STATUSES below for how this override still expires
-  // once the customer actually pays the งวด, unlike the other manual-only statuses which need a
-  // staff member to click "รีเซ็ตสถานะเป็นอัตโนมัติ" (⟲) to clear.
+  // once the customer actually pays the งวด, OR once the due date itself is reached (2026-08 —
+  // confirmPostpone sets this status automatically on every "เลื่อนวันชำระ", so it must release on
+  // its own once that deferral period is over, not stay frozen forever) — unlike the other
+  // manual-only statuses which need a staff member to click "รีเซ็ตสถานะเป็นอัตโนมัติ" (⟲) to clear.
   // 'ล็อคเครื่อง' added 2026-08-01 — it was already staff-pickable in the per-งวด dropdown (not in
   // SYSTEM_ONLY_STATUSES, so EDITABLE_STATUS_OPTIONS included it) but missing from THIS whitelist,
   // so the moment staff picked it, repairInvalidStatusOverrides() (which runs on every load) treated
@@ -1304,9 +1306,27 @@
     _ordersCache = { ref: state.orders, val: out };
     return out;
   }
+  // True once today >= i.dueDate (date-only comparison, same "midnight" normalization computeStatus
+  // itself uses). Named separately from computeStatus's internal diffDays so withEffectiveStatus can
+  // ask this one question without re-deriving the auto status — see overrideStale below.
+  function isDueDateReached(inst) {
+    var due = new Date(inst.dueDate);
+    if (isNaN(due.getTime())) return false;
+    var today = new Date();
+    var todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    var dueMid = new Date(due.getFullYear(), due.getMonth(), due.getDate());
+    return todayMid >= dueMid;
+  }
   function withEffectiveStatus(list) {
     return list.map(function (i) {
-      var overrideStale = PAYMENT_CLEARS_OVERRIDE_STATUSES[i.status] && Number(i.amountPaid || 0) > 0;
+      // เปลี่ยนภาพพักหน้าจอ (plain, manual — see confirmPostpone) now also expires once its OWN
+      // due date arrives, not just on payment: a "เลื่อนวันชำระ" postpone sets this status as a
+      // placeholder for the deferral period, but once that (possibly-postponed) due date itself is
+      // reached, the account must fall back to the normal auto-computed status (ถึงกำหนดชำระ/
+      // เกินกำหนดชำระ/เปลี่ยนภาพพักหน้าจอ (ระบบ)/ล็อคเครื่อง (ระบบ)) referencing THAT date — dueDate
+      // here is already whatever confirmPostpone last set it to, so computeStatus(i, CFG) below
+      // naturally uses the latest one with no extra plumbing needed.
+      var overrideStale = PAYMENT_CLEARS_OVERRIDE_STATUSES[i.status] && (Number(i.amountPaid || 0) > 0 || isDueDateReached(i));
       var status = ((i.statusOverride && !overrideStale || !AUTO_STATUS_ENABLED) && i.status) ? i.status : computeStatus(i, CFG);
       var m = STATUS_META[status] || { color: '#94a3b8' };
       return Object.assign({}, i, {
@@ -3033,6 +3053,14 @@
         var entry = { from: i.dueDate, to: state.postponeDate, reason: reason, lateFee: lateFee, unlockFee: unlockFee, at: toDateString(new Date()) };
         return Object.assign({}, i, {
           dueDate: state.postponeDate,
+          // Per explicit user request 2026-08: every "เลื่อนวันชำระ" marks the งวด เปลี่ยนภาพพักหน้าจอ
+          // automatically (staff no longer has to also flip the status dropdown by hand) — this
+          // override is self-releasing (see PAYMENT_CLEARS_OVERRIDE_STATUSES/isDueDateReached in
+          // withEffectiveStatus), so once the new dueDate above is actually reached it falls back
+          // to the normal auto-computed status referencing that same (latest) date, exactly like a
+          // งวด's first due date would.
+          status: 'เปลี่ยนภาพพักหน้าจอ',
+          statusOverride: true,
           postponeHistory: (i.postponeHistory || []).concat([entry]),
           lateFee: toNumber(i.lateFee || 0) + lateFee,
           unlockFee: toNumber(i.unlockFee || 0) + unlockFee,
