@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-04.1';
+  var APP_BUILD = '2026-08-04.2';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -3085,13 +3085,27 @@
   // which now owns the "which SO" selection (state.trackingOrderId) and passes the picked order into
   // renderSmsCard/renderLetterCard. These two functions themselves are order-agnostic — just render
   // whatever `ord` they're given — so no changes were needed here for that reversal.
+  // Merges order-level sends (ord.smsHistory/accessorySmsHistory, from this card's own button) with
+  // every per-งวด send recorded in the installment table (i.smsHistory) — previously this card only
+  // showed the order-level list, so a send made from the per-งวด button never appeared here even
+  // though the installment table itself showed it via smsLastSentBadge. Tagged with the source งวด
+  // (h.no) so a merged-in entry is still distinguishable from a general/order-level send; sorted by
+  // parsed timestamp (not array order) since the two sources are concatenated, not naturally
+  // chronological together.
   function renderSmsCard(ord, track) {
-    var smsHistory = (track === 'accessory' ? ord.accessorySmsHistory : ord.smsHistory) || [];
+    var instList = (track === 'accessory' ? ord.accessoryInstallments : ord.installments) || [];
+    var orderLevelHistory = ((track === 'accessory' ? ord.accessorySmsHistory : ord.smsHistory) || [])
+      .map(function (h) { return Object.assign({}, h, { no: null }); });
+    var instLevelHistory = instList.reduce(function (acc, i) {
+      return acc.concat((i.smsHistory || []).map(function (h) { return Object.assign({}, h, { no: i.no }); }));
+    }, []);
+    var smsHistory = orderLevelHistory.concat(instLevelHistory)
+      .sort(function (a, b) { return parseLogTimestamp(a.at) - parseLogTimestamp(b.at); });
     var smsBody =
       '<div>' + renderSendSmsButton('order', ord.orderId, null, track, '📱 ส่ง SMS ทวงหนี้') + '</div>' +
       trackingHistoryList(smsHistory, function (h) {
         return '<div style="background:rgba(124,92,255,0.05); border:1px solid rgba(124,92,255,0.12); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' +
-          '<div style="font-weight:700; color:#7c5cff; margin-bottom:2px;">🕐 ' + esc(h.at) + '</div>' +
+          '<div style="font-weight:700; color:#7c5cff; margin-bottom:2px;">🕐 ' + esc(h.at) + (h.no != null ? ' · งวดที่ ' + h.no : '') + '</div>' +
           '<div style="color:#6b6785;">' + esc(h.template || 'ข้อความทวงถาม') + (h.phone ? ' · ' + esc(h.phone) : '') + '</div>' +
         '</div>';
       });
