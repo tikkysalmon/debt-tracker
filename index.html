@@ -160,6 +160,27 @@
     { key: 'upload_files', label: 'อัพโหลดไฟล์ข้อมูล', desc: 'นำเข้าไฟล์ข้อมูลลูกหนี้/ไฟล์ชำระเงิน/ข้อมูลลูกค้า — กระทบข้อมูลจำนวนมากในครั้งเดียว' },
     { key: 'delete_data', label: 'ลบ/ยกเลิกรายการ', desc: 'ลบงวด, ยกเลิกบิล — ทำแล้วกู้คืนยาก' }
   ];
+  // Login is by รหัสพนักงาน (employee code), not email — but Supabase Auth requires an email
+  // identity under the hood. This computes the same deterministic fake address both here (login)
+  // and in api/staff-admin.js (account creation) so the two always agree with zero DB lookup
+  // needed before a session exists (RLS can't help pre-login — there's no auth.uid() yet).
+  function employeeCodeToEmail(code) {
+    var slug = String(code || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+    return 'staff-' + slug + '@debttracker.internal';
+  }
+  // 8+ chars, at least one lowercase, one uppercase, one digit, one symbol — per explicit user
+  // request. Returns '' when valid, or a Thai message describing what's missing (used both for
+  // inline hint text and as the hard validation gate before submitting).
+  var PASSWORD_POLICY_HINT = 'อย่างน้อย 8 ตัวอักษร ประกอบด้วยตัวพิมพ์เล็ก, พิมพ์ใหญ่, ตัวเลข และอักขระพิเศษ (เช่น !@#$%)';
+  function passwordPolicyError(pw) {
+    pw = String(pw || '');
+    if (pw.length < 8) return 'รหัสผ่านต้องยาวอย่างน้อย 8 ตัวอักษร';
+    if (!/[a-z]/.test(pw)) return 'รหัสผ่านต้องมีตัวพิมพ์เล็กอย่างน้อย 1 ตัว';
+    if (!/[A-Z]/.test(pw)) return 'รหัสผ่านต้องมีตัวพิมพ์ใหญ่อย่างน้อย 1 ตัว';
+    if (!/[0-9]/.test(pw)) return 'รหัสผ่านต้องมีตัวเลขอย่างน้อย 1 ตัว';
+    if (!/[^a-zA-Z0-9]/.test(pw)) return 'รหัสผ่านต้องมีอักขระพิเศษอย่างน้อย 1 ตัว (เช่น !@#$%)';
+    return '';
+  }
   function emptyPermissions() {
     var p = {}; PERMISSION_CATALOG.forEach(function (item) { p[item.key] = false; }); return p;
   }
@@ -903,7 +924,9 @@
         return false;
       }
       state.currentUser = {
-        id: row.id, email: row.email, displayName: row.display_name,
+        id: row.id, employeeCode: row.employee_code,
+        firstName: row.first_name, lastName: row.last_name, nickname: row.nickname, department: row.department,
+        displayName: (row.first_name + ' ' + row.last_name).trim() || row.nickname || row.employee_code,
         isAdmin: !!row.is_admin, isActive: row.is_active !== false,
         permissions: Object.assign(emptyPermissions(), row.permissions || {})
       };
@@ -915,14 +938,14 @@
     });
   }
   function handleLogin() {
-    var email = String(state.loginEmail || '').trim();
+    var employeeCode = String(state.loginEmployeeCode || '').trim();
     var password = String(state.loginPassword || '');
-    if (!email || !password) { state.loginError = 'กรอกอีเมลและรหัสผ่าน'; renderAuthGate(); return; }
+    if (!employeeCode || !password) { state.loginError = 'กรอกรหัสพนักงานและรหัสผ่าน'; renderAuthGate(); return; }
     state.loginBusy = true; state.loginError = ''; renderAuthGate();
-    db.auth.signInWithPassword({ email: email, password: password }).then(function (res) {
+    db.auth.signInWithPassword({ email: employeeCodeToEmail(employeeCode), password: password }).then(function (res) {
       if (res.error) {
         state.loginBusy = false;
-        state.loginError = res.error.message === 'Invalid login credentials' ? 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' : res.error.message;
+        state.loginError = res.error.message === 'Invalid login credentials' ? 'รหัสพนักงานหรือรหัสผ่านไม่ถูกต้อง' : res.error.message;
         renderAuthGate();
         return;
       }
@@ -1197,12 +1220,15 @@
     // path that shows real data only ever runs after that, see bootApp()/renderAuthGate() at the
     // bottom of this file.
     currentUser: null,
-    loginEmail: '', loginPassword: '', loginError: '', loginBusy: false,
+    loginEmployeeCode: '', loginPassword: '', loginError: '', loginBusy: false,
     userMgmtList: null,       // cached staff_users rows for the "จัดการผู้ใช้งาน" screen (null = not loaded yet)
     userMgmtError: '',
     userMgmtEditing: null,    // id of the row currently open for edit, or 'new' for the create form
-    userMgmtDraft: null,      // { email, password, displayName, isAdmin, permissions } while creating/editing
+    userMgmtDraft: null,      // { employeeCode, firstName, lastName, nickname, department, password, isAdmin, permissions } while creating/editing
     userMgmtBusy: false,
+    userMgmtStatusFilter: 'active', // 'active' | 'inactive' | 'all' — matches the Active/DEACTIVE/ทั้งหมด chips
+    userMgmtSearchField: 'name',    // 'name' | 'code' | 'nickname'
+    userMgmtSearchQuery: '',
     letterheadResolvedUrl: null, // cached blob: URL for the settings-page letterhead preview (private bucket — see getLetterheadBlobUrl)
     query: '',
     selectedCustomerId: null,
@@ -4314,6 +4340,9 @@
   }
 
   // ---------- Staff user management (admin-only) ----------
+  // Layout modeled after the company's existing "Admin Management" CRM screen per explicit user
+  // request: stat chips (Active/DEACTIVE/ทั้งหมด) that double as filters, a search-by-field bar,
+  // and a table (ชื่อพนักงาน/รหัสพนักงาน/ชื่อเล่น/Department/สถานะ) instead of the earlier card list.
   function loadStaffUsersList() {
     db.from('staff_users').select('*').order('created_at', { ascending: true }).then(function (res) {
       if (res.error) { state.userMgmtError = res.error.message; state.userMgmtList = []; render(); return; }
@@ -4326,9 +4355,27 @@
       render();
     });
   }
+  function filteredStaffUsers() {
+    var rows = state.userMgmtList || [];
+    if (state.userMgmtStatusFilter === 'active') rows = rows.filter(function (r) { return r.is_active !== false; });
+    else if (state.userMgmtStatusFilter === 'inactive') rows = rows.filter(function (r) { return r.is_active === false; });
+    var q = String(state.userMgmtSearchQuery || '').trim().toLowerCase();
+    if (q) {
+      rows = rows.filter(function (r) {
+        var hay = state.userMgmtSearchField === 'code' ? r.employee_code
+          : state.userMgmtSearchField === 'nickname' ? r.nickname
+          : ((r.first_name || '') + ' ' + (r.last_name || ''));
+        return String(hay || '').toLowerCase().indexOf(q) !== -1;
+      });
+    }
+    return rows;
+  }
   function openNewStaffUser() {
     state.userMgmtEditing = 'new';
-    state.userMgmtDraft = { email: '', password: '', displayName: '', isAdmin: false, isActive: true, permissions: emptyPermissions() };
+    state.userMgmtDraft = {
+      employeeCode: '', firstName: '', lastName: '', nickname: '', department: '',
+      password: '', confirmPassword: '', isAdmin: false, isActive: true, permissions: emptyPermissions()
+    };
     state.userMgmtError = '';
     render();
   }
@@ -4337,7 +4384,9 @@
     if (!row) return;
     state.userMgmtEditing = uid;
     state.userMgmtDraft = {
-      email: row.email, newPassword: '', displayName: row.display_name,
+      employeeCode: row.employee_code, firstName: row.first_name, lastName: row.last_name,
+      nickname: row.nickname, department: row.department,
+      newPassword: '', confirmNewPassword: '',
       isAdmin: !!row.is_admin, isActive: row.is_active !== false,
       permissions: Object.assign(emptyPermissions(), row.permissions || {})
     };
@@ -4367,19 +4416,33 @@
     var d = state.userMgmtDraft;
     if (!d) return;
     if (state.userMgmtEditing === 'new') {
-      if (!d.email || !d.displayName) { state.userMgmtError = 'กรอกอีเมลและชื่อให้ครบ'; render(); return; }
-      if (!d.password || d.password.length < 8) { state.userMgmtError = 'รหัสผ่านต้องยาวอย่างน้อย 8 ตัวอักษร'; render(); return; }
+      if (!d.employeeCode || !d.firstName || !d.lastName || !d.nickname) { state.userMgmtError = 'กรอกรหัสพนักงาน/ชื่อ/นามสกุล/ชื่อเล่นให้ครบ'; render(); return; }
+      var pwErr = passwordPolicyError(d.password);
+      if (pwErr) { state.userMgmtError = pwErr; render(); return; }
+      if (d.password !== d.confirmPassword) { state.userMgmtError = 'รหัสผ่านทั้ง 2 ช่องต้องเหมือนกัน'; render(); return; }
       state.userMgmtBusy = true; state.userMgmtError = ''; render();
-      staffApiCall('create', { email: d.email, password: d.password, displayName: d.displayName, isAdmin: d.isAdmin, permissions: d.permissions }).then(function (r) {
+      staffApiCall('create', {
+        employeeCode: d.employeeCode, firstName: d.firstName, lastName: d.lastName, nickname: d.nickname,
+        department: d.department, password: d.password, isAdmin: d.isAdmin, permissions: d.permissions
+      }).then(function (r) {
         state.userMgmtBusy = false;
         if (!r.ok) { state.userMgmtError = (r.body && r.body.error) || 'สร้างบัญชีไม่สำเร็จ'; render(); return; }
         state.userMgmtEditing = null; state.userMgmtDraft = null; state.userMgmtList = null; render();
       }).catch(function (err) { state.userMgmtBusy = false; state.userMgmtError = err && err.message ? err.message : String(err); render(); });
       return;
     }
+    if (!d.firstName || !d.lastName || !d.nickname) { state.userMgmtError = 'กรอกชื่อ/นามสกุล/ชื่อเล่นให้ครบ'; render(); return; }
+    if (d.newPassword && d.newPassword !== d.confirmNewPassword) { state.userMgmtError = 'รหัสผ่านใหม่ทั้ง 2 ช่องต้องเหมือนกัน'; render(); return; }
+    if (d.newPassword) {
+      var pwErr2 = passwordPolicyError(d.newPassword);
+      if (pwErr2) { state.userMgmtError = pwErr2; render(); return; }
+    }
     var uid = state.userMgmtEditing;
     state.userMgmtBusy = true; state.userMgmtError = ''; render();
-    staffApiCall('update', { userId: uid, displayName: d.displayName, isAdmin: d.isAdmin, permissions: d.permissions, isActive: d.isActive }).then(function (r) {
+    staffApiCall('update', {
+      userId: uid, firstName: d.firstName, lastName: d.lastName, nickname: d.nickname, department: d.department,
+      isAdmin: d.isAdmin, permissions: d.permissions, isActive: d.isActive
+    }).then(function (r) {
       if (!r.ok) { state.userMgmtBusy = false; state.userMgmtError = (r.body && r.body.error) || 'บันทึกไม่สำเร็จ'; render(); return; }
       if (d.newPassword) {
         return staffApiCall('setPassword', { userId: uid, newPassword: d.newPassword }).then(function (r2) {
@@ -4409,23 +4472,43 @@
         '<div><div style="font-size:13.5px; font-weight:600; color:#2b2540;">' + esc(p.label) + '</div><div style="font-size:11.5px; color:#8a86a3;">' + esc(p.desc) + '</div></div>' +
       '</label>';
     }).join('');
+    var field = function (label, inner) {
+      return '<div style="margin-bottom:12px;"><div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:6px;">' + label + '</div>' + inner + '</div>';
+    };
+    var textInput = function (dataField, value, placeholder) {
+      return '<input type="text" value="' + esc(value || '') + '" data-action="staffDraftField" data-field="' + dataField + '" placeholder="' + (placeholder || '') + '" style="width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); font-size:14px; outline:none;" />';
+    };
     return '<div style="position:fixed; inset:0; z-index:9999; background:rgba(43,37,64,0.35); display:flex; align-items:center; justify-content:center; padding:20px;">' +
-      '<div style="max-width:480px; width:100%; max-height:90vh; overflow-y:auto; background:#fff; border-radius:20px; padding:26px 26px 22px; box-shadow:0 24px 60px rgba(43,37,64,0.3);">' +
-        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#2b2540; margin-bottom:18px;">' + (isNew ? '👤 เพิ่มผู้ใช้งานใหม่' : '✏️ แก้ไขผู้ใช้งาน') + '</div>' +
+      '<div style="max-width:520px; width:100%; max-height:90vh; overflow-y:auto; background:#fff; border-radius:20px; padding:26px 26px 22px; box-shadow:0 24px 60px rgba(43,37,64,0.3);">' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#2b2540; margin-bottom:18px;">' + (isNew ? '👤 เพิ่มข้อมูลพนักงาน' : '✏️ แก้ไขข้อมูลพนักงาน') + '</div>' +
         (state.userMgmtError ? '<div style="background:rgba(224,49,49,0.08); color:#e03131; border-radius:10px; padding:10px 14px; font-size:13px; margin-bottom:16px;">⚠️ ' + esc(state.userMgmtError) + '</div>' : '') +
-        '<div style="margin-bottom:12px;"><div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:6px;">ชื่อที่แสดง</div><input type="text" value="' + esc(d.displayName) + '" data-action="staffDraftField" data-field="displayName" style="width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); font-size:14px; outline:none;" /></div>' +
+        '<div style="font-size:12px; color:#8a86a3; font-weight:700; margin-bottom:10px; text-transform:uppercase; letter-spacing:0.03em;">ข้อมูลพนักงาน</div>' +
+        '<div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">' +
+          field('ชื่อ', textInput('firstName', d.firstName, 'โปรดกรอกชื่อ')) +
+          field('นามสกุล', textInput('lastName', d.lastName, 'โปรดกรอกนามสกุล')) +
+        '</div>' +
+        field('ชื่อเล่น', textInput('nickname', d.nickname, 'โปรดกรอกชื่อเล่น')) +
+        '<div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">' +
+          (isNew ? field('รหัสพนักงาน', textInput('employeeCode', d.employeeCode, 'เช่น ACC001')) : field('รหัสพนักงาน', '<div style="padding:9px 12px; border-radius:10px; background:rgba(124,92,255,0.06); font-size:14px; color:#2b2540; font-weight:600;">' + esc(d.employeeCode) + '</div>')) +
+          field('Department/ตำแหน่ง', textInput('department', d.department, 'พิมพ์แผนก/ตำแหน่ง')) +
+        '</div>' +
+        '<div style="font-size:12px; color:#8a86a3; font-weight:700; margin:16px 0 10px; text-transform:uppercase; letter-spacing:0.03em;">ข้อมูลการเข้าสู่ระบบ</div>' +
         (isNew
-          ? '<div style="margin-bottom:12px;"><div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:6px;">อีเมล (ใช้ล็อกอิน)</div><input type="email" value="' + esc(d.email) + '" data-action="staffDraftField" data-field="email" style="width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); font-size:14px; outline:none;" /></div>' +
-            '<div style="margin-bottom:16px;"><div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:6px;">รหัสผ่านเริ่มต้น (อย่างน้อย 8 ตัวอักษร)</div><input type="text" value="' + esc(d.password) + '" data-action="staffDraftField" data-field="password" style="width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); font-size:14px; outline:none;" /></div>'
-          : '<div style="margin-bottom:6px; font-size:12px; color:#6b6785;">อีเมล: <b style="color:#2b2540;">' + esc(d.email) + '</b></div>' +
-            '<div style="margin-bottom:16px;"><div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:6px;">ตั้งรหัสผ่านใหม่ (เว้นว่าง = ไม่เปลี่ยน)</div><input type="text" value="' + esc(d.newPassword || '') + '" data-action="staffDraftField" data-field="newPassword" placeholder="อย่างน้อย 8 ตัวอักษร" style="width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); font-size:14px; outline:none;" /></div>' +
+          ? field('รหัสผ่าน', '<input type="password" value="' + esc(d.password || '') + '" data-action="staffDraftField" data-field="password" style="width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); font-size:14px; outline:none;" />') +
+            field('ยืนยันรหัสผ่าน', '<input type="password" value="' + esc(d.confirmPassword || '') + '" data-action="staffDraftField" data-field="confirmPassword" style="width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); font-size:14px; outline:none;" />') +
+            '<div style="font-size:11px; color:#8a86a3; margin:-6px 0 16px;">' + PASSWORD_POLICY_HINT + '</div>'
+          : field('ตั้งรหัสผ่านใหม่ (เว้นว่าง = ไม่เปลี่ยน)', '<input type="password" value="' + esc(d.newPassword || '') + '" data-action="staffDraftField" data-field="newPassword" style="width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); font-size:14px; outline:none;" />') +
+            (d.newPassword
+              ? field('ยืนยันรหัสผ่านใหม่', '<input type="password" value="' + esc(d.confirmNewPassword || '') + '" data-action="staffDraftField" data-field="confirmNewPassword" style="width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); font-size:14px; outline:none;" />') +
+                '<div style="font-size:11px; color:#8a86a3; margin:-6px 0 16px;">' + PASSWORD_POLICY_HINT + '</div>'
+              : '') +
             '<label style="display:flex; align-items:center; gap:8px; margin-bottom:16px; cursor:pointer;"><input type="checkbox" data-action="toggleStaffDraftActive"' + (d.isActive ? ' checked' : '') + ' /><span style="font-size:13.5px; font-weight:600; color:#2b2540;">เปิดใช้งานบัญชีนี้</span></label>') +
         '<label style="display:flex; align-items:center; gap:8px; margin-bottom:6px; cursor:pointer; padding:10px 12px; background:rgba(124,92,255,0.06); border-radius:10px;"><input type="checkbox" data-action="toggleStaffDraftAdmin"' + (d.isAdmin ? ' checked' : '') + ' /><span style="font-size:13.5px; font-weight:700; color:#2b2540;">ผู้ดูแลระบบ (Admin — สิทธิ์เต็มทุกเมนู รวมถึงจัดการผู้ใช้งาน)</span></label>' +
         (d.isAdmin ? '' :
           '<div style="font-size:12px; color:#6b6785; font-weight:600; margin:14px 0 4px;">สิทธิ์การใช้งานรายเมนู</div>' + permRows) +
         '<div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">' +
           '<div data-action="closeStaffUserForm" style="padding:11px 20px; border-radius:10px; color:#6b6785; font-size:13.5px; font-weight:600; cursor:pointer;">ยกเลิก</div>' +
-          '<div data-action="saveStaffUser" style="background:' + (state.userMgmtBusy ? '#a8a4bf' : '#2b2540') + '; color:#fff; padding:11px 22px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer;">' + (state.userMgmtBusy ? 'กำลังบันทึก…' : 'บันทึก') + '</div>' +
+          '<div data-action="saveStaffUser" style="background:' + (state.userMgmtBusy ? '#a8a4bf' : '#2b2540') + '; color:#fff; padding:11px 22px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer;">' + (state.userMgmtBusy ? 'กำลังบันทึกข้อมูล…' : 'บันทึกข้อมูล') + '</div>' +
         '</div>' +
       '</div>' +
     '</div>';
@@ -4438,31 +4521,59 @@
       loadStaffUsersList();
       return '<div style="padding:60px 20px; text-align:center; color:#8a86a3; font-size:14px;">⏳ กำลังโหลดรายชื่อผู้ใช้งาน…</div>';
     }
-    var rows = state.userMgmtList || [];
-    var rowsHtml = rows.length ? rows.map(function (r) {
-      var perms = r.is_admin ? [] : PERMISSION_CATALOG.filter(function (p) { return r.permissions && r.permissions[p.key]; });
-      var badges = r.is_admin
-        ? '<span style="background:rgba(124,92,255,0.14); color:#7c5cff; padding:3px 10px; border-radius:20px; font-size:11px; font-weight:700;">Admin — สิทธิ์เต็ม</span>'
-        : (perms.length ? perms.map(function (p) { return '<span style="background:rgba(18,184,134,0.10); color:#0b7a5b; padding:2px 8px; border-radius:20px; font-size:10.5px; font-weight:600; white-space:nowrap;">' + esc(p.label) + '</span>'; }).join(' ') : '<span style="color:#a8a4bf; font-size:11.5px;">ไม่มีสิทธิ์ใดเลย</span>');
-      var active = r.is_active !== false;
-      return '<div style="background:#fff; border:1px solid rgba(124,92,255,0.14); border-left:4px solid ' + (active ? '#12b886' : '#e03131') + '; border-radius:14px; padding:14px 18px; display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin-bottom:10px;">' +
-        '<div style="min-width:160px;"><div style="font-weight:700; font-size:14px; color:#2b2540;">' + esc(r.display_name) + (active ? '' : ' <span style="color:#e03131; font-size:11px; font-weight:600;">(ระงับใช้งาน)</span>') + '</div><div style="font-size:12px; color:#8a86a3;">' + esc(r.email) + '</div></div>' +
-        '<div style="flex:1; min-width:200px; display:flex; gap:6px; flex-wrap:wrap;">' + badges + '</div>' +
-        '<div style="display:flex; gap:8px; flex-shrink:0;">' +
-          '<div data-action="editStaffUser" data-uid="' + esc(r.id) + '" style="cursor:pointer; border:1px solid rgba(124,92,255,0.3); color:#7c5cff; padding:6px 14px; border-radius:8px; font-size:12.5px; font-weight:600;">แก้ไข</div>' +
-          (active
-            ? '<div data-action="deactivateStaffUser" data-uid="' + esc(r.id) + '" style="cursor:pointer; border:1px solid rgba(224,49,49,0.3); color:#e03131; padding:6px 14px; border-radius:8px; font-size:12.5px; font-weight:600;">ระงับ</div>'
-            : '<div data-action="activateStaffUser" data-uid="' + esc(r.id) + '" style="cursor:pointer; border:1px solid rgba(18,184,134,0.3); color:#0b7a5b; padding:6px 14px; border-radius:8px; font-size:12.5px; font-weight:600;">เปิดใช้งาน</div>') +
-        '</div>' +
+    var all = state.userMgmtList || [];
+    var activeCount = all.filter(function (r) { return r.is_active !== false; }).length;
+    var inactiveCount = all.length - activeCount;
+    var statChip = function (key, label, count) {
+      var selected = state.userMgmtStatusFilter === key;
+      return '<div data-action="filterStaffStatus" data-status="' + key + '" style="cursor:pointer; flex:1; min-width:140px; border:1px solid ' + (selected ? '#7c5cff' : 'rgba(124,92,255,0.18)') + '; background:' + (selected ? 'rgba(124,92,255,0.06)' : '#fff') + '; border-radius:14px; padding:14px 18px;">' +
+        '<div style="font-size:12.5px; font-weight:600; color:' + (selected ? '#7c5cff' : '#6b6785') + '; margin-bottom:4px;">' + label + '</div>' +
+        '<div style="font-size:22px; font-weight:700; color:#2b2540;">' + count + '</div>' +
       '</div>';
-    }).join('') : '<div style="padding:30px; text-align:center; color:#8a86a3;">ยังไม่มีบัญชีผู้ใช้งาน</div>';
+    };
+    var rows = filteredStaffUsers();
+    var searchFieldOptions = [['name', 'ชื่อพนักงาน'], ['code', 'รหัสพนักงาน'], ['nickname', 'ชื่อเล่น']];
+    var tableRows = rows.length ? rows.map(function (r) {
+      var active = r.is_active !== false;
+      var permCount = r.is_admin ? null : PERMISSION_CATALOG.filter(function (p) { return r.permissions && r.permissions[p.key]; }).length;
+      return '<tr style="border-top:1px solid rgba(124,92,255,0.08);">' +
+        '<td style="padding:12px 14px; font-weight:600; color:#2b2540; white-space:nowrap;">' + esc((r.first_name || '') + ' ' + (r.last_name || '')) + '</td>' +
+        '<td style="padding:12px 14px; color:#6b6785; white-space:nowrap;">' + esc(r.employee_code) + '</td>' +
+        '<td style="padding:12px 14px; color:#6b6785; white-space:nowrap;">' + esc(r.nickname) + '</td>' +
+        '<td style="padding:12px 14px; color:#6b6785; white-space:nowrap;">' + esc(r.department || '-') + '</td>' +
+        '<td style="padding:12px 14px; white-space:nowrap;">' + (r.is_admin ? '<span style="background:rgba(124,92,255,0.14); color:#7c5cff; padding:3px 10px; border-radius:20px; font-size:11px; font-weight:700;">Admin</span>' : '<span style="color:#8a86a3; font-size:12.5px;">' + permCount + ' สิทธิ์</span>') + '</td>' +
+        '<td style="padding:12px 14px; white-space:nowrap;"><span style="background:' + (active ? 'rgba(18,184,134,0.10)' : 'rgba(224,49,49,0.10)') + '; color:' + (active ? '#0b7a5b' : '#e03131') + '; padding:3px 10px; border-radius:20px; font-size:11.5px; font-weight:700;">' + (active ? 'Active' : 'Deactive') + '</span></td>' +
+        '<td style="padding:12px 14px; white-space:nowrap; text-align:right;">' +
+          '<span data-action="editStaffUser" data-uid="' + esc(r.id) + '" style="cursor:pointer; color:#7c5cff; font-weight:600; font-size:12.5px; margin-right:14px;">แก้ไข</span>' +
+          (active
+            ? '<span data-action="deactivateStaffUser" data-uid="' + esc(r.id) + '" style="cursor:pointer; color:#e03131; font-weight:600; font-size:12.5px;">ระงับ</span>'
+            : '<span data-action="activateStaffUser" data-uid="' + esc(r.id) + '" style="cursor:pointer; color:#0b7a5b; font-weight:600; font-size:12.5px;">เปิดใช้งาน</span>') +
+        '</td>' +
+      '</tr>';
+    }).join('') : '<tr><td colspan="7" style="padding:30px; text-align:center; color:#8a86a3;">ไม่พบพนักงานที่ตรงกับเงื่อนไข</td></tr>';
     return '<div>' +
       '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px; flex-wrap:wrap; gap:12px;">' +
         '<div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:20px; color:#2b2540;">จัดการผู้ใช้งาน</div><div style="font-size:12.5px; color:#8a86a3;">Admin เท่านั้นที่สร้าง/แก้ไขบัญชีได้ — กำหนดสิทธิ์ได้ละเอียดรายเมนู</div></div>' +
-        '<div data-action="newStaffUser" style="cursor:pointer; background:#7c5cff; color:#fff; padding:11px 20px; border-radius:10px; font-size:13.5px; font-weight:700; white-space:nowrap;">+ เพิ่มผู้ใช้งาน</div>' +
+        '<div data-action="newStaffUser" style="cursor:pointer; background:#7c5cff; color:#fff; padding:11px 20px; border-radius:10px; font-size:13.5px; font-weight:700; white-space:nowrap;">+ เพิ่มพนักงาน</div>' +
       '</div>' +
       (state.userMgmtError && !state.userMgmtEditing ? '<div style="background:rgba(224,49,49,0.08); color:#e03131; border-radius:10px; padding:10px 14px; font-size:13px; margin-bottom:16px;">⚠️ ' + esc(state.userMgmtError) + '</div>' : '') +
-      rowsHtml +
+      '<div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:16px;">' +
+        statChip('active', 'Active', activeCount) + statChip('inactive', 'DEACTIVE', inactiveCount) + statChip('all', 'ทั้งหมด', all.length) +
+      '</div>' +
+      '<div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px;">' +
+        '<select data-action="staffSearchField" style="border:1px solid rgba(124,92,255,0.25); border-radius:12px; padding:10px 14px; font-size:13.5px; color:#2b2540; background:#fff; outline:none;">' +
+          searchFieldOptions.map(function (o) { return '<option value="' + o[0] + '"' + (state.userMgmtSearchField === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') +
+        '</select>' +
+        '<input type="text" value="' + esc(state.userMgmtSearchQuery || '') + '" data-action="staffSearchQuery" placeholder="🔍 พิมพ์เพื่อค้นหา" style="flex:1; min-width:200px; border:1px solid rgba(124,92,255,0.25); border-radius:12px; padding:10px 14px; font-size:13.5px; color:#2b2540; outline:none;" />' +
+      '</div>' +
+      '<div style="background:#fff; border:1px solid rgba(124,92,255,0.14); border-radius:16px; overflow-x:auto;">' +
+        '<table style="width:100%; border-collapse:collapse; font-size:13px;">' +
+          '<thead><tr style="background:rgba(124,92,255,0.05);">' +
+            ['ชื่อพนักงาน', 'รหัสพนักงาน', 'ชื่อเล่น', 'Department/ตำแหน่ง', 'สิทธิ์', 'สถานะ', ''].map(function (h) { return '<th style="padding:12px 14px; text-align:left; font-size:11.5px; color:#6b6785; font-weight:700; white-space:nowrap;">' + h + '</th>'; }).join('') +
+          '</tr></thead>' +
+          '<tbody>' + tableRows + '</tbody>' +
+        '</table>' +
+      '</div>' +
     '</div>' + (state.userMgmtEditing ? renderStaffUserForm() : '');
   }
 
@@ -5643,7 +5754,7 @@
             '<div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:15px; color:#2b2540; line-height:1.3;">ระบบติดตามหนี้และผ่อนชำระ</div><div style="font-size:11px; color:#a8a4bf;">เข้าสู่ระบบด้วยบัญชีพนักงาน</div></div>' +
           '</div>' +
           (state.loginError ? '<div style="background:rgba(224,49,49,0.08); color:#e03131; border-radius:10px; padding:10px 14px; font-size:13px; margin-bottom:16px;">⚠️ ' + esc(state.loginError) + '</div>' : '') +
-          '<div style="margin-bottom:14px;"><div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:6px;">อีเมล</div><input type="email" value="' + esc(state.loginEmail || '') + '" data-action="loginEmail" placeholder="name@company.com" style="width:100%; box-sizing:border-box; padding:10px 14px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); font-size:14px; color:#2b2540; outline:none;" /></div>' +
+          '<div style="margin-bottom:14px;"><div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:6px;">รหัสพนักงาน</div><input type="text" value="' + esc(state.loginEmployeeCode || '') + '" data-action="loginEmployeeCode" placeholder="เช่น ACC001" style="width:100%; box-sizing:border-box; padding:10px 14px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); font-size:14px; color:#2b2540; outline:none;" /></div>' +
           '<div style="margin-bottom:20px;"><div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:6px;">รหัสผ่าน</div><input type="password" value="' + esc(state.loginPassword || '') + '" data-action="loginPassword" data-enter-action="loginSubmit" placeholder="••••••••" style="width:100%; box-sizing:border-box; padding:10px 14px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); font-size:14px; color:#2b2540; outline:none;" /></div>' +
           '<div data-action="loginSubmit" style="background:' + (state.loginBusy ? '#a8a4bf' : '#7c5cff') + '; color:#fff; text-align:center; padding:12px; border-radius:10px; font-size:14px; font-weight:700; cursor:' + (state.loginBusy ? 'default' : 'pointer') + ';">' + (state.loginBusy ? 'กำลังเข้าสู่ระบบ…' : 'เข้าสู่ระบบ') + '</div>' +
           '<div style="text-align:center; font-size:12px; color:#a8a4bf; margin-top:16px;">ลืมรหัสผ่าน หรือยังไม่มีบัญชี? ติดต่อผู้ดูแลระบบ</div>' +
@@ -5668,7 +5779,7 @@
       '<div style="display:flex; align-items:center; gap:8px; font-size:12px; color:#6b6785; padding:6px 6px 6px 12px;">' +
         '<div>' +
           '<div style="font-weight:700; color:#2b2540; white-space:nowrap;">' + esc(state.currentUser.displayName) + (state.currentUser.isAdmin ? ' <span style="color:#7c5cff;">(Admin)</span>' : '') + '</div>' +
-          '<div style="font-size:10.5px; white-space:nowrap;">' + esc(state.currentUser.email) + '</div>' +
+          '<div style="font-size:10.5px; white-space:nowrap;">' + esc(state.currentUser.employeeCode) + (state.currentUser.nickname ? ' · ' + esc(state.currentUser.nickname) : '') + '</div>' +
         '</div>' +
         '<div data-action="logout" title="ออกจากระบบ" style="cursor:pointer; color:#e03131; font-weight:600; padding:6px 10px; border-radius:8px; white-space:nowrap;">ออกจากระบบ</div>' +
       '</div>'
@@ -5841,6 +5952,7 @@
         case 'deactivateStaffUser': quickToggleStaffActive(t.getAttribute('data-uid'), false); break;
         case 'activateStaffUser': quickToggleStaffActive(t.getAttribute('data-uid'), true); break;
         case 'downloadLetterPdf': downloadLetterPdf(t.getAttribute('data-path')); break;
+        case 'filterStaffStatus': state.userMgmtStatusFilter = t.getAttribute('data-status'); render(); break;
       }
     });
 
@@ -5853,8 +5965,8 @@
         state.query = t.value;
         var btn = document.getElementById('clearQueryBtn');
         if (btn) btn.style.display = t.value ? 'block' : 'none';
-      } else if (da === 'loginEmail') {
-        state.loginEmail = t.value;
+      } else if (da === 'loginEmployeeCode') {
+        state.loginEmployeeCode = t.value;
       } else if (da === 'loginPassword') {
         state.loginPassword = t.value;
       }
@@ -5937,6 +6049,8 @@
         case 'toggleStaffDraftPermission': if (state.userMgmtDraft) { state.userMgmtDraft.permissions[t.getAttribute('data-perm')] = t.checked; } break;
         case 'toggleStaffDraftAdmin': if (state.userMgmtDraft) { state.userMgmtDraft.isAdmin = t.checked; render(); } break;
         case 'toggleStaffDraftActive': if (state.userMgmtDraft) state.userMgmtDraft.isActive = t.checked; break;
+        case 'staffSearchField': state.userMgmtSearchField = t.value; render(); break;
+        case 'staffSearchQuery': state.userMgmtSearchQuery = t.value; render(); break;
       }
     });
   }
@@ -6010,7 +6124,7 @@
   // buildShell()/render() (the real app) only ever run AFTER a successful login when CLOUD_ENABLED —
   // see bootApp() below. initEvents() runs unconditionally and immediately, though: it just attaches
   // delegated listeners to the stable #app element, which exists before either the login screen or
-  // the real app fills it in, and the login form's own data-actions (loginEmail/loginSubmit/etc.)
+  // the real app fills it in, and the login form's own data-actions (loginEmployeeCode/loginSubmit/etc.)
   // are dispatched through those same listeners.
   function bootApp() {
     buildShell();

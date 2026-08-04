@@ -9,6 +9,24 @@
 // the service-role key itself has no notion of "who's asking", so that check is entirely on us.
 const SUPABASE_URL = 'https://mddtfcganbuxzfendgfi.supabase.co';
 
+// Must stay byte-for-byte identical to employeeCodeToEmail() in index.html — both sides compute
+// the same fake Auth-identity email from a รหัสพนักงาน with zero DB lookup involved.
+function employeeCodeToEmail(code) {
+  const slug = String(code || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+  return 'staff-' + slug + '@debttracker.internal';
+}
+// Same rule as passwordPolicyError() in index.html — re-checked here because client-side
+// validation alone is never trustworthy for something this security-relevant.
+function passwordPolicyError(pw) {
+  pw = String(pw || '');
+  if (pw.length < 8) return 'รหัสผ่านต้องยาวอย่างน้อย 8 ตัวอักษร';
+  if (!/[a-z]/.test(pw)) return 'รหัสผ่านต้องมีตัวพิมพ์เล็กอย่างน้อย 1 ตัว';
+  if (!/[A-Z]/.test(pw)) return 'รหัสผ่านต้องมีตัวพิมพ์ใหญ่อย่างน้อย 1 ตัว';
+  if (!/[0-9]/.test(pw)) return 'รหัสผ่านต้องมีตัวเลขอย่างน้อย 1 ตัว';
+  if (!/[^a-zA-Z0-9]/.test(pw)) return 'รหัสผ่านต้องมีอักขระพิเศษอย่างน้อย 1 ตัว';
+  return '';
+}
+
 async function verifyCallerIsAdmin(callerToken, serviceRoleKey) {
   if (!callerToken) return { ok: false, status: 401, error: 'ไม่ได้ล็อกอิน' };
   const userRes = await fetch(SUPABASE_URL + '/auth/v1/user', {
@@ -52,32 +70,46 @@ module.exports = async function handler(req, res) {
 
   try {
     if (action === 'create') {
-      const email = String(p.email || '').trim();
+      const employeeCode = String(p.employeeCode || '').trim();
       const password = String(p.password || '');
-      const displayName = String(p.displayName || '').trim();
-      if (!email || !displayName) { res.status(400).json({ error: 'กรอกอีเมล/ชื่อให้ครบ' }); return; }
-      if (password.length < 8) { res.status(400).json({ error: 'รหัสผ่านต้องยาวอย่างน้อย 8 ตัวอักษร' }); return; }
+      const firstName = String(p.firstName || '').trim();
+      const lastName = String(p.lastName || '').trim();
+      const nickname = String(p.nickname || '').trim();
+      const department = String(p.department || '').trim();
+      if (!employeeCode || !firstName || !lastName || !nickname) { res.status(400).json({ error: 'กรอกรหัสพนักงาน/ชื่อ/นามสกุล/ชื่อเล่นให้ครบ' }); return; }
+      const pwErr = passwordPolicyError(password);
+      if (pwErr) { res.status(400).json({ error: pwErr }); return; }
+      const email = employeeCodeToEmail(employeeCode);
 
       const createRes = await fetch(SUPABASE_URL + '/auth/v1/admin/users', {
         method: 'POST', headers: svHeaders,
         body: JSON.stringify({ email: email, password: password, email_confirm: true })
       });
       const created = await createRes.json().catch(function () { return null; });
-      if (!createRes.ok) { res.status(createRes.status).json({ error: (created && (created.msg || created.error_description || created.message)) || 'สร้างบัญชีไม่สำเร็จ' }); return; }
+      if (!createRes.ok) {
+        // Supabase's own duplicate-email message references the internal fake address, which would
+        // just confuse staff — translate the common case back into the term they actually typed.
+        const msg = created && (created.msg || created.error_description || created.message);
+        const friendly = msg && /already.*registered|already exists/i.test(msg) ? 'รหัสพนักงานนี้มีบัญชีอยู่แล้ว' : (msg || 'สร้างบัญชีไม่สำเร็จ');
+        res.status(createRes.status).json({ error: friendly });
+        return;
+      }
 
       const insertRes = await fetch(SUPABASE_URL + '/rest/v1/staff_users', {
         method: 'POST', headers: Object.assign({}, svHeaders, { 'Prefer': 'return=representation' }),
         body: JSON.stringify({
-          id: created.id, email: email, display_name: displayName,
+          id: created.id, employee_code: employeeCode, email: email,
+          first_name: firstName, last_name: lastName, nickname: nickname, department: department,
           is_admin: !!p.isAdmin, permissions: p.permissions || {}, is_active: true, created_by: verify.callerId
         })
       });
       if (!insertRes.ok) {
         // Roll back the auth user so it doesn't dangle with no staff_users profile (would otherwise
-        // let that email log in with zero permissions and no way for admin UI to see/manage it).
+        // let that account log in with zero permissions and no way for admin UI to see/manage it).
         await fetch(SUPABASE_URL + '/auth/v1/admin/users/' + created.id, { method: 'DELETE', headers: svHeaders }).catch(function () {});
         const errBody = await insertRes.json().catch(function () { return null; });
-        res.status(400).json({ error: (errBody && errBody.message) || 'บันทึกข้อมูลผู้ใช้ไม่สำเร็จ' });
+        const dup = errBody && /employee_code/i.test(errBody.message || '') && /duplicate|unique/i.test(errBody.message || '');
+        res.status(400).json({ error: dup ? 'รหัสพนักงานนี้มีอยู่แล้ว' : ((errBody && errBody.message) || 'บันทึกข้อมูลผู้ใช้ไม่สำเร็จ') });
         return;
       }
       res.status(200).json({ ok: true, userId: created.id });
@@ -88,7 +120,10 @@ module.exports = async function handler(req, res) {
       const userId = p.userId;
       if (!userId) { res.status(400).json({ error: 'ไม่มี userId' }); return; }
       const patch = {};
-      if (p.displayName !== undefined) patch.display_name = String(p.displayName).trim();
+      if (p.firstName !== undefined) patch.first_name = String(p.firstName).trim();
+      if (p.lastName !== undefined) patch.last_name = String(p.lastName).trim();
+      if (p.nickname !== undefined) patch.nickname = String(p.nickname).trim();
+      if (p.department !== undefined) patch.department = String(p.department).trim();
       if (p.isAdmin !== undefined) patch.is_admin = !!p.isAdmin;
       if (p.permissions !== undefined) patch.permissions = p.permissions;
       if (p.isActive !== undefined) patch.is_active = !!p.isActive;
@@ -113,7 +148,9 @@ module.exports = async function handler(req, res) {
     if (action === 'setPassword') {
       const userId = p.userId;
       const newPassword = String(p.newPassword || '');
-      if (!userId || newPassword.length < 8) { res.status(400).json({ error: 'ข้อมูลไม่ครบ หรือรหัสผ่านสั้นเกินไป (ขั้นต่ำ 8 ตัวอักษร)' }); return; }
+      if (!userId) { res.status(400).json({ error: 'ไม่มี userId' }); return; }
+      const pwErr = passwordPolicyError(newPassword);
+      if (pwErr) { res.status(400).json({ error: pwErr }); return; }
       const pwRes = await fetch(SUPABASE_URL + '/auth/v1/admin/users/' + userId, {
         method: 'PUT', headers: svHeaders, body: JSON.stringify({ password: newPassword })
       });
