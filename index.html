@@ -957,7 +957,7 @@
   // template-related. So templates are reproduced locally here (editable via the ส่ง SMS modal) and
   // resolved to plain text client-side before being sent through /api/send-sms's "message" field —
   // staff should edit these to match whatever wording is actually approved/used on the Thaibulksms
-  // console. {ชื่อ}/{ยอดค้าง}/{วันครบกำหนด}/{งวดที่}/{เลขที่สัญญา} are substituted per-งวด at send time.
+  // console. {ชื่อ}/{ยอดค้าง}/{วันครบกำหนด}/{งวดที่}/{เลขที่สัญญา}/{เลขคำสั่งซื้อ} are substituted per-งวด at send time.
   // "stage" (1-4) ties a template to a step in the ติดตามหนี้ escalation notification (see
   // computePendingSmsReminders) — independent of the editable display name, since staff renaming a
   // template must never silently break which stage it represents. null/undefined = not part of the
@@ -1919,15 +1919,18 @@
     return pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + '/' + d.getFullYear() + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
   }
   // ---------- ส่ง SMS ทวงหนี้ (Thaibulksms) ----------
-  // {ชื่อ}/{ยอดค้าง}/{วันครบกำหนด}/{งวดที่}/{เลขที่สัญญา} placeholders, resolved client-side since
-  // Thaibulksms's own template feature has no API equivalent (see DEFAULT_SMS_TEMPLATES comment).
+  // {ชื่อ}/{ยอดค้าง}/{วันครบกำหนด}/{งวดที่}/{เลขที่สัญญา}/{เลขคำสั่งซื้อ} placeholders, resolved
+  // client-side since Thaibulksms's own template feature has no API equivalent (see
+  // DEFAULT_SMS_TEMPLATES comment). {เลขที่สัญญา} is the staff-entered contract number (falls back
+  // to the SO number if blank); {เลขคำสั่งซื้อ} is always the raw SO/order number, distinct field.
   function resolveSmsTemplate(body, ctx) {
     return String(body || '')
       .replace(/\{ชื่อ\}/g, ctx.name || '')
       .replace(/\{ยอดค้าง\}/g, ctx.amount || '')
       .replace(/\{วันครบกำหนด\}/g, ctx.dueDate || '')
       .replace(/\{งวดที่\}/g, ctx.no != null && ctx.no !== '' ? String(ctx.no) : '')
-      .replace(/\{เลขที่สัญญา\}/g, ctx.contractNo || '');
+      .replace(/\{เลขที่สัญญา\}/g, ctx.contractNo || '')
+      .replace(/\{เลขคำสั่งซื้อ\}/g, ctx.orderNo || '');
   }
   // track: 'accessory' scopes to just accessoryInstallments, anything else (including omitted)
   // scopes to just the main installments — changed 2026-08-01 from combining both tracks, alongside
@@ -1953,7 +1956,8 @@
       var netDue = Math.max(0, toNumber(inst.amountDue) - toNumber(inst.discount) - toNumber(inst.amountPaid));
       return {
         name: ord.customerName, amount: fmtMoney(netDue), dueDate: fmtDate(inst.dueDate), no: inst.no,
-        contractNo: ord.contractNo || ord.soDisplay, phone: ord.phone, history: inst.smsHistory || []
+        contractNo: ord.contractNo || ord.soDisplay, orderNo: track === 'accessory' ? (ord.accessoryOrderId || ord.orderId) : ord.orderId,
+        phone: ord.phone, history: inst.smsHistory || []
       };
     }
     // 'order'-level context (the general ส่ง SMS ทวงหนี้ button, not tied to one งวด) — track-scoped
@@ -1963,12 +1967,13 @@
     if (track === 'accessory') {
       return {
         name: ord.customerName, amount: ord.accessoryOverdueDisp, dueDate: dd ? fmtDate(dd) : '', no: ord.accessoryOverdueCount || '',
-        contractNo: ord.accessoryOrderId || ord.soDisplay, phone: ord.phone, history: ord.accessorySmsHistory || []
+        contractNo: ord.accessoryOrderId || ord.soDisplay, orderNo: ord.accessoryOrderId || ord.orderId,
+        phone: ord.phone, history: ord.accessorySmsHistory || []
       };
     }
     return {
       name: ord.customerName, amount: ord.mainOverdueDisp, dueDate: dd ? fmtDate(dd) : '', no: ord.mainOverdueCount || '',
-      contractNo: ord.contractNo || ord.soDisplay, phone: ord.phone, history: ord.smsHistory || []
+      contractNo: ord.contractNo || ord.soDisplay, orderNo: ord.orderId, phone: ord.phone, history: ord.smsHistory || []
     };
   }
   function openSendSmsModal(level, orderId, no, track, preferredTemplateId) {
@@ -4765,7 +4770,7 @@
         }).join('') +
         '<div data-action="addSmsTemplate" style="color:#7c5cff; font-size:12.5px; font-weight:600; cursor:pointer;">+ เพิ่ม template ใหม่</div>' +
         '<div style="font-size:11px; color:#8a86a3;">"ลำดับ" กำหนดว่า template นี้คือขั้นไหนของระบบแจ้งเตือนติดตามหนี้อัตโนมัติ (🔔 บนแท็บติดตามหนี้) — ต้องตั้งครบ 4 ลำดับ ระบบถึงจะแจ้งเตือนครบทุกขั้น</div>' +
-        '<div style="font-size:11px; color:#8a86a3;">ตัวแปรที่ใช้ได้: {ชื่อ} {ยอดค้าง} {วันครบกำหนด} {งวดที่} {เลขที่สัญญา} · ต้องกด "บันทึกการเปลี่ยนแปลง" ที่หน้าหลักด้วยเพื่อบันทึก template ถาวร</div>' +
+        '<div style="font-size:11px; color:#8a86a3;">ตัวแปรที่ใช้ได้: {ชื่อ} {ยอดค้าง} {วันครบกำหนด} {งวดที่} {เลขที่สัญญา} {เลขคำสั่งซื้อ} · ต้องกด "บันทึกการเปลี่ยนแปลง" ที่หน้าหลักด้วยเพื่อบันทึก template ถาวร</div>' +
       '</div>';
     var historyHtml = '';
     if (ctx.history.length) {
