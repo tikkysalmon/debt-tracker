@@ -4909,7 +4909,8 @@
               '<button data-action="saveCustomerName" title="ยืนยันชื่อใหม่ — ยังต้องกดปุ่ม 💾 บันทึกการเปลี่ยนแปลง ด้วยเพื่อบันทึกจริง" style="border:none; background:#12b886; color:#fff; padding:5px 12px; border-radius:8px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;">✓ ยืนยัน</button>' +
               '<button data-action="cancelEditCustomerName" style="border:none; background:rgba(0,0,0,0.06); color:#6b6785; padding:5px 12px; border-radius:8px; font-size:12px; font-weight:600; cursor:pointer;">✕ ยกเลิก</button>'
             : '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:19px; color:#2b2540;">' + esc(CV.selectedCustomerName) + '</div>' +
-              '<button data-action="startEditCustomerName" title="แก้ไขชื่อลูกค้า" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; width:26px; height:26px; border-radius:8px; font-size:12px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">✏️</button>') +
+              '<button data-action="startEditCustomerName" title="แก้ไขชื่อลูกค้า" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; width:26px; height:26px; border-radius:8px; font-size:12px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">✏️</button>' +
+              '<button data-action="copyField" data-value="' + esc(CV.selectedCustomerName) + '" title="คัดลอกชื่อลูกค้า" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; width:26px; height:26px; border-radius:8px; font-size:12px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">📋</button>') +
           '<div style="background:' + CV.selectedCustomerGradeColor + '1a; color:' + CV.selectedCustomerGradeColor + '; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700;">' + esc(CV.selectedCustomerGradeLabel) + '</div>' + (CV.selectedCustomerFullySettled ? '<div style="background:rgba(18,184,134,0.14); color:#12b886; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700;">✅ ปิดยอด</div>' : '') + trackingReturnTagHtml + '</div>' +
           '<div style="font-size:13px; color:#6b6785; margin-top:4px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">รหัสลูกค้า: ' +
           (state.editingCustomerId
@@ -4917,7 +4918,8 @@
               '<button data-action="saveCustomerId" title="ยืนยันรหัสใหม่ — ยังต้องกดปุ่ม 💾 บันทึกการเปลี่ยนแปลง ด้วยเพื่อบันทึกจริง" style="border:none; background:#12b886; color:#fff; padding:3px 10px; border-radius:6px; font-size:11.5px; font-weight:600; cursor:pointer; white-space:nowrap;">✓</button>' +
               '<button data-action="cancelEditCustomerId" style="border:none; background:rgba(0,0,0,0.06); color:#6b6785; padding:3px 10px; border-radius:6px; font-size:11.5px; font-weight:600; cursor:pointer;">✕</button>'
             : '<span style="color:#2b2540; font-weight:600;">' + esc(CV.selectedCustomerIdDisp) + '</span>' +
-              '<button data-action="startEditCustomerId" title="แก้ไขรหัสลูกค้า" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; width:20px; height:20px; border-radius:5px; font-size:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">✏️</button>') +
+              '<button data-action="startEditCustomerId" title="แก้ไขรหัสลูกค้า" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; width:20px; height:20px; border-radius:5px; font-size:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">✏️</button>' +
+              '<button data-action="copyField" data-value="' + esc(CV.selectedCustomerIdDisp) + '" title="คัดลอกรหัสลูกค้า" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; width:20px; height:20px; border-radius:5px; font-size:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">📋</button>') +
           ' <span style="margin:0 6px;">·</span> พบ ' + CV.billCount + ' บิล</div></div>' +
         '<div style="display:flex; align-items:center; gap:10px; flex-shrink:0;">' + renderSaveButton(false) +
         '<button data-action="closeDetail" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; padding:8px 16px; border-radius:20px; font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap;">✕ ปิด</button></div>' +
@@ -5268,6 +5270,7 @@
         case 'startEditOrderId': startEditOrderId(t.getAttribute('data-order')); break;
         case 'cancelEditOrderId': cancelEditOrderId(); break;
         case 'saveOrderId': saveOrderId(); break;
+        case 'copyField': copyTextToClipboard(t.getAttribute('data-value'), t); break;
         case 'copyOrderInfo': {
           var copyText = 'ชื่อลูกค้า: ' + t.getAttribute('data-customer-name') +
             '\nรหัสลูกค้า: ' + t.getAttribute('data-customer-id') +
