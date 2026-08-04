@@ -4753,6 +4753,31 @@
     '</div>';
   }
 
+  // Compact version of renderNoteModal's history list, shown right under the "🔁 เลื่อนวันชำระ"
+  // button on the installment card itself so staff can see the deferral trail at a glance without
+  // opening the หมายเหตุ modal.
+  function renderPostponeHistoryInline(history) {
+    if (!history || !history.length) return '';
+    return '<div style="padding-top:2px;">' +
+      '<div style="font-size:11px; color:#6b6785; font-weight:600; margin-bottom:6px;">🔁 ประวัติการเลื่อนชำระ (' + history.length + ' ครั้ง)</div>' +
+      '<div style="display:flex; flex-direction:column; gap:6px;">' +
+        history.map(function (h, idx) {
+          var fees = [];
+          if (toNumber(h.lateFee)) fees.push('ค่าปรับชำระล่าช้า ฿' + fmtMoney(h.lateFee));
+          if (toNumber(h.unlockFee)) fees.push('ค่าปลดล็อคเครื่อง ฿' + fmtMoney(h.unlockFee));
+          return '<div style="background:rgba(124,92,255,0.05); border:1px solid rgba(124,92,255,0.12); border-radius:10px; padding:8px 10px;">' +
+            '<div style="display:flex; align-items:center; gap:6px; font-size:11.5px; font-weight:700; color:#2b2540;">' +
+              '<span style="background:rgba(124,92,255,0.15); color:#7c5cff; border-radius:16px; padding:1px 8px; font-size:10.5px;">ครั้งที่ ' + (idx + 1) + '</span>' +
+              esc(fmtDate(h.from)) + ' → ' + esc(fmtDate(h.to)) +
+            '</div>' +
+            (h.reason ? '<div style="font-size:11.5px; color:#6b6785; margin-top:2px;">เหตุผล: ' + esc(h.reason) + '</div>' : '') +
+            (fees.length ? '<div style="font-size:11.5px; color:#c2650a; font-weight:600; margin-top:2px;">' + fees.join(' · ') + '</div>' : '') +
+          '</div>';
+        }).join('') +
+      '</div>' +
+    '</div>';
+  }
+
   function renderSendSmsModal() {
     var target = state.smsModalTarget;
     var ctx = smsContextFor(target.level, target.orderId, target.no, target.track);
@@ -5118,6 +5143,7 @@
           (overdue > 0 ? '<span style="background:rgba(224,49,49,0.10); color:#e03131; padding:3px 10px; border-radius:20px; font-size:11px; font-weight:700; white-space:nowrap;">⏰ เกิน ' + overdue + ' วัน</span>' : '') +
           smsLastSentBadge(inst.smsHistory) +
         '</div>' +
+        renderPostponeHistoryInline(inst.postponeHistory) +
         // Money fields — 2-col grid, no horizontal scroll needed at any width.
         '<div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; padding-top:4px; border-top:1px solid rgba(124,92,255,0.08);">' +
           instField('ยอดผ่อนต่องวด', '<input type="text" inputmode="decimal" value="' + esc(fmtMoney(inst.amountDue)) + '" data-field="amountDue"' + da + ' style="' + inputBase + ' text-align:right; font-weight:600; border:1px solid rgba(124,92,255,0.2);" />') +
