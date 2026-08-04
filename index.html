@@ -3024,8 +3024,17 @@
   // back to the scheduled value — on every ~12s cloudPoll, so real accounts already have their
   // postponed date wiped even though postponeHistory (never touched by that bug) still correctly
   // recorded the intended date. Restores dueDate from the LAST postponeHistory entry's `to`
-  // whenever they've drifted apart. Idempotent (no-op once dueDate already matches), safe to run
-  // on every load like the other repairs here.
+  // whenever they've drifted apart, AND retroactively applies the same สถานะ = เปลี่ยนภาพพักหน้าจอ
+  // marker confirmPostpone() now sets automatically on every new "เลื่อนวันชำระ" — per explicit
+  // user request 2026-08: a postponed-but-not-yet-due งวด must visibly read as "ลูกค้ายังค้างชำระ
+  // อยู่" (still owes, just deferred), not blend in with a never-late งวด showing plain
+  // ยังไม่ถึงกำหนดชำระ. Only applied when nothing has since taken deliberate ownership of the status
+  // (statusOverride falsy — a staff member picking some OTHER manual status after the postpone must
+  // not be silently overwritten by this historical catch-up) and the งวด is neither already paid
+  // nor already past its (corrected) due date — isDueDateReached()'s own staleness check in
+  // withEffectiveStatus would just immediately discard the marker in that case anyway, so setting
+  // it would be pointless noise in the stored data. Idempotent (no-op once dueDate/status already
+  // match), safe to run on every load like the other repairs here.
   function repairPostponedDueDates(orders) {
     var changed = false;
     function fixList(list) {
@@ -3034,9 +3043,17 @@
       var updated = list.map(function (inst) {
         if (!inst.postponeHistory || !inst.postponeHistory.length) return inst;
         var last = inst.postponeHistory[inst.postponeHistory.length - 1];
-        if (!last || !last.to || inst.dueDate === last.to) return inst;
+        if (!last || !last.to) return inst;
+        var patch = {};
+        if (inst.dueDate !== last.to) patch.dueDate = last.to;
+        var effectiveDueDate = patch.dueDate || inst.dueDate;
+        if (!inst.statusOverride && Number(inst.amountPaid || 0) <= 0 && !isDueDateReached(Object.assign({}, inst, { dueDate: effectiveDueDate }))) {
+          patch.status = 'เปลี่ยนภาพพักหน้าจอ';
+          patch.statusOverride = true;
+        }
+        if (!Object.keys(patch).length) return inst;
         touched = true;
-        return Object.assign({}, inst, { dueDate: last.to });
+        return Object.assign({}, inst, patch);
       });
       return touched ? updated : null;
     }
