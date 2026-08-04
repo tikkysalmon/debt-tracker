@@ -124,6 +124,15 @@ module.exports = async function handler(req, res) {
     if (action === 'update') {
       const userId = p.userId;
       if (!userId) { res.status(400).json({ error: 'ไม่มี userId' }); return; }
+      // Server-side self-protection, not just the client's confirm dialog (which a direct API call
+      // bypasses entirely) — an admin deactivating or demoting THEMSELVES, especially if they're
+      // the only admin left, would lock everyone out of "จัดการผู้ใช้งาน" with no way back in
+      // except the manual SQL bootstrap in supabase-setup-auth.sql. Only self-service password
+      // changes (a different action) and editing one's own display fields stay allowed.
+      if (userId === verify.callerId && (p.isActive === false || p.isAdmin === false)) {
+        res.status(400).json({ error: 'ไม่สามารถระงับหรือถอดสิทธิ์ Admin ของบัญชีตัวเองได้ — ให้ผู้ดูแลระบบคนอื่นทำแทน' });
+        return;
+      }
       const patch = {};
       if (p.firstName !== undefined) patch.first_name = String(p.firstName).trim();
       if (p.lastName !== undefined) patch.last_name = String(p.lastName).trim();
