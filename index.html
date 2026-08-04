@@ -502,7 +502,7 @@
       }
     }
     // A งวด's amountPaid just changed — any prior ตรวจสอบ CRM confirmation was for the old figure.
-    touched.forEach(function (inst) { if (inst.verifiedCRM) { inst.verifiedCRM = false; inst.verifiedCRMAt = ''; } });
+    touched.forEach(function (inst) { if (inst.verifiedCRM) { inst.verifiedCRM = false; inst.verifiedCRMAt = ''; inst.verifiedCRMBy = ''; } });
     return touched;
   }
   // One-time self-heal for orders whose overpayment (a lump early-settlement payment recorded
@@ -2198,6 +2198,15 @@
     var pad = function (n) { return String(n).padStart(2, '0'); };
     return pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + '/' + d.getFullYear() + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
   }
+  // "ชื่อ ชื่อเล่น" (e.g. "MNG Acc ติ๊ก") — per explicit user request, every history-log entry
+  // (SMS/call/letter/email/postpone) records WHO did it now that staff have real logins, not just
+  // when. '' in local/offline mode (no CLOUD_ENABLED, no currentUser) — nothing to attribute to.
+  function currentActorName() {
+    var u = state.currentUser;
+    if (!u) return '';
+    var parts = [u.firstName, u.nickname].filter(Boolean);
+    return parts.length ? parts.join(' ') : (u.employeeCode || '');
+  }
   // ---------- ส่ง SMS ทวงหนี้ (Thaibulksms) ----------
   // {ชื่อ}/{ยอดค้าง}/{วันครบกำหนด}/{งวดที่}/{เลขที่สัญญา}/{เลขคำสั่งซื้อ} placeholders, resolved
   // client-side since Thaibulksms's own template feature has no API equivalent (see
@@ -2340,13 +2349,13 @@
           // amountPaidAtSend snapshots what this งวด had paid at send time, so the ติดตามหนี้
           // escalation notification (computePendingSmsReminders) can later tell "customer paid
           // something since this send" (blocks the next stage) apart from "still unchanged".
-          var entry = { at: nowTimestamp(), phone: phone, template: tpl ? tpl.name : '', stage: tpl ? tpl.stage || null : null, message: message, amountPaidAtSend: inst ? toNumber(inst.amountPaid) : null };
+          var entry = { at: nowTimestamp(), by: currentActorName(), phone: phone, template: tpl ? tpl.name : '', stage: tpl ? tpl.stage || null : null, message: message, amountPaidAtSend: inst ? toNumber(inst.amountPaid) : null };
           var history = (inst && inst.smsHistory) || [];
           updateInstallment(target.orderId, target.no, 'smsHistory', history.concat([entry]), target.track);
         } else {
           // order-level (not tied to one งวด) — routes to accessorySmsHistory when the accessory SO
           // was picked (2026-08-01), so an accessory send never mixes into the main SO's history.
-          var entry = { at: nowTimestamp(), phone: phone, template: tpl ? tpl.name : '', stage: tpl ? tpl.stage || null : null, message: message };
+          var entry = { at: nowTimestamp(), by: currentActorName(), phone: phone, template: tpl ? tpl.name : '', stage: tpl ? tpl.stage || null : null, message: message };
           var ord2 = state.orders.find(function (o) { return o.orderId === target.orderId; });
           var field2 = target.track === 'accessory' ? 'accessorySmsHistory' : 'smsHistory';
           var history2 = (ord2 && ord2[field2]) || [];
@@ -2376,7 +2385,7 @@
     if (!contactOrder) return;
     var order = state.orders.find(function (o) { return o.orderId === contactOrder.orderId; });
     var history = (order && order.callHistory) || [];
-    var entry = { at: nowTimestamp(), note: text };
+    var entry = { at: nowTimestamp(), by: currentActorName(), note: text };
     updateOrderField(contactOrder.orderId, 'callHistory', history.concat([entry]));
     state.callDraft = '';
   }
@@ -2692,7 +2701,7 @@
         // resolves this into a fresh blob: URL on click; storagePathFromValue() still understands
         // OLD entries that already have a full public URL saved, so history issued before this
         // change keeps downloading fine too).
-        var entry = { no: letterNo, at: nowTimestamp(), url: path, overdueCount: snapshot.overdueCount, amountDisp: snapshot.amountDisp, dueDate: snapshot.dueDate };
+        var entry = { no: letterNo, at: nowTimestamp(), by: currentActorName(), url: path, overdueCount: snapshot.overdueCount, amountDisp: snapshot.amountDisp, dueDate: snapshot.dueDate };
         var newHistory = existing
           ? history.map(function (h) { return h.no === letterNo ? entry : h; })
           : history.concat([entry]);
@@ -2790,7 +2799,7 @@
           return;
         }
         var emailField = track === 'accessory' ? 'accessoryEmailHistory' : 'emailHistory';
-        var emailHistory = (order[emailField] || []).concat([{ at: nowTimestamp(), to: to, letterNo: entry.no }]);
+        var emailHistory = (order[emailField] || []).concat([{ at: nowTimestamp(), by: currentActorName(), to: to, letterNo: entry.no }]);
         updateOrderField(orderId, emailField, emailHistory);
         state.emailModalTarget = null;
         state.emailModalTrack = '';
@@ -2815,7 +2824,7 @@
       var patch2 = {};
       patch2[key] = (o[key] || []).map(function (i) {
         if (i.no !== no) return i;
-        return Object.assign({}, i, { verifiedCRM: checked, verifiedCRMAt: checked ? nowTimestamp() : i.verifiedCRMAt });
+        return Object.assign({}, i, { verifiedCRM: checked, verifiedCRMAt: checked ? nowTimestamp() : i.verifiedCRMAt, verifiedCRMBy: checked ? currentActorName() : i.verifiedCRMBy });
       });
       return Object.assign({}, o, patch2);
     });
@@ -2855,7 +2864,7 @@
           if (i.no !== no) return i;
           var patch = {}; patch[field] = value;
           if (field === 'status') patch.statusOverride = true;
-          if (CRM_INVALIDATING_FIELDS[field] && i.verifiedCRM) { patch.verifiedCRM = false; patch.verifiedCRMAt = ''; }
+          if (CRM_INVALIDATING_FIELDS[field] && i.verifiedCRM) { patch.verifiedCRM = false; patch.verifiedCRMAt = ''; patch.verifiedCRMBy = ''; }
           return Object.assign({}, i, patch);
         });
         // amountPaid/discount changing can create or clear an overpayment that needs to carry
@@ -3114,7 +3123,7 @@
       if (o.orderId !== orderId) return o;
       var patch = {}; patch[key] = (o[key] || []).map(function (i) {
         if (i.no !== no) return i;
-        var entry = { from: i.dueDate, to: state.postponeDate, reason: reason, lateFee: lateFee, unlockFee: unlockFee, at: toDateString(new Date()) };
+        var entry = { from: i.dueDate, to: state.postponeDate, reason: reason, lateFee: lateFee, unlockFee: unlockFee, at: toDateString(new Date()), by: currentActorName() };
         return Object.assign({}, i, {
           dueDate: state.postponeDate,
           // Per explicit user request 2026-08: every "เลื่อนวันชำระ" marks the งวด เปลี่ยนภาพพักหน้าจอ
@@ -3130,7 +3139,8 @@
           unlockFee: toNumber(i.unlockFee || 0) + unlockFee,
           // dueDate just moved — any ตรวจสอบ CRM confirmation was tied to the OLD due month.
           verifiedCRM: i.verifiedCRM ? false : i.verifiedCRM,
-          verifiedCRMAt: i.verifiedCRM ? '' : i.verifiedCRMAt
+          verifiedCRMAt: i.verifiedCRM ? '' : i.verifiedCRMAt,
+          verifiedCRMBy: i.verifiedCRM ? '' : i.verifiedCRMBy
         });
       });
       return Object.assign({}, o, patch);
@@ -3267,10 +3277,10 @@
     return 'ปกติ';
   }
   function exportFilteredCsv(orders) {
-    var content = 'รหัสลูกค้า,ชื่อลูกค้า,สถานะบัญชี,วันที่อัปเดตติดตามเครื่องคืน,คำสั่งซื้อ,งวดที่,วันครบกำหนดชำระ,ยอดผ่อนต่องวด,ยอดที่ชำระจริง,วันที่ชำระ,สถานะการชำระเงิน,ส่วนลด,หมายเหตุ,ตรวจสอบ CRM แล้ว,วันเวลาที่ตรวจสอบ\n';
+    var content = 'รหัสลูกค้า,ชื่อลูกค้า,สถานะบัญชี,วันที่อัปเดตติดตามเครื่องคืน,คำสั่งซื้อ,งวดที่,วันครบกำหนดชำระ,ยอดผ่อนต่องวด,ยอดที่ชำระจริง,วันที่ชำระ,สถานะการชำระเงิน,ส่วนลด,หมายเหตุ,ตรวจสอบ CRM แล้ว,วันเวลาที่ตรวจสอบ,ตรวจสอบโดย\n';
     function addRows(customerId, customerName, accountStatus, trackingReturnAt, orderId, list) {
       list.forEach(function (i) {
-        content += [customerId, customerName, accountStatus, trackingReturnAt, orderId, i.no, i.dueDate, i.amountDue, i.amountPaid, i.paidDate, i.effectiveStatus, i.discount, i.note, i.verifiedCRM ? 'ใช่' : 'ไม่', i.verifiedCRM ? (i.verifiedCRMAt || '') : '']
+        content += [customerId, customerName, accountStatus, trackingReturnAt, orderId, i.no, i.dueDate, i.amountDue, i.amountPaid, i.paidDate, i.effectiveStatus, i.discount, i.note, i.verifiedCRM ? 'ใช่' : 'ไม่', i.verifiedCRM ? (i.verifiedCRMAt || '') : '', i.verifiedCRM ? (i.verifiedCRMBy || '') : '']
           .map(function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; }).join(',') + '\n';
       });
     }
@@ -3445,7 +3455,7 @@
       '</div>' +
       trackingHistoryList(callHistory, function (h) {
         return '<div style="background:rgba(79,70,229,0.05); border:1px solid rgba(79,70,229,0.12); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' +
-          '<div style="font-weight:700; color:#4f46e5; margin-bottom:2px;">🕐 ' + esc(h.at) + '</div>' +
+          '<div style="font-weight:700; color:#4f46e5; margin-bottom:2px;">🕐 ' + esc(h.at) + (h.by ? ' · โดย ' + esc(h.by) : '') + '</div>' +
           '<div style="color:#6b6785;">' + esc(h.note) + '</div>' +
         '</div>';
       });
@@ -3486,7 +3496,7 @@
       '<div>' + renderSendSmsButton('order', ord.orderId, null, track, '📱 ส่ง SMS ทวงหนี้') + '</div>' +
       trackingHistoryList(smsHistory, function (h) {
         return '<div style="background:rgba(124,92,255,0.05); border:1px solid rgba(124,92,255,0.12); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' +
-          '<div style="font-weight:700; color:#7c5cff; margin-bottom:2px;">🕐 ' + esc(h.at) + (h.no != null ? ' · งวดที่ ' + h.no : '') + '</div>' +
+          '<div style="font-weight:700; color:#7c5cff; margin-bottom:2px;">🕐 ' + esc(h.at) + (h.no != null ? ' · งวดที่ ' + h.no : '') + (h.by ? ' · โดย ' + esc(h.by) : '') + '</div>' +
           '<div style="color:#6b6785;">' + esc(h.template || 'ข้อความทวงถาม') + (h.phone ? ' · ' + esc(h.phone) : '') + '</div>' +
         '</div>';
       });
@@ -3501,7 +3511,7 @@
       '<div style="font-size:10.5px; color:#8a86a3; font-weight:700; margin-top:2px;">📧 ประวัติส่งอีเมล</div>' +
       trackingHistoryList(emailHistory, function (h) {
         return '<div style="background:rgba(29,78,216,0.05); border:1px solid rgba(29,78,216,0.12); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' +
-          '<div style="font-weight:700; color:#1d4ed8; margin-bottom:2px;">🕐 ' + esc(h.at) + ' · ครั้งที่ ' + h.letterNo + '</div>' +
+          '<div style="font-weight:700; color:#1d4ed8; margin-bottom:2px;">🕐 ' + esc(h.at) + ' · ครั้งที่ ' + h.letterNo + (h.by ? ' · โดย ' + esc(h.by) : '') + '</div>' +
           '<div style="color:#6b6785;">ถึง ' + esc(h.to) + '</div>' +
         '</div>';
       });
@@ -3510,7 +3520,7 @@
       '<div>' + renderSendEmailButton(ord, track) + '</div>' +
       trackingHistoryList(letterHistory, function (h) {
         return '<div style="background:rgba(179,38,30,0.05); border:1px solid rgba(179,38,30,0.12); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' +
-          '<div style="font-weight:700; color:#b3261e; margin-bottom:2px;">🕐 ' + esc(h.at) + ' · ครั้งที่ ' + h.no + '</div>' +
+          '<div style="font-weight:700; color:#b3261e; margin-bottom:2px;">🕐 ' + esc(h.at) + ' · ครั้งที่ ' + h.no + (h.by ? ' · โดย ' + esc(h.by) : '') + '</div>' +
           '<div style="color:#6b6785;">฿' + esc(h.amountDisp) + ' (' + h.overdueCount + ' งวด) · <span data-action="downloadLetterPdf" data-path="' + esc(h.url) + '" style="color:#7c5cff; font-weight:600; cursor:pointer;">⬇ ดาวน์โหลด</span></div>' +
         '</div>';
       }) +
@@ -4176,7 +4186,7 @@
           // Rows that only log a collections/device status (e.g. ล็อคเครื่อง, เกินกำหนดชำระ) carry
           // amount 0 — must not zero out a real amountPaid recorded from an earlier row/file.
           if (PAYMENT_STATUSES[status] || toNumber(amountPaid) > 0) {
-            if (inst.verifiedCRM) { inst.verifiedCRM = false; inst.verifiedCRMAt = ''; }
+            if (inst.verifiedCRM) { inst.verifiedCRM = false; inst.verifiedCRMAt = ''; inst.verifiedCRMBy = ''; }
             inst.amountPaid = toNumber(amountPaid);
             if (paidDate !== '') inst.paidDate = toDateString(paidDate);
             setPaid++;
@@ -4308,7 +4318,7 @@
         multiInsts.forEach(function (mi, idx) {
           // This row touched mi's amountPaid (or is about to touch discount below) — a prior
           // ตรวจสอบ CRM confirmation was for the pre-payment figure and no longer applies.
-          if (mi.verifiedCRM && (amountPaid !== '' || discount !== '')) { mi.verifiedCRM = false; mi.verifiedCRMAt = ''; }
+          if (mi.verifiedCRM && (amountPaid !== '' || discount !== '')) { mi.verifiedCRM = false; mi.verifiedCRMAt = ''; mi.verifiedCRMBy = ''; }
           if (paidDate !== '') mi.paidDate = paidDateStr; // latest payment date wins
           // ส่วนลดปิดยอด (closing/settlement discount) belongs on the LAST งวด this row touched only —
           // per explicit user rule — never repeated onto every spread-across งวด, which would multiply
@@ -5376,6 +5386,7 @@
               '<span style="background:rgba(124,92,255,0.15); color:#7c5cff; border-radius:16px; padding:1px 8px; font-size:11px;">ครั้งที่ ' + (idx + 1) + '</span>' +
               esc(fmtDate(h.from)) + ' → ' + esc(fmtDate(h.to)) +
             '</div>' +
+            (h.by ? '<div style="font-size:12.5px; color:#6b6785; margin-bottom:2px;">โดย: ' + esc(h.by) + '</div>' : '') +
             (h.reason ? '<div style="font-size:12.5px; color:#6b6785; margin-bottom:2px;">เหตุผล: ' + esc(h.reason) + '</div>' : '') +
             (fees.length ? '<div style="font-size:12.5px; color:#c2650a; font-weight:600;">' + fees.join(' · ') + '</div>' : '') +
           '</div>';
@@ -5413,6 +5424,7 @@
               '<span style="background:rgba(124,92,255,0.15); color:#7c5cff; border-radius:16px; padding:1px 8px; font-size:10.5px;">ครั้งที่ ' + (idx + 1) + '</span>' +
               esc(fmtDate(h.from)) + ' → ' + esc(fmtDate(h.to)) +
             '</div>' +
+            (h.by ? '<div style="font-size:11.5px; color:#6b6785; margin-top:2px;">โดย: ' + esc(h.by) + '</div>' : '') +
             (h.reason ? '<div style="font-size:11.5px; color:#6b6785; margin-top:2px;">เหตุผล: ' + esc(h.reason) + '</div>' : '') +
             (fees.length ? '<div style="font-size:11.5px; color:#c2650a; font-weight:600; margin-top:2px;">' + fees.join(' · ') + '</div>' : '') +
           '</div>';
@@ -5460,7 +5472,7 @@
         '<div style="display:flex; flex-direction:column; gap:6px; margin-bottom:16px; max-height:160px; overflow-y:auto;">' +
         ctx.history.slice().reverse().map(function (h) {
           return '<div style="background:rgba(18,184,134,0.05); border:1px solid rgba(18,184,134,0.15); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' +
-            '<div style="font-weight:700; color:#0b7a5b; margin-bottom:2px;">' + esc(h.at) + ' · ' + esc(h.phone) + (h.template ? ' · ' + esc(h.template) : '') + '</div>' +
+            '<div style="font-weight:700; color:#0b7a5b; margin-bottom:2px;">' + esc(h.at) + ' · ' + esc(h.phone) + (h.template ? ' · ' + esc(h.template) : '') + (h.by ? ' · โดย ' + esc(h.by) : '') + '</div>' +
             '<div style="color:#6b6785; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + esc(h.message) + '</div>' +
           '</div>';
         }).join('') +
@@ -5505,7 +5517,7 @@
       emailHistoryHtml = '<div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:8px;">📨 ประวัติการส่ง (' + emailHistory.length + ' ครั้ง)</div>' +
         '<div style="display:flex; flex-direction:column; gap:6px; margin-bottom:16px; max-height:140px; overflow-y:auto;">' +
         emailHistory.slice().reverse().map(function (h) {
-          return '<div style="background:rgba(37,99,235,0.05); border:1px solid rgba(37,99,235,0.15); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' + esc(h.at) + ' · ' + esc(h.to) + ' · ครั้งที่ ' + h.letterNo + '</div>';
+          return '<div style="background:rgba(37,99,235,0.05); border:1px solid rgba(37,99,235,0.15); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' + esc(h.at) + ' · ' + esc(h.to) + ' · ครั้งที่ ' + h.letterNo + (h.by ? ' · โดย ' + esc(h.by) : '') + '</div>';
         }).join('') +
         '</div>';
     }
@@ -5812,7 +5824,7 @@
           (inst.statusOverride ? '<button data-action="resetOverride"' + da + ' title="รีเซ็ตสถานะเป็นอัตโนมัติ" style="border:none; background:rgba(124,92,255,0.08); border-radius:8px; cursor:pointer; font-size:14px; color:#7c5cff; flex-shrink:0; padding:5px 8px;">⟲</button>' : '') +
           '<label style="display:flex; align-items:center; gap:6px; cursor:pointer; white-space:nowrap; margin-left:auto;">' +
             '<input type="checkbox" data-action="toggleVerifiedCRM"' + da + (inst.verifiedCRM ? ' checked' : '') + ' style="width:15px; height:15px; accent-color:#12b886; cursor:pointer;" />' +
-            '<span style="font-size:11.5px; color:' + (inst.verifiedCRM ? '#0b7a5b' : '#8a86a3') + '; font-weight:' + (inst.verifiedCRM ? '700' : '400') + ';">' + (inst.verifiedCRM ? ('ตรวจแล้ว · ' + esc(inst.verifiedCRMAt || '')) : 'ตรวจสอบ CRM') + '</span>' +
+            '<span style="font-size:11.5px; color:' + (inst.verifiedCRM ? '#0b7a5b' : '#8a86a3') + '; font-weight:' + (inst.verifiedCRM ? '700' : '400') + ';">' + (inst.verifiedCRM ? ('ตรวจแล้ว · ' + esc(inst.verifiedCRMAt || '') + (inst.verifiedCRMBy ? ' · โดย ' + esc(inst.verifiedCRMBy) : '')) : 'ตรวจสอบ CRM') + '</span>' +
           '</label>' +
         '</div>' +
         '<div data-action="openNoteModal"' + da + ' title="คลิกเพื่อดู/แก้ไขหมายเหตุเต็ม" style="' + inputBase + ' border:1px dashed rgba(124,92,255,0.25); background:transparent; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding:8px 10px;">' +
@@ -5942,7 +5954,28 @@
       el.style.background = active ? 'rgba(124,92,255,0.12)' : 'transparent';
     });
   }
+  // True once render() has been skipped because the user is actively mid-edit in a field that only
+  // commits on blur (data-field/data-order-field — amountDue, dueDate, customer name, etc.).
+  // Retried from the 'focusout' listener in initEvents() once they leave that field.
+  var renderPendingUntilBlur = false;
+  function shouldDeferRender() {
+    var el = document.activeElement;
+    if (!el || !el.getAttribute) return false;
+    if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') return false;
+    return !!(el.getAttribute('data-field') || el.getAttribute('data-order-field'));
+  }
   function render() {
+    // Rebuilding #main-inner's whole innerHTML while someone is mid-typing into a data-field/
+    // data-order-field input (amountDue, dueDate, customer name, ...) would silently wipe whatever
+    // they've typed and drop focus — those fields only sync to state on blur ('change'), not on
+    // every keystroke (updating state on every keystroke would mean re-deriving computeOrders() for
+    // the whole dataset — 10k+ orders — on every character typed, which isn't viable). Most renders
+    // are triggered by the user's OWN action and would never fire while they're mid-edit elsewhere,
+    // but cloudPoll() picking up another staff member's concurrent edit (every ~12s on a live,
+    // multi-user system) is exactly the kind of unrelated trigger that can land at any moment —
+    // reported as "กรอกข้อมูลไม่ได้ หน้าเว็บล้างข้อมูลอัตโนมัติ". Deferring (rather than dropping) it
+    // means the interrupted update still lands the moment they blur — see the 'focusout' listener.
+    if (shouldDeferRender()) { renderPendingUntilBlur = true; return; }
     // Every edit (typing in a field, ticking a status dropdown, etc.) replaces main-inner's whole
     // innerHTML — the browser has no DOM node to keep a scroll position on, so both the page and
     // the customer-detail modal's own scroll silently reset to the top. Capture before, restore
@@ -6090,6 +6123,16 @@
         state.loginEmployeeCode = t.value;
       } else if (da === 'loginPassword') {
         state.loginPassword = t.value;
+      } else if (da === 'staffDraftField' && state.userMgmtDraft) {
+        // Mirrors queryInput's approach above — staffDraftField only otherwise syncs to state on
+        // 'change' (blur), so a render() triggered by something unrelated mid-typing (cloudPoll
+        // picking up another staff member's concurrent edit every ~12s is the main one — a live
+        // system with real staff means this isn't rare) would replace this input's DOM node with a
+        // fresh one built from the still-stale (pre-blur) state value, wiping out whatever was
+        // typed and dropping focus — reported as "กรอกข้อมูลไม่ได้ หน้าเว็บล้างข้อมูลอัตโนมัติ".
+        // Updating state on every keystroke (without calling render() here) means an interrupting
+        // render always rebuilds the input from the CURRENT typed value instead of a stale one.
+        state.userMgmtDraft[t.getAttribute('data-field')] = t.value;
       }
     });
 
@@ -6108,6 +6151,14 @@
         e.preventDefault();
         if (enterAction === 'loginSubmit') handleLogin();
       }
+    });
+
+    // Retries a render() that shouldDeferRender() skipped while this field had focus — covers the
+    // case where the user leaves without actually changing the value (so 'change' never fires and
+    // updateInstallment/updateOrderField never gets a chance to render() on its own). Uses
+    // 'focusout' (bubbles, unlike 'blur') so this one delegated listener catches every field.
+    app.addEventListener('focusout', function () {
+      if (renderPendingUntilBlur) { renderPendingUntilBlur = false; render(); }
     });
 
     app.addEventListener('change', function (e) {
