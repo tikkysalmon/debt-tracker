@@ -146,6 +146,66 @@
   var PAYMENT_CLEARS_OVERRIDE_STATUSES = { 'เปลี่ยนภาพพักหน้าจอ': true };
   var GRADE_COLORS = { A: '#12b886', B: '#f59f00', 'หนี้สงสัยจะสูญ': '#e03131' };
   var GRADE_LABELS = { A: 'เกรด A — ไม่เคยค้างชำระ', B: 'เกรด B — ค้างชำระ 1 งวด', 'หนี้สงสัยจะสูญ': 'หนี้สงสัยจะสูญ — ค้าง ≥2 งวด' };
+
+  // ---------- Staff permissions (2026-08) ----------
+  // Fine-grained, per-menu — modeled after thaibulksms's own "บัญชีผู้ใช้แบบกำหนดสิทธิ์" (a main
+  // admin account creates sub-accounts and picks exactly what each one can do). is_admin is a
+  // separate flag, not one of these checkboxes — it always grants everything AND is the only way to
+  // reach "จัดการผู้ใช้งาน" itself, so a permission-scoped account can never grant itself more access.
+  var PERMISSION_CATALOG = [
+    { key: 'tracking_view', label: 'ดูเมนู "ติดตามหนี้"', desc: 'ดูรายชื่อ/รายละเอียดลูกหนี้ (จำเป็นก่อนจะแก้ไขอะไรในเมนูนี้ได้)' },
+    { key: 'tracking_edit', label: 'แก้ไขข้อมูลติดตามหนี้', desc: 'แก้ไขงวด/ยอดชำระ/เลื่อนวันชำระ/หมายเหตุ/ข้อมูลลูกค้าและคำสั่งซื้อ' },
+    { key: 'send_sms', label: 'ส่ง SMS ทวงหนี้', desc: 'ส่ง SMS และจัดการ template SMS (มีค่าใช้จ่ายต่อครั้ง)' },
+    { key: 'send_letter', label: 'ส่งจดหมาย/อีเมลทวงหนี้', desc: 'ออกเอกสาร/ส่งอีเมลทวงถามหนี้' },
+    { key: 'upload_files', label: 'อัพโหลดไฟล์ข้อมูล', desc: 'นำเข้าไฟล์ข้อมูลลูกหนี้/ไฟล์ชำระเงิน/ข้อมูลลูกค้า — กระทบข้อมูลจำนวนมากในครั้งเดียว' },
+    { key: 'delete_data', label: 'ลบ/ยกเลิกรายการ', desc: 'ลบงวด, ยกเลิกบิล — ทำแล้วกู้คืนยาก' }
+  ];
+  function emptyPermissions() {
+    var p = {}; PERMISSION_CATALOG.forEach(function (item) { p[item.key] = false; }); return p;
+  }
+  // Central permission check — is_admin always passes everything. A deactivated/missing user
+  // passes nothing (fail-closed), which matters most right after logout/session-expiry races.
+  // Exception: when CLOUD_ENABLED is false there IS no auth system at all (local-only/offline
+  // testing, e.g. opening index.html straight from file:// — see README) — must behave exactly as
+  // fully-open as it always did, not silently lock every tab behind a currentUser that can never
+  // exist in that mode.
+  function can(perm) {
+    if (!CLOUD_ENABLED) return true;
+    var u = state.currentUser;
+    if (!u || !u.isActive) return false;
+    if (u.isAdmin) return true;
+    return !!(u.permissions && u.permissions[perm]);
+  }
+  // Single choke point for every data-action dispatch (see initEvents' click/change switches) —
+  // actions not listed here need no permission (read-only UI: filters, pagination, view toggles,
+  // draft-typing into a field that hasn't been submitted yet, etc). Kept as one flat map rather than
+  // scattered checks per-case so every mutating action is gated from ONE place that's easy to audit.
+  var ACTION_PERMISSIONS = {
+    addInstallment: 'tracking_edit', resetOverride: 'tracking_edit',
+    openPostpone: 'tracking_edit', confirmPostpone: 'tracking_edit',
+    saveNote: 'tracking_edit', saveNoteModal: 'tracking_edit',
+    startEditCustomerName: 'tracking_edit', saveCustomerName: 'tracking_edit',
+    startEditCustomerId: 'tracking_edit', saveCustomerId: 'tracking_edit',
+    startEditOrderId: 'tracking_edit', saveOrderId: 'tracking_edit',
+    toggleCustomerTrackingReturn: 'tracking_edit',
+    setInstallmentAmount: 'tracking_edit', setInstallmentCount: 'tracking_edit',
+    toggleVerifiedCRM: 'tracking_edit', saveCallLog: 'tracking_edit', commitChanges: 'tracking_edit',
+    confirmSendSms: 'send_sms', addSmsTemplate: 'send_sms', deleteSmsTemplate: 'send_sms',
+    confirmSendEmail: 'send_letter', issueLetter: 'send_letter',
+    onDebtFile: 'upload_files', onPaymentFile: 'upload_files', onCustomerInfo: 'upload_files', onLetterheadFile: 'upload_files',
+    deleteInstallment: 'delete_data', cancelOrder: 'delete_data',
+    // Full data wipe — too dangerous to leave as a togglable permission; admin-only no matter what.
+    clearToEmpty: '__admin__', resetToSample: '__admin__',
+    newStaffUser: '__admin__', editStaffUser: '__admin__', saveStaffUser: '__admin__',
+    deactivateStaffUser: '__admin__', activateStaffUser: '__admin__'
+  };
+  function actionAllowed(action) {
+    var perm = ACTION_PERMISSIONS[action];
+    if (!perm) return true;
+    if (perm === '__admin__') return !CLOUD_ENABLED || !!(state.currentUser && state.currentUser.isActive && state.currentUser.isAdmin);
+    return can(perm);
+  }
+  function denyToast(msg) { alert(msg || 'คุณไม่มีสิทธิ์ทำรายการนี้ — ติดต่อผู้ดูแลระบบหากคิดว่าควรมีสิทธิ์'); }
   // Purchase types come straight from whatever the debtor file actually has (e.g. "ผ่อนชำระ 0%")
   // rather than a fixed list — real data has more variants than any hardcoded set would cover.
   function getPurchaseTypeOptions() {
@@ -570,6 +630,10 @@
 
   var db = null;                 // supabase client
   var cloudConnected = false;    // has get_state succeeded at least once this session
+  // The current session's access token, kept in sync by db.auth.onAuthStateChange (see initCloud)
+  // rather than calling the async getSession() on every single download/poll — downloadCloudFile()
+  // (below) is a hand-rolled raw fetch that needs this synchronously available on every call.
+  var currentAccessToken = null;
   var myClientId = 'c-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
   var lastServerTs = null;       // updated_at of the last state we know about
   var cloudStatus = CLOUD_ENABLED ? 'connecting' : 'local'; // local|connecting|online|saving|offline
@@ -587,7 +651,14 @@
   function initCloud() {
     if (!CLOUD_ENABLED) return false;
     if (!window.supabase || !window.supabase.createClient) { cloudStatus = 'offline'; return false; }
-    db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { persistSession: false } });
+    // persistSession must be true now that real staff logins exist (2026-08 permission system) —
+    // it was deliberately false back when there was no login at all, so there was never a session
+    // worth persisting. Session survives page reloads in localStorage, same as thaibulksms/most
+    // SaaS logins — staff don't need to re-enter their password every time they refresh the tab.
+    db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { persistSession: true, autoRefreshToken: true } });
+    db.auth.onAuthStateChange(function (event, session) {
+      currentAccessToken = session ? session.access_token : null;
+    });
     return true;
   }
   // The uploaded object itself carries cacheControl:max-age=3600 (the supabase-js upload() default
@@ -601,11 +672,54 @@
   // whatever Cache-Control header it was given. Shaped to match the {data:{text},error} contract
   // db.storage...download() returns, so every call site can swap in this drop-in replacement.
   function downloadCloudFile() {
-    var url = SUPABASE_URL + '/storage/v1/object/public/' + CLOUD_BUCKET + '/' + CLOUD_FILE + '?_=' + Date.now();
-    return fetch(url, { cache: 'no-store' }).then(function (res) {
+    // No longer /object/public/ — the app-data bucket is private now (2026-08 permission system:
+    // storage RLS requires an authenticated session), so this must carry the caller's own access
+    // token like any other authenticated request. Still a hand-rolled fetch, not db.storage's
+    // .download(), for the same cache-busting reason as before (see comment above this function).
+    var url = SUPABASE_URL + '/storage/v1/object/' + CLOUD_BUCKET + '/' + CLOUD_FILE + '?_=' + Date.now();
+    return fetch(url, { cache: 'no-store', headers: { 'Authorization': 'Bearer ' + currentAccessToken, 'apikey': SUPABASE_ANON_KEY } }).then(function (res) {
       if (!res.ok) return { data: null, error: new Error('HTTP ' + res.status) };
       return res.text().then(function (text) { return { data: { text: function () { return Promise.resolve(text); } }, error: null }; });
     }).catch(function (err) { return { data: null, error: err }; });
+  }
+  // Private-bucket asset helpers (2026-08). Plain <img src="..."> / <a href="..."> can't carry an
+  // Authorization header, so anything the browser loads directly from Storage — letterhead image,
+  // issued-letter PDFs — must go through the authenticated SDK's .download() and be turned into a
+  // local blob: URL instead of pointing straight at the (now-private) object URL.
+  function storagePathFromValue(v) {
+    v = v || '';
+    // Old data saved before the bucket went private stored the full public URL — still understood
+    // here so existing letterhead/letter records keep working with zero data migration.
+    var marker = '/storage/v1/object/public/' + CLOUD_BUCKET + '/';
+    var idx = v.indexOf(marker);
+    return idx !== -1 ? v.slice(idx + marker.length) : v;
+  }
+  var letterheadBlobUrlCache = null, letterheadBlobUrlCachePath = null;
+  function getLetterheadBlobUrl() {
+    var path = storagePathFromValue(state.letterheadImageUrl);
+    if (!path || !db) return Promise.resolve('');
+    if (letterheadBlobUrlCachePath === path && letterheadBlobUrlCache) return Promise.resolve(letterheadBlobUrlCache);
+    return db.storage.from(CLOUD_BUCKET).download(path).then(function (res) {
+      if (res.error || !res.data) return '';
+      if (letterheadBlobUrlCache) URL.revokeObjectURL(letterheadBlobUrlCache);
+      letterheadBlobUrlCache = URL.createObjectURL(res.data);
+      letterheadBlobUrlCachePath = path;
+      return letterheadBlobUrlCache;
+    }).catch(function () { return ''; });
+  }
+  // Click handler for issued-letter PDF "⬇ ดาวน์โหลด" links (see renderLetterHistory-ish spots) —
+  // replaces a static <a href> that pointed straight at the (now-private) object URL.
+  function downloadLetterPdf(value) {
+    var path = storagePathFromValue(value);
+    if (!path || !db) return;
+    db.storage.from(CLOUD_BUCKET).download(path).then(function (res) {
+      if (res.error || !res.data) { alert('ดาวน์โหลดไม่สำเร็จ: ' + (res.error ? res.error.message : 'ไม่พบไฟล์')); return; }
+      var blobUrl = URL.createObjectURL(res.data);
+      var a = document.createElement('a');
+      a.href = blobUrl; a.download = path.split('/').pop(); a.target = '_blank';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(blobUrl); }, 30000);
+    }).catch(function (err) { alert('ดาวน์โหลดไม่สำเร็จ: ' + (err && err.message ? err.message : String(err))); });
   }
   function currentPayload() {
     return {
@@ -638,7 +752,10 @@
     // rarely enough that this doesn't need the full 3-way merge machinery orders/notes get. Falls
     // back to whatever's already local (never blank) if the snapshot predates this field existing.
     if (Array.isArray(data.smsTemplates) && data.smsTemplates.length) state.smsTemplates = data.smsTemplates;
-    if (data.letterheadImageUrl) state.letterheadImageUrl = data.letterheadImageUrl;
+    if (data.letterheadImageUrl && data.letterheadImageUrl !== state.letterheadImageUrl) {
+      state.letterheadImageUrl = data.letterheadImageUrl;
+      state.letterheadResolvedUrl = null; // another client changed it — stale cached blob: URL, re-resolve on next preview
+    }
     appliedPaymentKeys = {};
     rawKeys.forEach(function (k) { appliedPaymentKeys[k] = true; });
     lastServerSnapshot = { orders: rawOrders, customerNotes: rawNotes, customerTrackingReturn: rawTrackingReturn, customerTrackingReturnAt: rawTrackingReturnAt, appliedPaymentKeys: rawKeys };
@@ -740,10 +857,11 @@
       return (res.data || []).find(function (f) { return f.name === CLOUD_FILE; }) || null;
     });
   }
-  // Connect to the shared cloud state — open access, no password prompt. Stored as a file in
-  // Supabase Storage (not a jsonb column) because the real dataset (~15-20MB) blew past
-  // Postgres's statement_timeout for the anon role — Storage uploads skip the query engine
-  // entirely so they aren't subject to that limit.
+  // Connect to the shared cloud state — requires a signed-in staff session (2026-08 permission
+  // system; the bucket itself now denies anon reads via Storage RLS, see supabase-setup-auth.sql).
+  // Stored as a file in Supabase Storage (not a jsonb column) because the real dataset (~15-20MB)
+  // blew past Postgres's statement_timeout for the anon role — Storage uploads skip the query
+  // engine entirely so they aren't subject to that limit.
   function cloudConnect() {
     return findCloudFileMeta().then(function (item) {
       if (!item) { cloudConnected = true; cloudStatus = 'online'; cloudSaveNow(); return true; } // first-ever: seed the bucket
@@ -760,6 +878,76 @@
           return true;
         });
       });
+    });
+  }
+
+  // ---------- Staff auth ----------
+  // Fetches the caller's own staff_users row (self-select is allowed by RLS regardless of
+  // is_admin — see supabase-setup-auth.sql) and shapes it into state.currentUser. Returns a
+  // promise resolving to true/false so callers can decide whether to boot the app or show login.
+  function loadCurrentUserProfile(authUser) {
+    return db.from('staff_users').select('*').eq('id', authUser.id).then(function (res) {
+      if (res.error || !res.data || !res.data.length) {
+        // A real Auth account with no staff_users row (e.g. deleted profile, or auth signup that
+        // never got a row inserted) must not fall through to "logged in with zero permissions" —
+        // fail closed and force back to the login screen with a clear reason.
+        state.currentUser = null;
+        state.loginError = 'บัญชีนี้ไม่มีข้อมูลสิทธิ์การใช้งาน กรุณาติดต่อผู้ดูแลระบบ';
+        return false;
+      }
+      var row = res.data[0];
+      if (row.is_active === false) {
+        state.currentUser = null;
+        state.loginError = 'บัญชีนี้ถูกระงับการใช้งาน กรุณาติดต่อผู้ดูแลระบบ';
+        db.auth.signOut();
+        return false;
+      }
+      state.currentUser = {
+        id: row.id, email: row.email, displayName: row.display_name,
+        isAdmin: !!row.is_admin, isActive: row.is_active !== false,
+        permissions: Object.assign(emptyPermissions(), row.permissions || {})
+      };
+      return true;
+    }).catch(function () {
+      state.currentUser = null;
+      state.loginError = 'เชื่อมต่อระบบสิทธิ์การใช้งานไม่สำเร็จ ลองใหม่อีกครั้ง';
+      return false;
+    });
+  }
+  function handleLogin() {
+    var email = String(state.loginEmail || '').trim();
+    var password = String(state.loginPassword || '');
+    if (!email || !password) { state.loginError = 'กรอกอีเมลและรหัสผ่าน'; renderAuthGate(); return; }
+    state.loginBusy = true; state.loginError = ''; renderAuthGate();
+    db.auth.signInWithPassword({ email: email, password: password }).then(function (res) {
+      if (res.error) {
+        state.loginBusy = false;
+        state.loginError = res.error.message === 'Invalid login credentials' ? 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' : res.error.message;
+        renderAuthGate();
+        return;
+      }
+      // Set directly rather than relying on the onAuthStateChange listener (registered in
+      // initCloud()) having already fired by this point — bootApp() below can call
+      // downloadCloudFile() almost immediately, which needs this synchronously correct.
+      currentAccessToken = res.data && res.data.session ? res.data.session.access_token : currentAccessToken;
+      return loadCurrentUserProfile(res.data.user).then(function (ok) {
+        state.loginBusy = false;
+        if (ok) { state.loginPassword = ''; bootApp(); } else { db.auth.signOut(); renderAuthGate(); }
+      });
+    }).catch(function (err) {
+      state.loginBusy = false;
+      state.loginError = err && err.message ? err.message : 'เข้าสู่ระบบไม่สำเร็จ';
+      renderAuthGate();
+    });
+  }
+  function handleLogout() {
+    if (state.hasUnsavedChanges && !window.confirm('มีการแก้ไขที่ยังไม่ได้บันทึก ออกจากระบบตอนนี้จะเสียการแก้ไขนั้น — ดำเนินการต่อ?')) return;
+    stopCloudPolling();
+    db.auth.signOut().then(function () {
+      state.currentUser = null;
+      state.orders = []; state.customerNotes = {}; state.view = 'dashboard';
+      cloudConnected = false;
+      renderAuthGate();
     });
   }
   // True from the moment a local edit schedules a save until that save is confirmed to have
@@ -978,6 +1166,10 @@
     if (cloudPollTimer) clearInterval(cloudPollTimer);
     cloudPollTimer = setInterval(cloudPoll, CLOUD_POLL_MS);
   }
+  function stopCloudPolling() {
+    if (cloudPollTimer) clearInterval(cloudPollTimer);
+    cloudPollTimer = null;
+  }
 
   // ---------- SMS templates ----------
   // Thaibulksms's own "Template ข้อความ" feature (visible in their console when composing a
@@ -1001,6 +1193,17 @@
   // ---------- State ----------
   var state = {
     orders: repairStaleSampleOrders(repairOverpaidInstallments(repairAccessoryProductNames(repairDueDateSchedules(repairInvalidStatusOverrides((persisted && persisted.orders && persisted.orders.length) ? persisted.orders : generateMock()))))),
+    // Staff auth/permissions (2026-08). currentUser is null until a login succeeds — every render
+    // path that shows real data only ever runs after that, see bootApp()/renderAuthGate() at the
+    // bottom of this file.
+    currentUser: null,
+    loginEmail: '', loginPassword: '', loginError: '', loginBusy: false,
+    userMgmtList: null,       // cached staff_users rows for the "จัดการผู้ใช้งาน" screen (null = not loaded yet)
+    userMgmtError: '',
+    userMgmtEditing: null,    // id of the row currently open for edit, or 'new' for the create form
+    userMgmtDraft: null,      // { email, password, displayName, isAdmin, permissions } while creating/editing
+    userMgmtBusy: false,
+    letterheadResolvedUrl: null, // cached blob: URL for the settings-page letterhead preview (private bucket — see getLetterheadBlobUrl)
     query: '',
     selectedCustomerId: null,
     uploadMsgDebt: '',
@@ -2256,7 +2459,7 @@
   // WHOLE letter lands on a single page with real margin to spare; the original looser sizing
   // (16px/1.9 line-height/70px padding) ran past that budget and spilled an awkward, ugly page 2
   // (user report 2026-07-31, screenshot showed a mid-letter page-break artifact).
-  function buildLetterHtml(order, letterNo, snapshot, track) {
+  function buildLetterHtml(order, letterNo, snapshot, track, letterheadSrc) {
     var isAcc = track === 'accessory';
     // Accessory letters (2026-08-01) reference the accessory's OWN SO number/product, not the main
     // device's — a legal document must cite the correct SO it's actually demanding payment for.
@@ -2266,8 +2469,11 @@
     var docProductList = isAcc ? (order.accessoryProductList || order.productList) : order.productList;
     var now = new Date();
     var todayIso = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
-    var headerHtml = state.letterheadImageUrl
-      ? '<img src="' + state.letterheadImageUrl + '" style="width:100%; display:block; margin-bottom:18px;" />'
+    // letterheadSrc is a pre-resolved blob: URL (see issueLetter — the bucket is private now, so
+    // the caller must .download()+createObjectURL it before we ever get here; a plain state.letterheadImageUrl
+    // storage path wouldn't load as a bare <img src>).
+    var headerHtml = letterheadSrc
+      ? '<img src="' + letterheadSrc + '" style="width:100%; display:block; margin-bottom:18px;" />'
       : '<div style="font-weight:700; font-size:17px; margin-bottom:6px;">บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด</div><div style="height:2px; background:#1f3a5f; margin-bottom:18px;"></div>';
     return '<div style="width:794px; box-sizing:border-box; padding:42px 55px; background:#ffffff; font-family:\'Sarabun\',\'Noto Sans Thai\',\'Leelawadee UI\',sans-serif; color:#1c1b19; font-size:14px; line-height:1.55;">' +
       headerHtml +
@@ -2321,7 +2527,12 @@
     render();
     db.storage.from(CLOUD_BUCKET).upload(path, file, { upsert: true, contentType: file.type, cacheControl: '0' }).then(function (res) {
       if (res.error) throw res.error;
-      state.letterheadImageUrl = SUPABASE_URL + '/storage/v1/object/public/' + CLOUD_BUCKET + '/' + path;
+      // Bare storage path, not a public URL — the bucket is private (2026-08 permission system),
+      // so a plain URL would 403 for everyone regardless of login. storagePathFromValue() also
+      // still understands the OLD full-URL shape already saved in existing datasets, so nothing
+      // needs a one-time data migration; both shapes keep working side by side going forward.
+      state.letterheadImageUrl = path;
+      state.letterheadResolvedUrl = null; // stale cache — next render re-resolves the new image
       state.hasUnsavedChanges = true;
       state.uploadMsgLetterhead = '✅ อัปโหลดหัวฟอร์มสำเร็จ — ต้องกด "บันทึกการเปลี่ยนแปลง" ด้วยเพื่อบันทึกถาวร';
       render();
@@ -2391,13 +2602,16 @@
     if (!window.confirm(confirmMsg)) return;
     state.letterIssuing = orderId + '|' + (track || 'main');
     render();
-    var container = document.createElement('div');
-    container.style.cssText = 'position:fixed; left:-99999px; top:0; z-index:-1;';
-    container.innerHTML = buildLetterHtml(cvOrder, letterNo, snapshot, track);
-    document.body.appendChild(container);
-    var imgEl = container.querySelector('img');
-    var ready = (imgEl && !imgEl.complete) ? new Promise(function (res) { imgEl.onload = res; imgEl.onerror = res; }) : Promise.resolve();
-    ready
+    var container;
+    getLetterheadBlobUrl()
+      .then(function (letterheadSrc) {
+        container = document.createElement('div');
+        container.style.cssText = 'position:fixed; left:-99999px; top:0; z-index:-1;';
+        container.innerHTML = buildLetterHtml(cvOrder, letterNo, snapshot, track, letterheadSrc);
+        document.body.appendChild(container);
+        var imgEl = container.querySelector('img');
+        return (imgEl && !imgEl.complete) ? new Promise(function (res) { imgEl.onload = res; imgEl.onerror = res; }) : Promise.resolve();
+      })
       .then(function () { return window.html2canvas(container, { scale: 2, useCORS: true, backgroundColor: '#ffffff' }); })
       .then(function (canvas) {
         var pdf = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4' });
@@ -2426,8 +2640,11 @@
         });
       })
       .then(function (path) {
-        var url = SUPABASE_URL + '/storage/v1/object/public/' + CLOUD_BUCKET + '/' + path;
-        var entry = { no: letterNo, at: nowTimestamp(), url: url, overdueCount: snapshot.overdueCount, amountDisp: snapshot.amountDisp, dueDate: snapshot.dueDate };
+        // Bare storage path, not a public URL (bucket is private — see downloadLetterPdf, which
+        // resolves this into a fresh blob: URL on click; storagePathFromValue() still understands
+        // OLD entries that already have a full public URL saved, so history issued before this
+        // change keeps downloading fine too).
+        var entry = { no: letterNo, at: nowTimestamp(), url: path, overdueCount: snapshot.overdueCount, amountDisp: snapshot.amountDisp, dueDate: snapshot.dueDate };
         var newHistory = existing
           ? history.map(function (h) { return h.no === letterNo ? entry : h; })
           : history.concat([entry]);
@@ -2439,8 +2656,10 @@
       })
       .catch(function (err) {
         state.letterIssuing = null;
-        if (container.parentNode) document.body.removeChild(container);
-        window.alert('เกิดข้อผิดพลาดขณะออกเอกสาร: ' + err.message);
+        // container may still be undefined if getLetterheadBlobUrl's own .then() never ran (it
+        // always resolves rather than rejects, but a defensive check costs nothing here).
+        if (container && container.parentNode) document.body.removeChild(container);
+        window.alert('เกิดข้อผิดพลาดขณะออกเอกสาร: ' + (err && err.message ? err.message : String(err)));
         render();
       });
   }
@@ -2486,13 +2705,26 @@
     state.emailModalSending = true;
     render();
     var docOrderId = track === 'accessory' ? (order.accessoryOrderId || order.orderId) : order.orderId;
-    fetch('/api/send-email', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        to: to, orderId: docOrderId, letterNo: entry.no, pdfLink: entry.url,
-        customerName: order.customerName, amount: entry.amountDisp, dueDate: fmtDate(entry.dueDate)
-      })
+    // The customer receiving this email has no login (they're not staff) and never will — a bare
+    // storage path or a plain object URL is useless to them now that the bucket is private
+    // (2026-08 permission system). A signed URL is the correct private-bucket answer for exactly
+    // this case: it works with zero auth, just a time-limited token baked into the URL itself, so
+    // the bucket doesn't need to be public for this one legitimate outsider-facing use. 30-day
+    // expiry — long enough to be useful for a collection letter someone might revisit, short enough
+    // that an old email sitting in an inbox doesn't stay a permanent unauthenticated door in.
+    (db
+      ? db.storage.from(CLOUD_BUCKET).createSignedUrl(storagePathFromValue(entry.url), 30 * 24 * 3600)
+      : Promise.resolve({ data: null, error: new Error('ยังไม่ได้เชื่อมต่อฐานข้อมูลกลาง') })
+    ).then(function (signRes) {
+      if (signRes.error || !signRes.data) throw (signRes.error || new Error('สร้างลิงก์ดาวน์โหลดไม่สำเร็จ'));
+      return fetch('/api/send-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: to, orderId: docOrderId, letterNo: entry.no, pdfLink: signRes.data.signedUrl,
+          customerName: order.customerName, amount: entry.amountDisp, dueDate: fmtDate(entry.dueDate)
+        })
+      });
     })
       .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
       .then(function (r) {
@@ -3159,7 +3391,7 @@
       trackingHistoryList(letterHistory, function (h) {
         return '<div style="background:rgba(179,38,30,0.05); border:1px solid rgba(179,38,30,0.12); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' +
           '<div style="font-weight:700; color:#b3261e; margin-bottom:2px;">🕐 ' + esc(h.at) + ' · ครั้งที่ ' + h.no + '</div>' +
-          '<div style="color:#6b6785;">฿' + esc(h.amountDisp) + ' (' + h.overdueCount + ' งวด) · <a href="' + esc(h.url) + '" target="_blank" rel="noopener" style="color:#7c5cff; font-weight:600; text-decoration:none;">⬇ ดาวน์โหลด</a></div>' +
+          '<div style="color:#6b6785;">฿' + esc(h.amountDisp) + ' (' + h.overdueCount + ' งวด) · <span data-action="downloadLetterPdf" data-path="' + esc(h.url) + '" style="color:#7c5cff; font-weight:600; cursor:pointer;">⬇ ดาวน์โหลด</span></div>' +
         '</div>';
       }) +
       emailHistoryHtml;
@@ -4081,8 +4313,177 @@
       '<div style="position:absolute; inset:' + inset + 'px; background:#fbfaff; border-radius:50%;"></div></div>';
   }
 
+  // ---------- Staff user management (admin-only) ----------
+  function loadStaffUsersList() {
+    db.from('staff_users').select('*').order('created_at', { ascending: true }).then(function (res) {
+      if (res.error) { state.userMgmtError = res.error.message; state.userMgmtList = []; render(); return; }
+      state.userMgmtList = res.data || [];
+      state.userMgmtError = '';
+      render();
+    }).catch(function (err) {
+      state.userMgmtError = err && err.message ? err.message : String(err);
+      state.userMgmtList = [];
+      render();
+    });
+  }
+  function openNewStaffUser() {
+    state.userMgmtEditing = 'new';
+    state.userMgmtDraft = { email: '', password: '', displayName: '', isAdmin: false, isActive: true, permissions: emptyPermissions() };
+    state.userMgmtError = '';
+    render();
+  }
+  function openEditStaffUser(uid) {
+    var row = (state.userMgmtList || []).find(function (r) { return r.id === uid; });
+    if (!row) return;
+    state.userMgmtEditing = uid;
+    state.userMgmtDraft = {
+      email: row.email, newPassword: '', displayName: row.display_name,
+      isAdmin: !!row.is_admin, isActive: row.is_active !== false,
+      permissions: Object.assign(emptyPermissions(), row.permissions || {})
+    };
+    state.userMgmtError = '';
+    render();
+  }
+  function closeStaffUserForm() {
+    state.userMgmtEditing = null;
+    state.userMgmtDraft = null;
+    state.userMgmtError = '';
+    render();
+  }
+  // Every call carries the CALLER's own access token — /api/staff-admin re-verifies it's a live
+  // session belonging to an active admin server-side before doing anything (see that file). This
+  // token is never a secret the client needs to protect beyond normal session handling; the real
+  // secret (service role key) never leaves the server.
+  function staffApiCall(action, payload) {
+    return fetch('/api/staff-admin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + currentAccessToken },
+      body: JSON.stringify({ action: action, payload: payload })
+    }).then(function (res) {
+      return res.json().catch(function () { return null; }).then(function (body) { return { ok: res.ok, body: body }; });
+    });
+  }
+  function saveStaffUserForm() {
+    var d = state.userMgmtDraft;
+    if (!d) return;
+    if (state.userMgmtEditing === 'new') {
+      if (!d.email || !d.displayName) { state.userMgmtError = 'กรอกอีเมลและชื่อให้ครบ'; render(); return; }
+      if (!d.password || d.password.length < 8) { state.userMgmtError = 'รหัสผ่านต้องยาวอย่างน้อย 8 ตัวอักษร'; render(); return; }
+      state.userMgmtBusy = true; state.userMgmtError = ''; render();
+      staffApiCall('create', { email: d.email, password: d.password, displayName: d.displayName, isAdmin: d.isAdmin, permissions: d.permissions }).then(function (r) {
+        state.userMgmtBusy = false;
+        if (!r.ok) { state.userMgmtError = (r.body && r.body.error) || 'สร้างบัญชีไม่สำเร็จ'; render(); return; }
+        state.userMgmtEditing = null; state.userMgmtDraft = null; state.userMgmtList = null; render();
+      }).catch(function (err) { state.userMgmtBusy = false; state.userMgmtError = err && err.message ? err.message : String(err); render(); });
+      return;
+    }
+    var uid = state.userMgmtEditing;
+    state.userMgmtBusy = true; state.userMgmtError = ''; render();
+    staffApiCall('update', { userId: uid, displayName: d.displayName, isAdmin: d.isAdmin, permissions: d.permissions, isActive: d.isActive }).then(function (r) {
+      if (!r.ok) { state.userMgmtBusy = false; state.userMgmtError = (r.body && r.body.error) || 'บันทึกไม่สำเร็จ'; render(); return; }
+      if (d.newPassword) {
+        return staffApiCall('setPassword', { userId: uid, newPassword: d.newPassword }).then(function (r2) {
+          state.userMgmtBusy = false;
+          if (!r2.ok) { state.userMgmtError = (r2.body && r2.body.error) || 'บันทึกสิทธิ์แล้ว แต่ตั้งรหัสผ่านใหม่ไม่สำเร็จ'; render(); return; }
+          state.userMgmtEditing = null; state.userMgmtDraft = null; state.userMgmtList = null; render();
+        });
+      }
+      state.userMgmtBusy = false;
+      state.userMgmtEditing = null; state.userMgmtDraft = null; state.userMgmtList = null; render();
+    }).catch(function (err) { state.userMgmtBusy = false; state.userMgmtError = err && err.message ? err.message : String(err); render(); });
+  }
+  function quickToggleStaffActive(uid, makeActive) {
+    if (uid === state.currentUser.id) { alert('ปิดใช้งานบัญชีตัวเองไม่ได้'); return; }
+    if (!window.confirm(makeActive ? 'เปิดใช้งานบัญชีนี้อีกครั้ง?' : 'ระงับการใช้งานบัญชีนี้? (ผู้ใช้จะเข้าระบบไม่ได้ทันที)')) return;
+    staffApiCall('update', { userId: uid, isActive: makeActive }).then(function (r) {
+      if (!r.ok) { alert((r.body && r.body.error) || 'ทำรายการไม่สำเร็จ'); return; }
+      state.userMgmtList = null; render();
+    }).catch(function (err) { alert(err && err.message ? err.message : String(err)); });
+  }
+  function renderStaffUserForm() {
+    var d = state.userMgmtDraft;
+    var isNew = state.userMgmtEditing === 'new';
+    var permRows = PERMISSION_CATALOG.map(function (p) {
+      return '<label style="display:flex; align-items:flex-start; gap:10px; padding:9px 0; border-bottom:1px solid rgba(124,92,255,0.08); cursor:pointer;">' +
+        '<input type="checkbox" data-action="toggleStaffDraftPermission" data-perm="' + esc(p.key) + '"' + (d.permissions[p.key] ? ' checked' : '') + ' style="margin-top:3px; flex-shrink:0;" />' +
+        '<div><div style="font-size:13.5px; font-weight:600; color:#2b2540;">' + esc(p.label) + '</div><div style="font-size:11.5px; color:#8a86a3;">' + esc(p.desc) + '</div></div>' +
+      '</label>';
+    }).join('');
+    return '<div style="position:fixed; inset:0; z-index:9999; background:rgba(43,37,64,0.35); display:flex; align-items:center; justify-content:center; padding:20px;">' +
+      '<div style="max-width:480px; width:100%; max-height:90vh; overflow-y:auto; background:#fff; border-radius:20px; padding:26px 26px 22px; box-shadow:0 24px 60px rgba(43,37,64,0.3);">' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#2b2540; margin-bottom:18px;">' + (isNew ? '👤 เพิ่มผู้ใช้งานใหม่' : '✏️ แก้ไขผู้ใช้งาน') + '</div>' +
+        (state.userMgmtError ? '<div style="background:rgba(224,49,49,0.08); color:#e03131; border-radius:10px; padding:10px 14px; font-size:13px; margin-bottom:16px;">⚠️ ' + esc(state.userMgmtError) + '</div>' : '') +
+        '<div style="margin-bottom:12px;"><div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:6px;">ชื่อที่แสดง</div><input type="text" value="' + esc(d.displayName) + '" data-action="staffDraftField" data-field="displayName" style="width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); font-size:14px; outline:none;" /></div>' +
+        (isNew
+          ? '<div style="margin-bottom:12px;"><div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:6px;">อีเมล (ใช้ล็อกอิน)</div><input type="email" value="' + esc(d.email) + '" data-action="staffDraftField" data-field="email" style="width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); font-size:14px; outline:none;" /></div>' +
+            '<div style="margin-bottom:16px;"><div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:6px;">รหัสผ่านเริ่มต้น (อย่างน้อย 8 ตัวอักษร)</div><input type="text" value="' + esc(d.password) + '" data-action="staffDraftField" data-field="password" style="width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); font-size:14px; outline:none;" /></div>'
+          : '<div style="margin-bottom:6px; font-size:12px; color:#6b6785;">อีเมล: <b style="color:#2b2540;">' + esc(d.email) + '</b></div>' +
+            '<div style="margin-bottom:16px;"><div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:6px;">ตั้งรหัสผ่านใหม่ (เว้นว่าง = ไม่เปลี่ยน)</div><input type="text" value="' + esc(d.newPassword || '') + '" data-action="staffDraftField" data-field="newPassword" placeholder="อย่างน้อย 8 ตัวอักษร" style="width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); font-size:14px; outline:none;" /></div>' +
+            '<label style="display:flex; align-items:center; gap:8px; margin-bottom:16px; cursor:pointer;"><input type="checkbox" data-action="toggleStaffDraftActive"' + (d.isActive ? ' checked' : '') + ' /><span style="font-size:13.5px; font-weight:600; color:#2b2540;">เปิดใช้งานบัญชีนี้</span></label>') +
+        '<label style="display:flex; align-items:center; gap:8px; margin-bottom:6px; cursor:pointer; padding:10px 12px; background:rgba(124,92,255,0.06); border-radius:10px;"><input type="checkbox" data-action="toggleStaffDraftAdmin"' + (d.isAdmin ? ' checked' : '') + ' /><span style="font-size:13.5px; font-weight:700; color:#2b2540;">ผู้ดูแลระบบ (Admin — สิทธิ์เต็มทุกเมนู รวมถึงจัดการผู้ใช้งาน)</span></label>' +
+        (d.isAdmin ? '' :
+          '<div style="font-size:12px; color:#6b6785; font-weight:600; margin:14px 0 4px;">สิทธิ์การใช้งานรายเมนู</div>' + permRows) +
+        '<div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">' +
+          '<div data-action="closeStaffUserForm" style="padding:11px 20px; border-radius:10px; color:#6b6785; font-size:13.5px; font-weight:600; cursor:pointer;">ยกเลิก</div>' +
+          '<div data-action="saveStaffUser" style="background:' + (state.userMgmtBusy ? '#a8a4bf' : '#2b2540') + '; color:#fff; padding:11px 22px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer;">' + (state.userMgmtBusy ? 'กำลังบันทึก…' : 'บันทึก') + '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
+  function renderUserManagement() {
+    if (!(state.currentUser && state.currentUser.isAdmin)) {
+      return '<div style="padding:60px 20px; text-align:center; color:#8a86a3; font-size:14px;">🔒 ต้องเป็นผู้ดูแลระบบ (Admin) เท่านั้นจึงจะเข้าเมนูนี้ได้</div>';
+    }
+    if (state.userMgmtList === null) {
+      loadStaffUsersList();
+      return '<div style="padding:60px 20px; text-align:center; color:#8a86a3; font-size:14px;">⏳ กำลังโหลดรายชื่อผู้ใช้งาน…</div>';
+    }
+    var rows = state.userMgmtList || [];
+    var rowsHtml = rows.length ? rows.map(function (r) {
+      var perms = r.is_admin ? [] : PERMISSION_CATALOG.filter(function (p) { return r.permissions && r.permissions[p.key]; });
+      var badges = r.is_admin
+        ? '<span style="background:rgba(124,92,255,0.14); color:#7c5cff; padding:3px 10px; border-radius:20px; font-size:11px; font-weight:700;">Admin — สิทธิ์เต็ม</span>'
+        : (perms.length ? perms.map(function (p) { return '<span style="background:rgba(18,184,134,0.10); color:#0b7a5b; padding:2px 8px; border-radius:20px; font-size:10.5px; font-weight:600; white-space:nowrap;">' + esc(p.label) + '</span>'; }).join(' ') : '<span style="color:#a8a4bf; font-size:11.5px;">ไม่มีสิทธิ์ใดเลย</span>');
+      var active = r.is_active !== false;
+      return '<div style="background:#fff; border:1px solid rgba(124,92,255,0.14); border-left:4px solid ' + (active ? '#12b886' : '#e03131') + '; border-radius:14px; padding:14px 18px; display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin-bottom:10px;">' +
+        '<div style="min-width:160px;"><div style="font-weight:700; font-size:14px; color:#2b2540;">' + esc(r.display_name) + (active ? '' : ' <span style="color:#e03131; font-size:11px; font-weight:600;">(ระงับใช้งาน)</span>') + '</div><div style="font-size:12px; color:#8a86a3;">' + esc(r.email) + '</div></div>' +
+        '<div style="flex:1; min-width:200px; display:flex; gap:6px; flex-wrap:wrap;">' + badges + '</div>' +
+        '<div style="display:flex; gap:8px; flex-shrink:0;">' +
+          '<div data-action="editStaffUser" data-uid="' + esc(r.id) + '" style="cursor:pointer; border:1px solid rgba(124,92,255,0.3); color:#7c5cff; padding:6px 14px; border-radius:8px; font-size:12.5px; font-weight:600;">แก้ไข</div>' +
+          (active
+            ? '<div data-action="deactivateStaffUser" data-uid="' + esc(r.id) + '" style="cursor:pointer; border:1px solid rgba(224,49,49,0.3); color:#e03131; padding:6px 14px; border-radius:8px; font-size:12.5px; font-weight:600;">ระงับ</div>'
+            : '<div data-action="activateStaffUser" data-uid="' + esc(r.id) + '" style="cursor:pointer; border:1px solid rgba(18,184,134,0.3); color:#0b7a5b; padding:6px 14px; border-radius:8px; font-size:12.5px; font-weight:600;">เปิดใช้งาน</div>') +
+        '</div>' +
+      '</div>';
+    }).join('') : '<div style="padding:30px; text-align:center; color:#8a86a3;">ยังไม่มีบัญชีผู้ใช้งาน</div>';
+    return '<div>' +
+      '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px; flex-wrap:wrap; gap:12px;">' +
+        '<div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:20px; color:#2b2540;">จัดการผู้ใช้งาน</div><div style="font-size:12.5px; color:#8a86a3;">Admin เท่านั้นที่สร้าง/แก้ไขบัญชีได้ — กำหนดสิทธิ์ได้ละเอียดรายเมนู</div></div>' +
+        '<div data-action="newStaffUser" style="cursor:pointer; background:#7c5cff; color:#fff; padding:11px 20px; border-radius:10px; font-size:13.5px; font-weight:700; white-space:nowrap;">+ เพิ่มผู้ใช้งาน</div>' +
+      '</div>' +
+      (state.userMgmtError && !state.userMgmtEditing ? '<div style="background:rgba(224,49,49,0.08); color:#e03131; border-radius:10px; padding:10px 14px; font-size:13px; margin-bottom:16px;">⚠️ ' + esc(state.userMgmtError) + '</div>' : '') +
+      rowsHtml +
+    '</div>' + (state.userMgmtEditing ? renderStaffUserForm() : '');
+  }
+
   // ---------- Render: Upload view ----------
+  // Lazily resolves state.letterheadImageUrl (a storage path, private bucket) into a blob: URL for
+  // the settings-page preview — same pattern as state.userMgmtList's lazy load below: render a
+  // placeholder on first pass, kick off the async resolve, re-render once it lands.
+  function renderLetterheadPreview() {
+    if (state.letterheadResolvedUrl) {
+      return '<img src="' + esc(state.letterheadResolvedUrl) + '" style="max-width:100%; max-height:110px; display:block; margin-bottom:14px; border:1px solid rgba(124,92,255,0.15); border-radius:8px;" />';
+    }
+    getLetterheadBlobUrl().then(function (url) {
+      if (url) { state.letterheadResolvedUrl = url; render(); }
+    });
+    return '<div style="height:60px; display:flex; align-items:center; color:#8a86a3; font-size:12.5px; margin-bottom:14px;">⏳ กำลังโหลดรูปหัวฟอร์ม…</div>';
+  }
   function renderUpload() {
+    // Extra guard beyond hiding the nav item / gating the goUpload click handler — a state.view
+    // change from anywhere else (e.g. devtools) must still not render this view's content for
+    // someone without the permission.
+    if (!can('upload_files')) return '<div style="padding:60px 20px; text-align:center; color:#8a86a3; font-size:14px;">🔒 คุณไม่มีสิทธิ์เข้าเมนูนี้</div>';
     var card = function (title, desc, tmplType, inputId, action, msg) {
       return '<div style="background:rgba(255,255,255,0.55); backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.8); border-radius:20px; padding:22px 24px; box-shadow:0 8px 30px rgba(124,92,255,0.10);">' +
         '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; gap:10px; flex-wrap:wrap;">' +
@@ -4136,7 +4537,7 @@
       '<div style="background:rgba(255,255,255,0.55); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.8); border-radius:20px; padding:22px 24px; box-shadow:0 8px 30px rgba(124,92,255,0.10);">' +
         '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:16px; color:#2b2540; margin-bottom:10px;">🖼 หัวฟอร์มจดหมายทวงถามหนี้</div>' +
         '<div style="font-size:12.5px; color:#6b6785; margin-bottom:14px; line-height:1.6;">รูปหัวกระดาษ (โลโก้+ที่อยู่บริษัท) ที่จะแทรกบนสุดของ PDF จดหมายทวงถามหนี้ทุกฉบับ — อัปโหลดครั้งเดียวใช้ได้กับทุก SO<br><span style="color:#0b7a5b;">ยังไม่อัปโหลด: จะใช้ชื่อบริษัทแบบตัวอักษรธรรมดาแทนไปก่อน</span></div>' +
-        (state.letterheadImageUrl ? '<img src="' + esc(state.letterheadImageUrl) + '" style="max-width:100%; max-height:110px; display:block; margin-bottom:14px; border:1px solid rgba(124,92,255,0.15); border-radius:8px;" />' : '') +
+        (state.letterheadImageUrl ? renderLetterheadPreview() : '') +
         '<label for="letterheadFileInputTop" style="display:inline-flex; align-items:center; gap:8px; background:linear-gradient(135deg,#7c5cff,#6647e0); color:#fff; padding:10px 20px; border-radius:12px; font-size:14px; font-weight:600; cursor:pointer; box-shadow:0 6px 16px rgba(124,92,255,0.35);">⬆ ' + (state.letterheadImageUrl ? 'เปลี่ยนรูปหัวฟอร์ม' : 'อัปโหลดรูปหัวฟอร์ม') + '</label>' +
         '<input id="letterheadFileInputTop" type="file" accept="image/*" data-action="onLetterheadFile" style="display:none;" />' +
         (state.uploadMsgLetterhead ? '<div style="margin-top:10px; font-size:13px; color:' + (state.uploadMsgLetterhead.indexOf('⚠️') >= 0 ? '#a5620d' : '#4b3fa0') + '; white-space:pre-line; line-height:1.65;">' + esc(state.uploadMsgLetterhead) + '</div>' : '') +
@@ -4610,6 +5011,8 @@
     '</div>';
   }
   function renderTracking() {
+    // Same extra guard as renderUpload() — see comment there.
+    if (!can('tracking_view')) return '<div style="padding:60px 20px; text-align:center; color:#8a86a3; font-size:14px;">🔒 คุณไม่มีสิทธิ์เข้าเมนูนี้</div>';
     var html = '<div>' + renderPendingSmsBanner();
 
     // Search card
@@ -5227,10 +5630,49 @@
     return '<div id="' + id + '" data-action="' + action + '" style="cursor:pointer; display:flex; align-items:center; gap:12px; padding:12px 14px; border-radius:12px; font-weight:600; font-size:14px;">' +
       '<div style="width:20px; height:20px; display:flex; align-items:center; justify-content:center; flex-shrink:0; position:relative;">' + iconHtml + '</div>' + label + '</div>';
   }
+  // ---------- Login gate ----------
+  // Rendered straight into #app, bypassing buildShell() entirely — no nav, no cloud status pill,
+  // nothing that implies data is loaded, because none is: cloudConnect()/state.orders are never
+  // touched until AFTER a successful login (see boot sequence at the bottom of this file).
+  function renderAuthGate() {
+    document.getElementById('app').innerHTML =
+      '<div style="min-height:100vh; display:flex; align-items:center; justify-content:center; background:linear-gradient(160deg, #f3f1fb 0%, #eef2fb 45%, #f6f4fd 100%); padding:20px; box-sizing:border-box;">' +
+        '<div style="width:100%; max-width:380px; background:#fff; border-radius:20px; padding:32px 28px; box-shadow:0 24px 60px rgba(43,37,64,0.12);">' +
+          '<div style="display:flex; align-items:center; gap:10px; margin-bottom:22px;">' +
+            '<div style="width:38px; height:38px; border-radius:11px; background:linear-gradient(135deg,#7c5cff,#6647e0); display:flex; align-items:center; justify-content:center; flex-shrink:0; box-shadow:0 6px 16px rgba(124,92,255,0.35); gap:3px;"><div style="width:3px; height:10px; border-radius:2px; background:rgba(255,255,255,0.65);"></div><div style="width:3px; height:16px; border-radius:2px; background:#fff;"></div><div style="width:3px; height:12px; border-radius:2px; background:rgba(255,255,255,0.85);"></div></div>' +
+            '<div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:15px; color:#2b2540; line-height:1.3;">ระบบติดตามหนี้และผ่อนชำระ</div><div style="font-size:11px; color:#a8a4bf;">เข้าสู่ระบบด้วยบัญชีพนักงาน</div></div>' +
+          '</div>' +
+          (state.loginError ? '<div style="background:rgba(224,49,49,0.08); color:#e03131; border-radius:10px; padding:10px 14px; font-size:13px; margin-bottom:16px;">⚠️ ' + esc(state.loginError) + '</div>' : '') +
+          '<div style="margin-bottom:14px;"><div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:6px;">อีเมล</div><input type="email" value="' + esc(state.loginEmail || '') + '" data-action="loginEmail" placeholder="name@company.com" style="width:100%; box-sizing:border-box; padding:10px 14px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); font-size:14px; color:#2b2540; outline:none;" /></div>' +
+          '<div style="margin-bottom:20px;"><div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:6px;">รหัสผ่าน</div><input type="password" value="' + esc(state.loginPassword || '') + '" data-action="loginPassword" data-enter-action="loginSubmit" placeholder="••••••••" style="width:100%; box-sizing:border-box; padding:10px 14px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); font-size:14px; color:#2b2540; outline:none;" /></div>' +
+          '<div data-action="loginSubmit" style="background:' + (state.loginBusy ? '#a8a4bf' : '#7c5cff') + '; color:#fff; text-align:center; padding:12px; border-radius:10px; font-size:14px; font-weight:700; cursor:' + (state.loginBusy ? 'default' : 'pointer') + ';">' + (state.loginBusy ? 'กำลังเข้าสู่ระบบ…' : 'เข้าสู่ระบบ') + '</div>' +
+          '<div style="text-align:center; font-size:12px; color:#a8a4bf; margin-top:16px;">ลืมรหัสผ่าน หรือยังไม่มีบัญชี? ติดต่อผู้ดูแลระบบ</div>' +
+        '</div>' +
+      '</div>';
+  }
+
   function buildShell() {
     var dashIcon = '<div style="display:grid; grid-template-columns:1fr 1fr; gap:2px; width:14px; height:14px;"><div style="background:currentColor; border-radius:2px;"></div><div style="background:currentColor; border-radius:2px; opacity:0.55;"></div><div style="background:currentColor; border-radius:2px; opacity:0.55;"></div><div style="background:currentColor; border-radius:2px;"></div></div>';
     var trackIcon = '<div style="width:11px; height:11px; border:2px solid currentColor; border-radius:50%; box-sizing:border-box; position:absolute; top:3px; left:3px;"></div><div style="position:absolute; width:2px; height:6px; background:currentColor; border-radius:1px; transform:rotate(-45deg); right:2px; bottom:2px;"></div>';
     var uploadIcon = '<div style="width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-bottom:5px solid currentColor;"></div><div style="width:3px; height:5px; background:currentColor;"></div><div style="width:12px; height:2px; background:currentColor; border-radius:1px; margin-top:1px;"></div>';
+    var usersIcon = '<div style="width:9px; height:9px; border-radius:50%; border:2px solid currentColor; box-sizing:border-box; position:absolute; top:1px; left:5.5px;"></div><div style="width:16px; height:8px; border-radius:8px 8px 0 0; border:2px solid currentColor; border-bottom:none; box-sizing:border-box; position:absolute; bottom:0; left:1px;"></div>';
+
+    // Nav items are permission-gated (2026-08) — a staff account without a given permission never
+    // even sees the tab, not just gets denied after clicking it (the click-switch guards in
+    // initEvents are the real enforcement; hiding the tab is just not dangling an option nobody
+    // can use in front of them).
+    var navTracking = can('tracking_view') ? navItem('tab-tracking', 'goTracking', trackIcon, 'ติดตามหนี้') : '';
+    var navUpload = can('upload_files') ? navItem('tab-upload', 'goUpload', uploadIcon, 'อัพโหลดไฟล์') : '';
+    var navUsers = (state.currentUser && state.currentUser.isAdmin) ? navItem('tab-users', 'goUsers', usersIcon, 'จัดการผู้ใช้งาน') : '';
+    var userChip = state.currentUser ? (
+      '<div style="display:flex; align-items:center; gap:8px; font-size:12px; color:#6b6785; padding:6px 6px 6px 12px;">' +
+        '<div>' +
+          '<div style="font-weight:700; color:#2b2540; white-space:nowrap;">' + esc(state.currentUser.displayName) + (state.currentUser.isAdmin ? ' <span style="color:#7c5cff;">(Admin)</span>' : '') + '</div>' +
+          '<div style="font-size:10.5px; white-space:nowrap;">' + esc(state.currentUser.email) + '</div>' +
+        '</div>' +
+        '<div data-action="logout" title="ออกจากระบบ" style="cursor:pointer; color:#e03131; font-weight:600; padding:6px 10px; border-radius:8px; white-space:nowrap;">ออกจากระบบ</div>' +
+      '</div>'
+    ) : '';
 
     // Horizontal top bar instead of a left sidebar — frees up screen width for the wide
     // installment table (many columns) so it needs less horizontal scrolling.
@@ -5240,11 +5682,11 @@
         '<div style="min-width:0;"><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:13.5px; color:#2b2540; line-height:1.3; white-space:nowrap;">ระบบติดตามหนี้และผ่อนชำระ</div><div style="font-size:10px; color:#a8a4bf; line-height:1.2; white-space:nowrap;">v' + esc(APP_BUILD) + '</div></div>' +
       '</div>' +
       navItem('tab-dashboard', 'goDashboard', dashIcon.replace('position:relative;', ''), 'Dashboard') +
-      navItem('tab-tracking', 'goTracking', trackIcon, 'ติดตามหนี้') +
-      navItem('tab-upload', 'goUpload', uploadIcon, 'อัพโหลดไฟล์') +
+      navTracking + navUpload + navUsers +
       '<div style="flex:1;"></div>' +
       datasetSwitcher() +
       '<div id="cloudStatusPill">' + cloudStatusPillInner() + '</div>' +
+      userChip +
     '</div>';
 
     document.getElementById('app').innerHTML =
@@ -5259,7 +5701,7 @@
 
   // ---------- Render ----------
   function updateTabStyles() {
-    var tabs = [['tab-dashboard', 'dashboard'], ['tab-tracking', 'tracking'], ['tab-upload', 'upload']];
+    var tabs = [['tab-dashboard', 'dashboard'], ['tab-tracking', 'tracking'], ['tab-upload', 'upload'], ['tab-users', 'users']];
     tabs.forEach(function (t) {
       var el = document.getElementById(t[0]);
       if (!el) return;
@@ -5281,6 +5723,7 @@
     var inner = document.getElementById('main-inner');
     if (state.view === 'upload') inner.innerHTML = renderUpload();
     else if (state.view === 'tracking') inner.innerHTML = renderTracking();
+    else if (state.view === 'users') inner.innerHTML = renderUserManagement();
     else inner.innerHTML = renderDashboard();
     updateTabStyles();
     if (modalScrollTop !== null) {
@@ -5305,9 +5748,12 @@
       var t = e.target.closest('[data-action]');
       if (!t) return;
       var a = t.getAttribute('data-action');
+      if (!actionAllowed(a)) { denyToast(); return; }
       switch (a) {
         case 'goDashboard': if (confirmDiscardIfDirty()) { state.view = 'dashboard'; render(); } break;
-        case 'goTracking': if (confirmDiscardIfDirty()) { state.view = 'tracking'; render(); } break;
+        case 'goTracking': if (!can('tracking_view')) { denyToast(); return; } if (confirmDiscardIfDirty()) { state.view = 'tracking'; render(); } break;
+        case 'goUsers': if (!(state.currentUser && state.currentUser.isAdmin)) { denyToast(); return; } state.view = 'users'; render(); break;
+        case 'logout': handleLogout(); break;
         // No confirmDiscardIfDirty() guard here (unlike goDashboard/goTracking): uploads always
         // save immediately regardless of manual-save mode, and a pending edit sitting in
         // state.orders rides along safely into that save rather than needing to be discarded
@@ -5315,7 +5761,7 @@
         // tab, which silently wiped the pending edit AND could race the debounced cloud save of a
         // just-completed import if the discard landed before that save's 600ms+ round trip (~20MB
         // payload) finished. See [[project-debt-tracker-site]] memory, 2026-07-31.
-        case 'goUpload': state.view = 'upload'; render(); break;
+        case 'goUpload': if (!can('upload_files')) { denyToast(); return; } state.view = 'upload'; render(); break;
         case 'toggleFilters': state.showFilters = !state.showFilters; render(); break;
         case 'performSearch': performSearch(); break;
         case 'clearAllFilters': clearAllFilters(); break;
@@ -5387,24 +5833,47 @@
         case 'closeSendEmailModal': closeSendEmailModal(); break;
         case 'confirmSendEmail': confirmSendEmail(); break;
         case 'saveCallLog': saveCallLog(); break;
+        case 'loginSubmit': handleLogin(); break;
+        case 'newStaffUser': openNewStaffUser(); break;
+        case 'editStaffUser': openEditStaffUser(t.getAttribute('data-uid')); break;
+        case 'closeStaffUserForm': closeStaffUserForm(); break;
+        case 'saveStaffUser': saveStaffUserForm(); break;
+        case 'deactivateStaffUser': quickToggleStaffActive(t.getAttribute('data-uid'), false); break;
+        case 'activateStaffUser': quickToggleStaffActive(t.getAttribute('data-uid'), true); break;
+        case 'downloadLetterPdf': downloadLetterPdf(t.getAttribute('data-path')); break;
       }
     });
 
     // Live typing in the search box: update state without a full re-render (keeps focus)
     app.addEventListener('input', function (e) {
       var t = e.target;
-      if (t.getAttribute && t.getAttribute('data-action') === 'queryInput') {
+      if (!t.getAttribute) return;
+      var da = t.getAttribute('data-action');
+      if (da === 'queryInput') {
         state.query = t.value;
         var btn = document.getElementById('clearQueryBtn');
         if (btn) btn.style.display = t.value ? 'block' : 'none';
+      } else if (da === 'loginEmail') {
+        state.loginEmail = t.value;
+      } else if (da === 'loginPassword') {
+        state.loginPassword = t.value;
       }
     });
 
     app.addEventListener('keydown', function (e) {
       var t = e.target;
-      if (t.getAttribute && t.getAttribute('data-action') === 'queryInput' && e.key === 'Enter') {
+      if (!t.getAttribute) return;
+      if (t.getAttribute('data-action') === 'queryInput' && e.key === 'Enter') {
         state.query = t.value;
         performSearch();
+      }
+      // Enter-to-submit on plain divs styled as inputs' companion fields (e.g. the login form's
+      // password box) — data-enter-action names the click-switch case to fire, same dispatch the
+      // "เข้าสู่ระบบ" button itself uses, so Enter and click behave identically.
+      var enterAction = t.getAttribute('data-enter-action');
+      if (enterAction && e.key === 'Enter') {
+        e.preventDefault();
+        if (enterAction === 'loginSubmit') handleLogin();
       }
     });
 
@@ -5413,6 +5882,7 @@
       if (!t.getAttribute) return;
       var field = t.getAttribute('data-field');
       if (field) {
+        if (!can('tracking_edit')) { denyToast(); render(); return; }
         var moneyInstFields = ['amountDue', 'amountPaid', 'discount', 'penaltyPaid'];
         var fieldVal = moneyInstFields.indexOf(field) !== -1 ? toNumber(t.value) : t.value;
         updateInstallment(t.getAttribute('data-order'), Number(t.getAttribute('data-no')), field, fieldVal, t.getAttribute('data-track'));
@@ -5420,11 +5890,13 @@
       }
       var orderField = t.getAttribute('data-order-field');
       if (orderField) {
+        if (!can('tracking_edit')) { denyToast(); render(); return; }
         var numericOrderFields = ['payDay', 'downPayment', 'discount', 'productPrice', 'accessoryProductPrice', 'accessoryDownPayment', 'accessoryPayDay'];
         updateOrderField(t.getAttribute('data-order'), orderField, numericOrderFields.indexOf(orderField) !== -1 ? toNumber(t.value) : t.value);
         return;
       }
       var a = t.getAttribute('data-action');
+      if (!actionAllowed(a)) { denyToast(); render(); return; }
       switch (a) {
         case 'queryInput': state.query = t.value; break;
         case 'noteDraft': state.customerNoteDraft = t.value; break;
@@ -5461,6 +5933,10 @@
         case 'smsTemplateBody': updateSmsTemplateField(t.getAttribute('data-tpl'), 'body', t.value); break;
         case 'smsTemplateStage': updateSmsTemplateField(t.getAttribute('data-tpl'), 'stage', t.value ? Number(t.value) : null); break;
         case 'callDraft': state.callDraft = t.value; break;
+        case 'staffDraftField': if (state.userMgmtDraft) state.userMgmtDraft[t.getAttribute('data-field')] = t.value; break;
+        case 'toggleStaffDraftPermission': if (state.userMgmtDraft) { state.userMgmtDraft.permissions[t.getAttribute('data-perm')] = t.checked; } break;
+        case 'toggleStaffDraftAdmin': if (state.userMgmtDraft) { state.userMgmtDraft.isAdmin = t.checked; render(); } break;
+        case 'toggleStaffDraftActive': if (state.userMgmtDraft) state.userMgmtDraft.isActive = t.checked; break;
       }
     });
   }
@@ -5531,36 +6007,73 @@
   });
 
   // ---------- Boot ----------
+  // buildShell()/render() (the real app) only ever run AFTER a successful login when CLOUD_ENABLED —
+  // see bootApp() below. initEvents() runs unconditionally and immediately, though: it just attaches
+  // delegated listeners to the stable #app element, which exists before either the login screen or
+  // the real app fills it in, and the login form's own data-actions (loginEmail/loginSubmit/etc.)
+  // are dispatched through those same listeners.
+  function bootApp() {
+    buildShell();
+    render();
+    setTimeout(checkForNewBuild, 15000); // first check shortly after boot, not competing with initial cloud connect
+    startBuildCheckPolling();
+    if (CLOUD_ENABLED && db) {
+      cloudConnect().then(function () {
+        render(); updateCloudStatus(); startCloudPolling();
+        // Push the self-healed statuses back to the shared file so every other client sees the fix too.
+        if (_lastRepairChanged) { _lastRepairChanged = false; savePersisted(); }
+      }).catch(function () { cloudStatus = 'offline'; updateCloudStatus(); });
+      // Browsers throttle setInterval in background tabs (can silently stretch the 12s poll to
+      // minutes) — a tab left open in the background shows stale numbers until manually refreshed,
+      // which is exactly what made two staff looking at two different tabs of the SAME dashboard see
+      // different totals (user report, 2026-07-30 — traced to this, not a deploy/data-split issue).
+      // Force a poll the instant the tab is looked at again instead of waiting for a throttled tick.
+      // Also covers the rarer case where the initial cloudConnect() itself failed (transient network
+      // blip) and left this tab permanently un-synced with no retry — try connecting again too.
+      // Also re-checks the session is still valid (a deactivated/deleted account's token can still
+      // look "logged in" client-side until this catches it) so a revoked staff account loses access
+      // on its next tab-focus, not just its next full page reload.
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState !== 'visible') return;
+        if (!cloudConnected) {
+          cloudConnect().then(function () { render(); updateCloudStatus(); startCloudPolling(); }).catch(function () { cloudStatus = 'offline'; updateCloudStatus(); });
+        } else {
+          cloudPoll();
+        }
+      });
+    } else if (_lastRepairChanged) {
+      _lastRepairChanged = false; savePersisted();
+    }
+  }
+
   if (IS_OLD_DATASET) document.title = 'ลูกหนี้เก่า (ก่อน 1/10/2025) — ระบบติดตามหนี้และผ่อนชำระ';
-  buildShell();
   initEvents();
-  render();
-  setTimeout(checkForNewBuild, 15000); // first check shortly after boot, not competing with initial cloud connect
-  startBuildCheckPolling();
-  if (CLOUD_ENABLED && initCloud()) {
-    // Open access — connects straight to the shared cloud state, no login step.
-    cloudConnect().then(function () {
-      render(); updateCloudStatus(); startCloudPolling();
-      // Push the self-healed statuses back to the shared file so every other client sees the fix too.
-      if (_lastRepairChanged) { _lastRepairChanged = false; savePersisted(); }
-    }).catch(function () { cloudStatus = 'offline'; updateCloudStatus(); });
-    // Browsers throttle setInterval in background tabs (can silently stretch the 12s poll to
-    // minutes) — a tab left open in the background shows stale numbers until manually refreshed,
-    // which is exactly what made two staff looking at two different tabs of the SAME dashboard see
-    // different totals (user report, 2026-07-30 — traced to this, not a deploy/data-split issue).
-    // Force a poll the instant the tab is looked at again instead of waiting for a throttled tick.
-    // Also covers the rarer case where the initial cloudConnect() itself failed (transient network
-    // blip) and left this tab permanently un-synced with no retry — try connecting again too.
-    document.addEventListener('visibilitychange', function () {
-      if (document.visibilityState !== 'visible') return;
-      if (!cloudConnected) {
-        cloudConnect().then(function () { render(); updateCloudStatus(); startCloudPolling(); }).catch(function () { cloudStatus = 'offline'; updateCloudStatus(); });
-      } else {
-        cloudPoll();
+  if (!CLOUD_ENABLED || !initCloud()) {
+    // No cloud configured at all (local-only/offline mode, e.g. testing from file://) — nothing to
+    // authenticate against, so there's no login step; behaves exactly as before this feature.
+    bootApp();
+  } else {
+    db.auth.getSession().then(function (res) {
+      var session = res && res.data && res.data.session;
+      if (!session) { renderAuthGate(); return; }
+      currentAccessToken = session.access_token;
+      return loadCurrentUserProfile(session.user).then(function (ok) {
+        if (ok) bootApp(); else renderAuthGate();
+      });
+    }).catch(function () {
+      state.loginError = 'เชื่อมต่อระบบไม่สำเร็จ ลองรีเฟรชหน้านี้อีกครั้ง';
+      renderAuthGate();
+    });
+    // A session that goes away entirely (e.g. admin force-signed-out this device, or the refresh
+    // token was revoked) must kick the tab back to the login screen instead of continuing to show
+    // (now-stale, now-inaccessible) data with a dead session.
+    db.auth.onAuthStateChange(function (event) {
+      if (event === 'SIGNED_OUT' && state.currentUser) {
+        state.currentUser = null;
+        stopCloudPolling();
+        renderAuthGate();
       }
     });
-  } else if (_lastRepairChanged) {
-    _lastRepairChanged = false; savePersisted();
   }
 })();
 </script>
