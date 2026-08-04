@@ -765,7 +765,7 @@
     var rawTrackingReturnAt = data.customerTrackingReturnAt || {};
     var rawKeys = data.appliedPaymentKeys || [];
     if (Array.isArray(data.orders)) {
-      state.orders = repairStaleSampleOrders(repairOverpaidInstallments(repairAccessoryProductNames(repairDueDateSchedules(repairInvalidStatusOverrides(data.orders)))));
+      state.orders = repairStaleSampleOrders(repairOverpaidInstallments(repairAccessoryProductNames(repairPostponedDueDates(repairDueDateSchedules(repairInvalidStatusOverrides(data.orders))))));
       // Trust an explicit flag from the payload when present (see cloudSaveNow) — only fall back to
       // the old length-based guess for snapshots saved before that existed.
       state.isSampleData = typeof data.isSampleData === 'boolean' ? data.isSampleData : (data.orders.length === 0 ? state.isSampleData : false);
@@ -1219,7 +1219,7 @@
   ];
   // ---------- State ----------
   var state = {
-    orders: repairStaleSampleOrders(repairOverpaidInstallments(repairAccessoryProductNames(repairDueDateSchedules(repairInvalidStatusOverrides((persisted && persisted.orders && persisted.orders.length) ? persisted.orders : generateMock()))))),
+    orders: repairStaleSampleOrders(repairOverpaidInstallments(repairAccessoryProductNames(repairPostponedDueDates(repairDueDateSchedules(repairInvalidStatusOverrides((persisted && persisted.orders && persisted.orders.length) ? persisted.orders : generateMock())))))),
     // Staff auth/permissions (2026-08). currentUser is null until a login succeeds — every render
     // path that shows real data only ever runs after that, see bootApp()/renderAuthGate() at the
     // bottom of this file.
@@ -2947,8 +2947,14 @@
   // Recomputes due dates for every installment — including already-paid ones, per user
   // confirmation — from firstDueDate + payDay (either track — main uses firstDueDate/payDay,
   // the separately-billed accessory uses its own accessoryFirstDueDate/accessoryPayDay).
-  // Editing วันครบกำหนดชำระงวดแรก now takes effect starting from งวดที่ 1, overwriting any
-  // previously-recorded or manually-postponed date on every งวด.
+  // Editing วันครบกำหนดชำระงวดแรก takes effect starting from งวดที่ 1, EXCEPT on any งวด that has
+  // been manually เลื่อนวันชำระ (postponeHistory non-empty) — that date is a deliberate per-งวด
+  // override and must survive a schedule recompute the same way a statusOverride does, not get
+  // silently discarded (2026-08 bug report: this function is reachable from updateOrderField(),
+  // which calls maybeApplySchedule() after EVERY order-field edit whenever firstDueDate+payDay are
+  // both set — not just a deliberate firstDueDate edit — so without this guard, editing something
+  // as unrelated as ส่วนลด or รายการสินค้า could silently revert a postponed due date back to its
+  // scheduled value on the very next edit).
   function applySchedule(orderId, track) {
     var isAcc = track === 'accessory';
     var firstKey = isAcc ? 'accessoryFirstDueDate' : 'firstDueDate';
@@ -2962,6 +2968,7 @@
       // firstKey is งวดที่ 1's own due date (offset 0) — every installment's offset is simply
       // its position from the start.
       var updated = list.map(function (inst) {
+        if (inst.postponeHistory && inst.postponeHistory.length) return inst;
         var idx = sorted.findIndex(function (s) { return s.no === inst.no; });
         return Object.assign({}, inst, { dueDate: recalcDueDate(o[firstKey], idx, payDayNum) });
       });
@@ -2973,6 +2980,11 @@
   // both schedule fields set gets its unpaid งวด dates recomputed with the corrected formula —
   // idempotent (a no-op once dates already match) and never touches paid งวด, so safe to run on
   // every load the same way repairInvalidStatusOverrides does.
+  // Runs unconditionally on EVERY applySnapshot() (cloudConnect + every ~12s cloudPoll) with zero
+  // user intent behind it — a manually-postponed งวด (postponeHistory non-empty) must be just as
+  // protected here as an already-paid one, or a postpone silently reverts back to the scheduled
+  // date on the very next sync (2026-08 bug report — this was firing every poll cycle, not just
+  // once, so the postponed date never had a chance to stick even locally before being clobbered).
   function repairDueDateSchedules(orders) {
     var changed = false;
     function fixTrack(o, firstKey, payKey, listKey) {
@@ -2986,6 +2998,7 @@
       var updated = list.map(function (inst) {
         var idx = sorted.findIndex(function (s) { return s.no === inst.no; });
         if (idx < paidN) return inst;
+        if (inst.postponeHistory && inst.postponeHistory.length) return inst;
         var correctDate = recalcDueDate(o[firstKey], idx, payDayNum);
         if (inst.dueDate === correctDate) return inst;
         touched = true;
@@ -2996,6 +3009,40 @@
     var fixed = orders.map(function (o) {
       var mainFix = fixTrack(o, 'firstDueDate', 'payDay', 'installments');
       var accFix = fixTrack(o, 'accessoryFirstDueDate', 'accessoryPayDay', 'accessoryInstallments');
+      if (!mainFix && !accFix) return o;
+      changed = true;
+      var patch = {};
+      if (mainFix) patch.installments = mainFix;
+      if (accFix) patch.accessoryInstallments = accFix;
+      return Object.assign({}, o, patch);
+    });
+    if (changed) _lastRepairChanged = true;
+    return changed ? fixed : orders;
+  }
+  // One-time repair for data already corrupted by the bug fixed above (2026-08): before this fix,
+  // applySchedule()/repairDueDateSchedules() could silently revert a manually-postponed dueDate
+  // back to the scheduled value — on every ~12s cloudPoll, so real accounts already have their
+  // postponed date wiped even though postponeHistory (never touched by that bug) still correctly
+  // recorded the intended date. Restores dueDate from the LAST postponeHistory entry's `to`
+  // whenever they've drifted apart. Idempotent (no-op once dueDate already matches), safe to run
+  // on every load like the other repairs here.
+  function repairPostponedDueDates(orders) {
+    var changed = false;
+    function fixList(list) {
+      if (!list || !list.length) return null;
+      var touched = false;
+      var updated = list.map(function (inst) {
+        if (!inst.postponeHistory || !inst.postponeHistory.length) return inst;
+        var last = inst.postponeHistory[inst.postponeHistory.length - 1];
+        if (!last || !last.to || inst.dueDate === last.to) return inst;
+        touched = true;
+        return Object.assign({}, inst, { dueDate: last.to });
+      });
+      return touched ? updated : null;
+    }
+    var fixed = orders.map(function (o) {
+      var mainFix = fixList(o.installments);
+      var accFix = fixList(o.accessoryInstallments);
       if (!mainFix && !accFix) return o;
       changed = true;
       var patch = {};
