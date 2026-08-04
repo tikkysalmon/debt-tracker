@@ -5875,38 +5875,59 @@
     var navTracking = can('tracking_view') ? navItem('tab-tracking', 'goTracking', trackIcon, 'ติดตามหนี้') : '';
     var navUpload = can('upload_files') ? navItem('tab-upload', 'goUpload', uploadIcon, 'อัพโหลดไฟล์') : '';
     var navUsers = (state.currentUser && state.currentUser.isAdmin) ? navItem('tab-users', 'goUsers', usersIcon, 'จัดการผู้ใช้งาน') : '';
+    // Stacked block (name/admin badge, code+nickname, ออกจากระบบ) pinned to the bottom of the
+    // sidebar — was a horizontal chip in the old top bar, restructured for a vertical rail.
     var userChip = state.currentUser ? (
-      '<div style="display:flex; align-items:center; gap:8px; font-size:12px; color:#6b6785; padding:6px 6px 6px 12px;">' +
-        '<div>' +
-          '<div style="font-weight:700; color:#2b2540; white-space:nowrap;">' + esc(state.currentUser.displayName) + (state.currentUser.isAdmin ? ' <span style="color:#7c5cff;">(Admin)</span>' : '') + '</div>' +
-          '<div style="font-size:10.5px; white-space:nowrap;">' + esc(state.currentUser.employeeCode) + (state.currentUser.nickname ? ' · ' + esc(state.currentUser.nickname) : '') + '</div>' +
-        '</div>' +
-        '<div data-action="logout" title="ออกจากระบบ" style="cursor:pointer; color:#e03131; font-weight:600; padding:6px 10px; border-radius:8px; white-space:nowrap;">ออกจากระบบ</div>' +
+      '<div style="border-top:1px solid rgba(124,92,255,0.12); padding-top:14px; margin-top:14px;">' +
+        '<div style="font-weight:700; color:#2b2540; font-size:13px; margin-bottom:2px;">' + esc(state.currentUser.displayName) + (state.currentUser.isAdmin ? ' <span style="color:#7c5cff;">(Admin)</span>' : '') + '</div>' +
+        '<div style="font-size:11px; color:#6b6785; margin-bottom:10px;">' + esc(state.currentUser.employeeCode) + (state.currentUser.nickname ? ' · ' + esc(state.currentUser.nickname) : '') + '</div>' +
+        '<div data-action="logout" title="ออกจากระบบ" style="cursor:pointer; color:#e03131; font-weight:600; font-size:12.5px; text-align:center; padding:9px; border-radius:8px; background:rgba(224,49,49,0.06);">ออกจากระบบ</div>' +
       '</div>'
     ) : '';
 
-    // Horizontal top bar instead of a left sidebar — frees up screen width for the wide
-    // installment table (many columns) so it needs less horizontal scrolling.
-    var topbar = '<div style="width:100%; position:sticky; top:0; background:rgba(255,255,255,0.7); backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px); border-bottom:1px solid rgba(124,92,255,0.12); padding:12px 24px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; z-index:2; box-sizing:border-box;">' +
-      '<div style="display:flex; align-items:center; gap:10px; padding:2px 10px 2px 0; margin-right:8px;">' +
+    // Left sidebar (per explicit user request 2026-08 — was a horizontal top bar before, moved off
+    // it to free up... no, moved TO this from the top bar). position:sticky + height:100vh keeps it
+    // pinned in view while the main content area scrolls independently.
+    var sidebar = '<div style="width:230px; flex-shrink:0; background:rgba(255,255,255,0.7); backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px); border-right:1px solid rgba(124,92,255,0.12); display:flex; flex-direction:column; position:sticky; top:0; align-self:flex-start; height:100vh; overflow-y:auto; box-sizing:border-box; padding:20px 14px; z-index:2;">' +
+      '<div style="display:flex; align-items:center; gap:10px; padding:2px 6px 20px;">' +
         '<div style="width:34px; height:34px; border-radius:10px; background:linear-gradient(135deg,#7c5cff,#6647e0); display:flex; align-items:center; justify-content:center; flex-shrink:0; box-shadow:0 6px 16px rgba(124,92,255,0.35); gap:3px;"><div style="width:3px; height:9px; border-radius:2px; background:rgba(255,255,255,0.65);"></div><div style="width:3px; height:14px; border-radius:2px; background:#fff;"></div><div style="width:3px; height:11px; border-radius:2px; background:rgba(255,255,255,0.85);"></div></div>' +
-        '<div style="min-width:0;"><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:13.5px; color:#2b2540; line-height:1.3; white-space:nowrap;">ระบบติดตามหนี้และผ่อนชำระ</div><div style="font-size:10px; color:#a8a4bf; line-height:1.2; white-space:nowrap;">v' + esc(APP_BUILD) + '</div></div>' +
+        '<div style="min-width:0;"><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:13.5px; color:#2b2540; line-height:1.3;">ระบบติดตามหนี้และผ่อนชำระ</div><div style="font-size:10px; color:#a8a4bf; line-height:1.2;">v' + esc(APP_BUILD) + '</div></div>' +
       '</div>' +
-      navItem('tab-dashboard', 'goDashboard', dashIcon.replace('position:relative;', ''), 'Dashboard') +
-      navTracking + navUpload + navUsers +
+      '<div style="display:flex; flex-direction:column; gap:4px;">' +
+        navItem('tab-dashboard', 'goDashboard', dashIcon.replace('position:relative;', ''), 'Dashboard') +
+        navTracking + navUpload + navUsers +
+      '</div>' +
       '<div style="flex:1;"></div>' +
-      datasetSwitcher() +
-      '<div id="cloudStatusPill">' + cloudStatusPillInner() + '</div>' +
       userChip +
     '</div>';
 
+    // Slim utility bar above the main content — dataset switcher + sync status, the two things that
+    // used to live at the right edge of the old top bar and don't belong in a nav-only sidebar.
+    var topUtilityBar = '<div style="width:100%; position:sticky; top:0; background:rgba(255,255,255,0.7); backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px); border-bottom:1px solid rgba(124,92,255,0.12); padding:12px 24px; display:flex; align-items:center; justify-content:flex-end; gap:10px; flex-wrap:wrap; z-index:2; box-sizing:border-box;">' +
+      datasetSwitcher() +
+      '<div id="cloudStatusPill">' + cloudStatusPillInner() + '</div>' +
+    '</div>';
+
+    // No animation on this wrapper (had a one-time fadeInUp before) — any animation/transition
+    // touching `transform` on an ancestor of a `position:fixed` modal makes that ancestor the
+    // modal's containing block instead of the real viewport (CSS spec: an active transform effect
+    // establishes containment). On a tall page (e.g. "จัดการผู้ใช้งาน" with a long table) or once
+    // scrolled, every position:fixed modal in the app (postpone/note/SMS/email/staff user form)
+    // would anchor to the top of THIS wrapper — which can be scrolled far out of view — instead of
+    // the actual browser viewport, cutting off the modal's own header/top content exactly like the
+    // reported "มองไม่เห็นข้อมูลด้านบน" bug. Fixed by just not animating this element.
     document.getElementById('app').innerHTML =
-      '<div style="min-height:100vh; background: linear-gradient(160deg, #f3f1fb 0%, #eef2fb 45%, #f6f4fd 100%); position:relative; overflow-x:hidden; display:flex; flex-direction:column; animation:fadeInUp 0.5s ease;">' +
+      '<div style="min-height:100vh; background: linear-gradient(160deg, #f3f1fb 0%, #eef2fb 45%, #f6f4fd 100%); position:relative; overflow-x:hidden; display:flex; flex-direction:column;">' +
         '<div style="position:absolute; top:-120px; right:-100px; width:420px; height:420px; border-radius:50%; background:radial-gradient(circle, rgba(124,92,255,0.30), transparent 70%); filter:blur(10px); pointer-events:none; animation:floatBlobA 14s ease-in-out infinite;"></div>' +
         '<div style="position:absolute; bottom:-160px; left:-140px; width:480px; height:480px; border-radius:50%; background:radial-gradient(circle, rgba(79,124,255,0.22), transparent 70%); filter:blur(10px); pointer-events:none; animation:floatBlobB 16s ease-in-out infinite;"></div>' +
         '<div id="buildBanner" style="position:relative; z-index:3;">' + buildBannerInner() + '</div>' +
-        topbar +
-        '<div style="flex:1; min-width:0; padding:28px 28px 90px; position:relative; z-index:1;"><div id="main-inner" style="max-width:1600px; margin:0 auto; position:relative;"></div></div>' +
+        '<div style="display:flex; flex:1; min-height:0; position:relative; z-index:1;">' +
+          sidebar +
+          '<div style="flex:1; min-width:0; display:flex; flex-direction:column;">' +
+            topUtilityBar +
+            '<div style="flex:1; min-width:0; padding:28px 28px 90px;"><div id="main-inner" style="max-width:1600px; margin:0 auto; position:relative;"></div></div>' +
+          '</div>' +
+        '</div>' +
       '</div>';
   }
 
