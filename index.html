@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.12';
+  var APP_BUILD = '2026-08-05.13';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -217,7 +217,7 @@
     toggleVerifiedCRM: 'tracking_edit', saveCallLog: 'tracking_edit', commitChanges: 'tracking_edit',
     confirmSendSms: 'send_sms', addSmsTemplate: 'send_sms', deleteSmsTemplate: 'send_sms',
     confirmSendEmail: 'send_letter', issueLetter: 'send_letter',
-    onDebtFile: 'upload_files', onPaymentFile: 'upload_files', onCustomerInfo: 'upload_files', onLetterheadFile: 'upload_files', onEmailReportFile: 'upload_files',
+    onDebtFile: 'upload_files', onPaymentFile: 'upload_files', onCustomerInfo: 'upload_files', onLetterheadFile: 'upload_files', onEmailReportFile: 'upload_files', onLockSystemFile: 'upload_files',
     deleteInstallment: 'delete_data', cancelOrder: 'delete_data',
     // Full data wipe — too dangerous to leave as a togglable permission; admin-only no matter what.
     clearToEmpty: '__admin__', resetToSample: '__admin__',
@@ -1335,6 +1335,9 @@
     uploadMsgPayment: '',
     uploadMsgCustomerInfo: '',
     uploadMsgEmailReport: '',
+    uploadMsgLockSystem: '',
+    lockImportSystem: 'Soti',
+    lockImportMode: 'Normal',
     view: 'dashboard',
     showCancelledDetail: false,
     showMultiOrderDetail: false,
@@ -4826,6 +4829,94 @@
     }).catch(function (err) { state.uploadMsgEmailReport = 'เกิดข้อผิดพลาด: ' + err.message; render(); });
   }
 
+  // ---------- Lock-system (Soti/Marena) reference import (2026-08-05) ----------
+  // A NEW reference-only field per explicit user confirmation ("เพิ่มเป็นข้อมูลอ้างอิงเท่านั้น") —
+  // records which MDM/lock system + mode currently manages a customer's device, purely for staff
+  // reference. Deliberately does NOT touch the existing per-งวด สถานะ (ล็อคเครื่อง/เปลี่ยนภาพพัก
+  // หน้าจอ) tracking, even though Hard lock/Soft lock conceptually map onto those same two statuses
+  // — the user explained that mapping only to describe the source files' terminology, not as an
+  // instruction to auto-apply it to installment status.
+  //
+  // Neither Soti (CSV export: Device Name/Customer_Name/...) nor Marena (Excel export: ชื่อลูกค้า/
+  // ข้อมูลติดต่อลูกค้า/..., sheet "ข้อมูลอุปกรณ์") carries an SO/order number, so matching is
+  // inherently by customer identity — phone (Marena only, far more reliable than a name) first,
+  // then name (both systems), and ONLY applied when EXACTLY ONE order matches; 2+ candidates is
+  // left unmatched rather than guessing which customer a row belongs to (same caution as the
+  // email-status importer's ambiguous-match handling).
+  function normalizeLockMatchName(name) {
+    return String(name || '')
+      .replace(/\([^)]*\)/g, '')   // drop a parenthetical nickname, e.g. "ปิยะพร สมใจ (เค้ก)" → "ปิยะพร สมใจ"
+      .replace(/[\t\r\n]+/g, ' ')  // Soti's export has stray trailing tab characters on some rows
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+  }
+  function normalizeLockMatchPhone(phone) {
+    return String(phone || '').replace(/\D+/g, '');
+  }
+  function onLockSystemFileChange(file) {
+    if (!file) return;
+    if (!window.XLSX) { state.uploadMsgLockSystem = 'ไม่พบไลบรารีอ่านไฟล์ กรุณาลองใหม่'; render(); return; }
+    var system = state.lockImportSystem, mode = state.lockImportMode;
+    var NAME_ALIASES = ['customer_name', 'ชื่อลูกค้า'];
+    var PHONE_ALIASES = ['ข้อมูลติดต่อลูกค้า', 'เบอร์ติดต่อลูกค้า', 'เบอร์โทรศัพท์'];
+    readRows(file).then(function (rows) {
+      if (!rows.length) { state.uploadMsgLockSystem = '⚠️ ไม่พบข้อมูลในไฟล์'; render(); return; }
+      var headers = Object.keys(rows[0]);
+      if (!headerKey(headers, NAME_ALIASES)) {
+        state.uploadMsgLockSystem = '⚠️ จับคู่คอลัมน์ชื่อลูกค้าไม่ได้เลย (ยังไม่นำเข้าข้อมูล) — ตรวจว่าเป็นไฟล์ Soti/Marena ที่ถูกต้อง\nหัวคอลัมน์ในไฟล์นี้คือ: ' + headers.join(' | ');
+        render();
+        return;
+      }
+      var orders = state.orders.map(function (o) { return Object.assign({}, o); });
+      var byPhone = {}, byName = {};
+      orders.forEach(function (o) {
+        String(o.phone || '').split('/').forEach(function (p) {
+          var key = normalizeLockMatchPhone(p);
+          if (key) (byPhone[key] = byPhone[key] || []).push(o);
+        });
+        var nameKey = normalizeLockMatchName(o.customerName);
+        if (nameKey) (byName[nameKey] = byName[nameKey] || []).push(o);
+      });
+      var matched = 0, unmatched = 0, ambiguous = 0, sampleUnmatched = [];
+      rows.forEach(function (r) {
+        var rawName = resolveField(r, NAME_ALIASES);
+        var rawPhone = resolveField(r, PHONE_ALIASES);
+        var nameKey = normalizeLockMatchName(rawName);
+        var phoneKey = normalizeLockMatchPhone(rawPhone);
+        // Blank device-only rows (spare/unassigned devices, e.g. Soti's own "เครื่องร้านแอดมินเพจ"
+        // entries) are expected noise in these exports, not a data-quality problem — skip silently,
+        // don't count toward "unmatched".
+        if (!nameKey && !phoneKey) return;
+        var candidates = (phoneKey && byPhone[phoneKey]) || (nameKey && byName[nameKey]) || [];
+        if (candidates.length === 1) {
+          var o = candidates[0];
+          o.lockSystem = system;
+          o.lockSystemMode = mode;
+          o.lockSystemUpdatedAt = nowTimestamp();
+          matched++;
+        } else if (candidates.length > 1) {
+          ambiguous++;
+        } else {
+          unmatched++;
+          if (sampleUnmatched.length < 10) sampleUnmatched.push(rawName || rawPhone);
+        }
+      });
+      if (matched === 0) {
+        state.uploadMsgLockSystem = '⚠️ อ่านไฟล์ได้ ' + rows.length + ' แถว แต่จับคู่กับข้อมูลลูกหนี้ไม่ได้เลย (ยังไม่บันทึก)';
+        render();
+        return;
+      }
+      state.orders = orders;
+      state.hasUnsavedChanges = false;
+      savePersisted();
+      state.uploadMsgLockSystem = '✅ อัปเดตสำเร็จ ' + matched + ' ราย (ระบบ ' + system + ' / ' + mode + ')'
+        + (ambiguous ? (' · ชื่อ/เบอร์ซ้ำกันหลายราย ข้าม ' + ambiguous + ' แถว') : '')
+        + (unmatched ? ('\n⚠️ ไม่พบลูกค้าที่ตรงกัน ' + unmatched + ' แถว เช่น: ' + sampleUnmatched.join(', ') + (unmatched > sampleUnmatched.length ? ' ...' : '')) : '');
+      render();
+    }).catch(function (err) { state.uploadMsgLockSystem = 'เกิดข้อผิดพลาด: ' + err.message; render(); });
+  }
+
   // ---------- Render: shared bits ----------
   function donut(size, inset, conic) {
     return '<div style="width:' + size + 'px; height:' + size + 'px; border-radius:50%; background:' + conic + '; position:relative; flex-shrink:0;">' +
@@ -5158,6 +5249,21 @@
         '<label for="emailReportFileInputTop" style="display:inline-flex; align-items:center; gap:8px; background:linear-gradient(135deg,#7c5cff,#6647e0); color:#fff; padding:10px 20px; border-radius:12px; font-size:14px; font-weight:600; cursor:pointer; box-shadow:0 6px 16px rgba(124,92,255,0.35);">⬆ อัพโหลดไฟล์ Excel/CSV</label>' +
         '<input id="emailReportFileInputTop" type="file" accept=".csv,.xlsx,.xls" data-action="onEmailReportFile" style="display:none;" />' +
         (state.uploadMsgEmailReport ? '<div style="margin-top:10px; font-size:13px; color:' + (state.uploadMsgEmailReport.indexOf('⚠️') >= 0 ? '#a5620d' : '#4b3fa0') + '; white-space:pre-line; line-height:1.65;">' + esc(state.uploadMsgEmailReport) + '</div>' : '') +
+      '</div>' +
+      '<div style="background:rgba(255,255,255,0.55); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.8); border-radius:20px; padding:22px 24px; box-shadow:0 8px 30px rgba(124,92,255,0.10);">' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:16px; color:#2b2540; margin-bottom:10px;">🔒 ระบบล็อคเครื่องระหว่างผ่อน (Soti/Marena)</div>' +
+        '<div style="font-size:12.5px; color:#6b6785; margin-bottom:14px; line-height:1.6;">ไฟล์รายชื่ออุปกรณ์จากระบบ Soti (CSV) หรือ Marena (Excel) — เลือกระบบ+โหมดให้ตรงกับไฟล์ที่จะอัปโหลดก่อน<br><span style="color:#0b7a5b;">บันทึกเป็นข้อมูลอ้างอิงเท่านั้น (แสดงที่การ์ดคำสั่งซื้อแต่ละ SO) — ไม่กระทบสถานะงวด/ยอดค้างชำระ จับคู่ด้วยเบอร์โทร (ถ้ามี) ก่อนแล้วจึงใช้ชื่อลูกค้า</span></div>' +
+        '<div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px;">' +
+          '<select data-action="lockImportSystem" style="padding:8px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fff; font-size:13px; color:#2b2540;">' +
+            ['Soti', 'Marena'].map(function (s) { return '<option value="' + s + '"' + (state.lockImportSystem === s ? ' selected' : '') + '>' + s + '</option>'; }).join('') +
+          '</select>' +
+          '<select data-action="lockImportMode" style="padding:8px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fff; font-size:13px; color:#2b2540;">' +
+            ['Normal', 'Hard lock', 'Soft lock'].map(function (m) { return '<option value="' + m + '"' + (state.lockImportMode === m ? ' selected' : '') + '>' + m + '</option>'; }).join('') +
+          '</select>' +
+        '</div>' +
+        '<label for="lockSystemFileInputTop" style="display:inline-flex; align-items:center; gap:8px; background:linear-gradient(135deg,#7c5cff,#6647e0); color:#fff; padding:10px 20px; border-radius:12px; font-size:14px; font-weight:600; cursor:pointer; box-shadow:0 6px 16px rgba(124,92,255,0.35);">⬆ อัพโหลดไฟล์ Excel/CSV</label>' +
+        '<input id="lockSystemFileInputTop" type="file" accept=".csv,.xlsx,.xls" data-action="onLockSystemFile" style="display:none;" />' +
+        (state.uploadMsgLockSystem ? '<div style="margin-top:10px; font-size:13px; color:' + (state.uploadMsgLockSystem.indexOf('⚠️') >= 0 ? '#a5620d' : '#4b3fa0') + '; white-space:pre-line; line-height:1.65;">' + esc(state.uploadMsgLockSystem) + '</div>' : '') +
       '</div>' +
     '</div>';
   }
@@ -6053,6 +6159,7 @@
                 '<button data-action="copyField" data-value="' + esc(ord.soDisplay) + '" title="คัดลอกเลขคำสั่งซื้อ" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; width:20px; height:20px; border-radius:5px; font-size:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">📋</button></div>') +
           '<div style="font-size:13px; color:#6b6785;">🗓 วันที่ออกสัญญา: <span style="color:#2b2540; font-weight:600;">' + esc(ord.contractDateDisp) + '</span></div>' +
           '<div style="background:rgba(240,140,0,0.12); color:#c2650a; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">' + esc(ord.purchaseType) + '</div>' +
+          (ord.lockSystem ? '<div title="ข้อมูลอ้างอิงจากไฟล์ Soti/Marena — ไม่กระทบสถานะงวด' + (ord.lockSystemUpdatedAt ? ' · อัปเดตล่าสุด ' + esc(ord.lockSystemUpdatedAt) : '') + '" style="background:rgba(11,114,133,0.12); color:#0b7285; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">🔒 ' + esc(ord.lockSystem) + ' / ' + esc(ord.lockSystemMode || '') + '</div>' : '') +
           (ord.isSold ? '<div style="background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">📤 จำหน่ายชื่อให้บริษัทติดตามหนี้</div>' : '') +
           (ord.isCancelled ? '<div style="background:' + hexToRgba('#4b5563', 0.14) + '; color:#4b5563; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">↩️ ยกเลิกสัญญา คืนเครื่อง</div>' : '') +
           (ord.isBillCancelled ? '<div style="background:' + hexToRgba('#0c8599', 0.14) + '; color:#0c8599; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">🗑 ยกเลิกบิล</div>'
@@ -6659,6 +6766,9 @@
         case 'onCustomerInfo': onCustomerInfoFileChange(t.files[0]); t.value = ''; break;
         case 'onLetterheadFile': onLetterheadFileChange(t.files[0]); t.value = ''; break;
         case 'onEmailReportFile': onEmailReportFileChange(t.files[0]); t.value = ''; break;
+        case 'lockImportSystem': state.lockImportSystem = t.value; break;
+        case 'lockImportMode': state.lockImportMode = t.value; break;
+        case 'onLockSystemFile': onLockSystemFileChange(t.files[0]); t.value = ''; break;
         case 'smsModalPhone': state.smsModalPhone = t.value; break;
         case 'emailModalTo': state.emailModalTo = t.value; break;
         case 'emailModalLetterNo': state.emailModalLetterNo = Number(t.value); break;
