@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.4';
+  var APP_BUILD = '2026-08-05.5';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1031,10 +1031,65 @@
   // it captures everything typed during the wait, not a stale snapshot from when it was queued.
   var cloudSaveInFlight = false;
   var cloudSavePending = false;
+  // ---------- Shared save lock (2026-08-05) ----------
+  // A real mutex over the download→merge→upload cycle in cloudSaveNow, backed by one tiny Postgres
+  // row (app_state_sync — see supabase-setup-sync-lock.sql; NOT the ~15-20MB shared dataset itself,
+  // which stays in Storage for the statement_timeout reason described at CLOUD_BUCKET above).
+  // Postgres serializes concurrent UPDATEs to the same row, so exactly one of any number of
+  // simultaneously-saving clients can ever win acquireSaveLock() at a time — this replaces the old
+  // "re-check updated_at right before uploading, retry a few times if it moved" approach, which
+  // could only narrow the race (a Storage upload has no compare-and-swap of its own), not close it.
+  // With only 1-2 staff saving around the same time that narrow gap was rarely hit; with 3+ it hit
+  // often enough that one save's edits would silently get clobbered by another's ("ข้อมูลเด้งกลับ",
+  // reported 2026-08-05). Holding this lock for the WHOLE cycle means no other client can even be
+  // mid-download when this one uploads, so there's no gap left to race in.
+  var SAVE_LOCK_STALE_MS = 25000; // a hair under cloudSaveNow's 30s watchdog — a tab that crashed or
+  // lost network mid-save (so never reached releaseSaveLock) can't wedge everyone else out forever.
+  function tryAcquireSaveLockOnce() {
+    var nowIso = new Date().toISOString();
+    return db.from('app_state_sync').update({ locked_by: myClientId, locked_at: nowIso })
+      .eq('id', 1).is('locked_by', null).select().then(function (res) {
+        if (!res.error && res.data && res.data.length) return true;
+        // Nobody holds it cleanly free — check whether the current holder's lock is stale (their
+        // tab crashed/lost network mid-save) and, if so, steal it. CAS'd against the EXACT owner
+        // just read, not just "any old lock", so a client can't accidentally steal from someone who
+        // refreshed/released it in the moment between this read and the steal attempt below.
+        return db.from('app_state_sync').select('locked_by, locked_at').eq('id', 1).then(function (r) {
+          var row = r.data && r.data[0];
+          if (!row || !row.locked_by || !row.locked_at) return false;
+          if (Date.now() - new Date(row.locked_at).getTime() < SAVE_LOCK_STALE_MS) return false;
+          return db.from('app_state_sync').update({ locked_by: myClientId, locked_at: nowIso })
+            .eq('id', 1).eq('locked_by', row.locked_by).select().then(function (res2) {
+              return !!(res2.data && res2.data.length);
+            });
+        });
+      });
+  }
+  // Retries with a short jittered delay while someone else holds the lock; gives up after ~20s so a
+  // genuinely stuck situation surfaces as an actionable "offline" error instead of hanging forever.
+  function acquireSaveLock() {
+    var deadline = Date.now() + 20000;
+    function loop() {
+      return tryAcquireSaveLockOnce().then(function (ok) {
+        if (ok) return true;
+        if (Date.now() > deadline) return false;
+        return new Promise(function (resolve) { setTimeout(resolve, 300 + Math.random() * 400); }).then(loop);
+      }).catch(function () {
+        if (Date.now() > deadline) return false;
+        return new Promise(function (resolve) { setTimeout(resolve, 300 + Math.random() * 400); }).then(loop);
+      });
+    }
+    return loop();
+  }
+  function releaseSaveLock() {
+    return db.from('app_state_sync').update({ locked_by: null, locked_at: null })
+      .eq('id', 1).eq('locked_by', myClientId).then(function () {}).catch(function () {});
+  }
   // Fetches whatever is on the server RIGHT NOW and 3-way-merges this client's own changes (since
   // lastServerSnapshot) on top of it, instead of blindly overwriting the whole file — so a second
   // client's concurrent edit, even to the SAME order/customer, survives as long as it touched a
-  // different field/งวด (see lastServerSnapshot / mergeOrdersList above for why).
+  // different field/งวด (see lastServerSnapshot / mergeOrdersList above for why). The whole cycle
+  // runs under the shared save lock (see above) so no other client can be mid-save at the same time.
   function cloudSaveNow() {
     if (!CLOUD_ENABLED || !db || !cloudConnected) return;
     if (cloudSaveInFlight) { cloudSavePending = true; return; }
@@ -1044,13 +1099,17 @@
     // (flaky connection, browser tab backgrounded mid-request, etc.) would otherwise leave this
     // stuck on "กำลังบันทึก…" forever with no way out except reloading the page. If THIS save
     // hasn't resolved within 30s — well beyond the ~15-20MB payload's normal round-trip — force a
-    // reset so staff see an actionable offline state instead of a frozen spinner.
+    // reset so staff see an actionable offline state instead of a frozen spinner. Also best-effort
+    // releases the save lock in case this client is still holding it — SAVE_LOCK_STALE_MS is a
+    // backstop for a fully-dead tab, but a live tab that just gave up should let go immediately
+    // rather than block everyone else for the rest of that window.
     var watchdogTimer = setTimeout(function () {
       cloudSaveInFlight = false;
       cloudStatus = 'offline';
       cloudErrorDetail = 'บันทึกใช้เวลานานเกินไป (หมดเวลา 30 วินาที) — ระบบรีเซ็ตสถานะให้แล้ว ลองบันทึกอีกครั้ง';
       console.error('[cloudSaveNow] watchdog fired — save never resolved within 30s');
       updateCloudStatus();
+      releaseSaveLock();
       if (cloudSavePending) { cloudSavePending = false; cloudSaveNow(); }
     }, 30000);
     var baseOrders = lastServerSnapshot.orders;
@@ -1086,108 +1145,109 @@
       if (cloudSavePending) { cloudSavePending = false; cloudSaveNow(); }
       else if (success) { cloudDirty = false; }
     }
-    // Two clients can both reach this point with the SAME remote snapshot as their merge base (one
-    // downloads it, then before its upload lands the other downloads that same still-current copy
-    // too) — each merge looks correct in isolation, but whichever upload wins the race silently
-    // discards the other's already-merged edit, because a plain upload has no way to know the
-    // remote moved on underneath it. attempt() re-checks the file's updated_at immediately before
-    // writing and, if it changed since the copy this merge was built from, redoes the merge against
-    // the newer remote instead of overwriting it — closing all but a razor-thin final window (the
-    // gap between that last check and the upload landing), which a Storage-file upload with no
-    // compare-and-swap primitive can't close entirely.
-    var SAVE_RETRY_BUDGET = 5;
-    function attempt(retriesLeft) {
+    acquireSaveLock().then(function (gotLock) {
+      if (!gotLock) {
+        cloudStatus = 'offline';
+        cloudErrorDetail = 'ระบบกำลังถูกพนักงานท่านอื่นบันทึกอยู่นานเกินไป — ลองใหม่อีกครั้ง';
+        console.error('[cloudSaveNow] could not acquire save lock within 20s');
+        updateCloudStatus();
+        finishSave(false);
+        return;
+      }
+      var released = false;
+      function release() { if (!released) { released = true; releaseSaveLock(); } }
+      // Once the lock is held, no other client can be mid-save — a single download+merge+upload
+      // pass is now authoritative, no retry-if-it-moved loop needed (that loop existed solely to
+      // paper over the race this lock now structurally prevents).
       findCloudFileMeta().then(function (item) {
         if (item && lastServerTs && item.updated_at === lastServerTs) {
-          proceed(item ? item.updated_at : null, { orders: baseOrders, customerNotes: baseNotes, customerTrackingReturn: baseTrackingReturn, customerTrackingReturnAt: baseTrackingReturnAt, appliedPaymentKeys: lastServerSnapshot.appliedPaymentKeys });
-          return;
+          return proceed({ orders: baseOrders, customerNotes: baseNotes, customerTrackingReturn: baseTrackingReturn, customerTrackingReturnAt: baseTrackingReturnAt, appliedPaymentKeys: lastServerSnapshot.appliedPaymentKeys });
         }
-        var remoteTs = item ? item.updated_at : null;
-        downloadCloudFile().then(function (res) {
-          if (res.error) { proceed(remoteTs, null); return; }
+        if (!item) return proceed(null);
+        return downloadCloudFile().then(function (res) {
+          if (res.error) return proceed(null);
           return res.data.text().then(function (t) {
             var remote = null;
             try { remote = JSON.parse(t); } catch (e) {}
-            proceed(remoteTs, remote);
+            return proceed(remote);
           });
-        }).catch(function () { proceed(remoteTs, null); });
-      }).catch(function () { proceed(null, null); });
+        });
+      }).catch(function () { return proceed(null); });
 
-      // remoteTs is the updated_at this merge's `remote` reflects (null = no remote file yet, or
-      // the fetch failed and we're merging onto an empty base — same effect as the old bootstrap).
       // Everything below is synchronous local work (JS merge + JSON.stringify) — under concurrent
       // edits from other clients it's exactly the code path most likely to hit an unexpected shape
       // and throw. Wrapped in try/catch so that can NEVER leave cloudSaveInFlight stuck true /
       // cloudStatus stuck at 'saving' forever (which is what staff were seeing — a throw here used
       // to be swallowed by an unreturned/unchained promise, so finishSave() was never reached and
       // the pill never left "กำลังบันทึก…" until a full page reload).
-      function proceed(remoteTs, remote) {
+      function proceed(remote) {
+        var mergedOrders, mergedNotes, mergedTrackingReturn, mergedTrackingReturnAt, mergedKeys, blob, text;
         try {
           var remoteOrders = (remote && Array.isArray(remote.orders)) ? remote.orders : [];
           var remoteNotes = (remote && remote.customerNotes) ? remote.customerNotes : {};
           var remoteTrackingReturn = (remote && remote.customerTrackingReturn) ? remote.customerTrackingReturn : {};
           var remoteTrackingReturnAt = (remote && remote.customerTrackingReturnAt) ? remote.customerTrackingReturnAt : {};
           var remoteKeys = (remote && remote.appliedPaymentKeys) ? remote.appliedPaymentKeys : [];
-          var mergedOrders = mergeOrdersList(baseOrders, localOrdersSnapshot, remoteOrders);
-          var mergedNotes = mergeNotes(baseNotes, localNotesSnapshot, remoteNotes);
+          mergedOrders = mergeOrdersList(baseOrders, localOrdersSnapshot, remoteOrders);
+          mergedNotes = mergeNotes(baseNotes, localNotesSnapshot, remoteNotes);
           // mergeNotes is fully generic (any scalar-valued map keyed by customerKey, not notes-
           // specific) — reused as-is for these two rather than duplicating the same merge logic.
-          var mergedTrackingReturn = mergeNotes(baseTrackingReturn, localTrackingReturnSnapshot, remoteTrackingReturn);
-          var mergedTrackingReturnAt = mergeNotes(baseTrackingReturnAt, localTrackingReturnAtSnapshot, remoteTrackingReturnAt);
-          var mergedKeys = unionKeys(remoteKeys, localKeysSnapshot);
+          mergedTrackingReturn = mergeNotes(baseTrackingReturn, localTrackingReturnSnapshot, remoteTrackingReturn);
+          mergedTrackingReturnAt = mergeNotes(baseTrackingReturnAt, localTrackingReturnAtSnapshot, remoteTrackingReturnAt);
+          mergedKeys = unionKeys(remoteKeys, localKeysSnapshot);
           // isSampleData travels WITH the payload so applySnapshot can trust it explicitly instead of
           // guessing from orders.length — a freshly-seeded bucket's built-in demo data (generateMock())
           // is non-empty too, and inferring "no longer sample" from length alone meant the demo orders
           // silently got treated as real and merged alongside the first genuine upload (see
           // repairStaleSampleOrders below for cleaning up datasets already affected by this).
           var payload = { orders: mergedOrders, customerNotes: mergedNotes, customerTrackingReturn: mergedTrackingReturn, customerTrackingReturnAt: mergedTrackingReturnAt, appliedPaymentKeys: mergedKeys, isSampleData: state.isSampleData, smsTemplates: state.smsTemplates, letterheadImageUrl: state.letterheadImageUrl, _meta: { updatedAt: new Date().toISOString(), updatedBy: myClientId } };
-          var text = JSON.stringify(payload);
-          var blob = new Blob([text], { type: 'application/json' });
+          text = JSON.stringify(payload);
+          blob = new Blob([text], { type: 'application/json' });
         } catch (mergeErr) {
           cloudStatus = 'offline';
           cloudErrorDetail = 'ผสานข้อมูลล้มเหลว (merge error): ' + (mergeErr && mergeErr.message ? mergeErr.message : String(mergeErr));
           console.error('[cloudSaveNow] proceed() threw during merge:', mergeErr);
           updateCloudStatus();
+          release();
           finishSave(false);
           return;
         }
-        if (retriesLeft <= 0) { doUpload(mergedOrders, mergedNotes, mergedTrackingReturn, mergedTrackingReturnAt, mergedKeys, blob, text); return; }
-        findCloudFileMeta().then(function (freshItem) {
-          var freshTs = freshItem ? freshItem.updated_at : null;
-          if (freshTs !== remoteTs) { attempt(retriesLeft - 1); return; }
-          doUpload(mergedOrders, mergedNotes, mergedTrackingReturn, mergedTrackingReturnAt, mergedKeys, blob, text);
-        }).catch(function () { doUpload(mergedOrders, mergedNotes, mergedTrackingReturn, mergedTrackingReturnAt, mergedKeys, blob, text); });
-      }
-    }
-    function doUpload(mergedOrders, mergedNotes, mergedTrackingReturn, mergedTrackingReturnAt, mergedKeys, blob, text) {
-      db.storage.from(CLOUD_BUCKET).upload(CLOUD_FILE, blob, { upsert: true, contentType: 'application/json', cacheControl: '0' }).then(function (res) {
-        if (res.error) {
+        db.storage.from(CLOUD_BUCKET).upload(CLOUD_FILE, blob, { upsert: true, contentType: 'application/json', cacheControl: '0' }).then(function (res) {
+          release();
+          if (res.error) {
+            cloudStatus = 'offline';
+            cloudErrorDetail = (res.error.message || JSON.stringify(res.error)) + ' (payload ~' + Math.round(text.length / 1024) + ' KB)';
+            console.error('[cloudSaveNow] upload failed:', res.error, 'payload size:', text.length, 'bytes');
+            updateCloudStatus();
+            finishSave(false);
+            return;
+          }
+          cloudErrorDetail = '';
+          var merged = { orders: mergedOrders, customerNotes: mergedNotes, customerTrackingReturn: mergedTrackingReturn, customerTrackingReturnAt: mergedTrackingReturnAt, appliedPaymentKeys: mergedKeys };
+          // Upload response doesn't include the new updated_at — fetch it so the next poll
+          // recognizes this save as already-applied instead of re-downloading the whole file.
+          findCloudFileMeta().then(function (item2) {
+            lastServerTs = item2 ? item2.updated_at : lastServerTs;
+            cloudStatus = 'online';
+            updateCloudStatus();
+            finishSave(true, merged);
+          }).catch(function () { cloudStatus = 'online'; updateCloudStatus(); finishSave(true, merged); });
+        }).catch(function (err) {
+          release();
           cloudStatus = 'offline';
-          cloudErrorDetail = (res.error.message || JSON.stringify(res.error)) + ' (payload ~' + Math.round(text.length / 1024) + ' KB)';
-          console.error('[cloudSaveNow] upload failed:', res.error, 'payload size:', text.length, 'bytes');
+          cloudErrorDetail = (err && err.message ? err.message : String(err)) + ' (payload ~' + Math.round(text.length / 1024) + ' KB)';
+          console.error('[cloudSaveNow] upload threw:', err, 'payload size:', text.length, 'bytes');
           updateCloudStatus();
           finishSave(false);
-          return;
-        }
-        cloudErrorDetail = '';
-        var merged = { orders: mergedOrders, customerNotes: mergedNotes, customerTrackingReturn: mergedTrackingReturn, customerTrackingReturnAt: mergedTrackingReturnAt, appliedPaymentKeys: mergedKeys };
-        // Upload response doesn't include the new updated_at — fetch it so the next poll
-        // recognizes this save as already-applied instead of re-downloading the whole file.
-        findCloudFileMeta().then(function (item) {
-          lastServerTs = item ? item.updated_at : lastServerTs;
-          cloudStatus = 'online';
-          updateCloudStatus();
-          finishSave(true, merged);
-        }).catch(function () { cloudStatus = 'online'; updateCloudStatus(); finishSave(true, merged); });
-      }).catch(function (err) {
-        cloudStatus = 'offline';
-        cloudErrorDetail = (err && err.message ? err.message : String(err)) + ' (payload ~' + Math.round(text.length / 1024) + ' KB)';
-        console.error('[cloudSaveNow] upload threw:', err, 'payload size:', text.length, 'bytes');
-        updateCloudStatus();
-        finishSave(false);
-      });
-    }
-    attempt(SAVE_RETRY_BUDGET);
+        });
+      }
+    }).catch(function (err) {
+      cloudStatus = 'offline';
+      cloudErrorDetail = 'ขอ lock บันทึกไม่สำเร็จ: ' + (err && err.message ? err.message : String(err));
+      console.error('[cloudSaveNow] acquireSaveLock threw:', err);
+      updateCloudStatus();
+      finishSave(false);
+    });
   }
   function cloudPoll() {
     if (!CLOUD_ENABLED || !db || !cloudConnected) return;
