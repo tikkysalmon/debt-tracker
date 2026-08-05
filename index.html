@@ -1234,6 +1234,7 @@
     userMgmtSearchField: 'name',    // 'name' | 'code' | 'nickname'
     userMgmtSearchQuery: '',
     letterheadResolvedUrl: null, // cached blob: URL for the settings-page letterhead preview (private bucket — see getLetterheadBlobUrl)
+    sidebarCollapsed: false, // per explicit user request 2026-08 — collapsible left sidebar so the wide installment table gets more room
     query: '',
     selectedCustomerId: null,
     uploadMsgDebt: '',
@@ -5849,9 +5850,13 @@
     '</div>';
   }
   // ---------- Sidebar (static shell) ----------
+  // title=label doubles as a tooltip when collapsed (icon-only, label hidden via .sb-label —
+  // see toggleSidebarCollapsed) so the item is still identifiable without expanding.
   function navItem(id, action, iconHtml, label) {
-    return '<div id="' + id + '" data-action="' + action + '" style="cursor:pointer; display:flex; align-items:center; gap:12px; padding:12px 14px; border-radius:12px; font-weight:600; font-size:14px;">' +
-      '<div style="width:20px; height:20px; display:flex; align-items:center; justify-content:center; flex-shrink:0; position:relative;">' + iconHtml + '</div>' + label + '</div>';
+    return '<div id="' + id + '" data-action="' + action + '" title="' + esc(label) + '" style="cursor:pointer; display:flex; align-items:center; gap:12px; padding:12px 14px; border-radius:12px; font-weight:600; font-size:14px; white-space:nowrap; overflow:hidden;">' +
+      '<div style="width:20px; height:20px; display:flex; align-items:center; justify-content:center; flex-shrink:0; position:relative;">' + iconHtml + '</div>' +
+      '<span class="sb-label">' + label + '</span>' +
+    '</div>';
   }
   // ---------- Login gate ----------
   // Rendered straight into #app, bypassing buildShell() entirely — no nav, no cloud status pill,
@@ -5874,6 +5879,23 @@
       '</div>';
   }
 
+  // Directly manipulates the live sidebar DOM (width + .sb-label visibility + toggle icon
+  // rotation) instead of going through render()/buildShell() — a full rebuild would work too, but
+  // this is instant and never disturbs scroll position, an open modal, or in-progress typing
+  // elsewhere on the page the way tearing down and rebuilding #app would.
+  function applySidebarCollapsedToDom() {
+    var sb = document.getElementById('appSidebar');
+    if (!sb) return;
+    sb.style.width = state.sidebarCollapsed ? '68px' : '230px';
+    var labels = sb.querySelectorAll('.sb-label');
+    for (var i = 0; i < labels.length; i++) labels[i].style.display = state.sidebarCollapsed ? 'none' : '';
+    var icon = document.getElementById('sidebarToggleIcon');
+    if (icon) icon.style.transform = 'rotate(' + (state.sidebarCollapsed ? '135deg' : '-45deg') + ')';
+  }
+  function toggleSidebarCollapsed() {
+    state.sidebarCollapsed = !state.sidebarCollapsed;
+    applySidebarCollapsedToDom();
+  }
   function buildShell() {
     var dashIcon = '<div style="display:grid; grid-template-columns:1fr 1fr; gap:2px; width:14px; height:14px;"><div style="background:currentColor; border-radius:2px;"></div><div style="background:currentColor; border-radius:2px; opacity:0.55;"></div><div style="background:currentColor; border-radius:2px; opacity:0.55;"></div><div style="background:currentColor; border-radius:2px;"></div></div>';
     var trackIcon = '<div style="width:11px; height:11px; border:2px solid currentColor; border-radius:50%; box-sizing:border-box; position:absolute; top:3px; left:3px;"></div><div style="position:absolute; width:2px; height:6px; background:currentColor; border-radius:1px; transform:rotate(-45deg); right:2px; bottom:2px;"></div>';
@@ -5888,22 +5910,34 @@
     var navUpload = can('upload_files') ? navItem('tab-upload', 'goUpload', uploadIcon, 'อัพโหลดไฟล์') : '';
     var navUsers = (state.currentUser && state.currentUser.isAdmin) ? navItem('tab-users', 'goUsers', usersIcon, 'จัดการผู้ใช้งาน') : '';
     // Stacked block (name/admin badge, code+nickname, ออกจากระบบ) pinned to the bottom of the
-    // sidebar — was a horizontal chip in the old top bar, restructured for a vertical rail.
+    // sidebar — was a horizontal chip in the old top bar, restructured for a vertical rail. The
+    // whole block is one sb-label (not just the text inside) — collapsed, it disappears entirely
+    // rather than trying to squeeze a logout icon into a 68px rail; expand to reach it.
     var userChip = state.currentUser ? (
-      '<div style="border-top:1px solid rgba(124,92,255,0.12); padding-top:14px; margin-top:14px;">' +
-        '<div style="font-weight:700; color:#2b2540; font-size:13px; margin-bottom:2px;">' + esc(state.currentUser.displayName) + (state.currentUser.isAdmin ? ' <span style="color:#7c5cff;">(Admin)</span>' : '') + '</div>' +
-        '<div style="font-size:11px; color:#6b6785; margin-bottom:10px;">' + esc(state.currentUser.employeeCode) + (state.currentUser.nickname ? ' · ' + esc(state.currentUser.nickname) : '') + '</div>' +
-        '<div data-action="logout" title="ออกจากระบบ" style="cursor:pointer; color:#e03131; font-weight:600; font-size:12.5px; text-align:center; padding:9px; border-radius:8px; background:rgba(224,49,49,0.06);">ออกจากระบบ</div>' +
+      '<div class="sb-label" style="border-top:1px solid rgba(124,92,255,0.12); padding-top:14px; margin-top:14px;">' +
+        '<div style="font-weight:700; color:#2b2540; font-size:13px; margin-bottom:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + esc(state.currentUser.displayName) + (state.currentUser.isAdmin ? ' <span style="color:#7c5cff;">(Admin)</span>' : '') + '</div>' +
+        '<div style="font-size:11px; color:#6b6785; margin-bottom:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + esc(state.currentUser.employeeCode) + (state.currentUser.nickname ? ' · ' + esc(state.currentUser.nickname) : '') + '</div>' +
+        '<div data-action="logout" title="ออกจากระบบ" style="cursor:pointer; color:#e03131; font-weight:600; font-size:12.5px; text-align:center; padding:9px; border-radius:8px; background:rgba(224,49,49,0.06); white-space:nowrap;">ออกจากระบบ</div>' +
       '</div>'
     ) : '';
 
+    // Chevron flips direction via inline transform toggled in toggleSidebarCollapsed() — no CSS
+    // class/keyframe needed for just two fixed states.
+    var toggleIcon = '<div id="sidebarToggleIcon" style="width:8px; height:8px; border-top:2px solid currentColor; border-left:2px solid currentColor; transform:rotate(' + (state.sidebarCollapsed ? '135deg' : '-45deg') + '); transition:transform 0.2s ease;"></div>';
+
     // Left sidebar (per explicit user request 2026-08 — was a horizontal top bar before, moved off
     // it to free up... no, moved TO this from the top bar). position:sticky + height:100vh keeps it
-    // pinned in view while the main content area scrolls independently.
-    var sidebar = '<div style="width:230px; flex-shrink:0; background:rgba(255,255,255,0.7); backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px); border-right:1px solid rgba(124,92,255,0.12); display:flex; flex-direction:column; position:sticky; top:0; align-self:flex-start; height:100vh; overflow-y:auto; box-sizing:border-box; padding:20px 14px; z-index:2;">' +
-      '<div style="display:flex; align-items:center; gap:10px; padding:2px 6px 20px;">' +
-        '<div style="width:34px; height:34px; border-radius:10px; background:linear-gradient(135deg,#7c5cff,#6647e0); display:flex; align-items:center; justify-content:center; flex-shrink:0; box-shadow:0 6px 16px rgba(124,92,255,0.35); gap:3px;"><div style="width:3px; height:9px; border-radius:2px; background:rgba(255,255,255,0.65);"></div><div style="width:3px; height:14px; border-radius:2px; background:#fff;"></div><div style="width:3px; height:11px; border-radius:2px; background:rgba(255,255,255,0.85);"></div></div>' +
-        '<div style="min-width:0;"><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:13.5px; color:#2b2540; line-height:1.3;">ระบบติดตามหนี้และผ่อนชำระ</div><div style="font-size:10px; color:#a8a4bf; line-height:1.2;">v' + esc(APP_BUILD) + '</div></div>' +
+    // pinned in view while the main content area scrolls independently. Collapsible (also per
+    // explicit user request) via toggleSidebarCollapsed(), which manipulates width/.sb-label
+    // visibility directly on the live DOM instead of a full render() — instant, and doesn't disturb
+    // scroll position, open modals, or anything else on screen the way rebuilding #main-inner would.
+    var sidebar = '<div id="appSidebar" style="width:' + (state.sidebarCollapsed ? '68px' : '230px') + '; flex-shrink:0; background:rgba(255,255,255,0.7); backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px); border-right:1px solid rgba(124,92,255,0.12); display:flex; flex-direction:column; position:sticky; top:0; align-self:flex-start; height:100vh; overflow-x:hidden; overflow-y:auto; box-sizing:border-box; padding:20px 14px; z-index:2; transition:width 0.2s ease;">' +
+      '<div style="display:flex; align-items:center; justify-content:space-between; gap:6px; padding:2px 2px 20px;">' +
+        '<div style="display:flex; align-items:center; gap:10px; min-width:0; overflow:hidden;">' +
+          '<div style="width:34px; height:34px; border-radius:10px; background:linear-gradient(135deg,#7c5cff,#6647e0); display:flex; align-items:center; justify-content:center; flex-shrink:0; box-shadow:0 6px 16px rgba(124,92,255,0.35); gap:3px;"><div style="width:3px; height:9px; border-radius:2px; background:rgba(255,255,255,0.65);"></div><div style="width:3px; height:14px; border-radius:2px; background:#fff;"></div><div style="width:3px; height:11px; border-radius:2px; background:rgba(255,255,255,0.85);"></div></div>' +
+          '<div class="sb-label" style="min-width:0; white-space:nowrap;"><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:13.5px; color:#2b2540; line-height:1.3;">ระบบติดตามหนี้และผ่อนชำระ</div><div style="font-size:10px; color:#a8a4bf; line-height:1.2;">v' + esc(APP_BUILD) + '</div></div>' +
+        '</div>' +
+        '<div data-action="toggleSidebarCollapsed" title="' + (state.sidebarCollapsed ? 'ขยายเมนู' : 'ย่อเมนู') + '" style="cursor:pointer; flex-shrink:0; width:26px; height:26px; border-radius:8px; display:flex; align-items:center; justify-content:center; color:#6b6785; background:rgba(124,92,255,0.08);">' + toggleIcon + '</div>' +
       '</div>' +
       '<div style="display:flex; flex-direction:column; gap:4px;">' +
         navItem('tab-dashboard', 'goDashboard', dashIcon.replace('position:relative;', ''), 'Dashboard') +
@@ -5941,6 +5975,11 @@
           '</div>' +
         '</div>' +
       '</div>';
+    // Generated HTML above always renders labels visible — this syncs actual .sb-label
+    // display/width to state.sidebarCollapsed in case it's ever true when buildShell() (re)runs
+    // (currently only at boot, where it's always false, but cheap enough to not assume that stays
+    // true forever).
+    applySidebarCollapsedToDom();
   }
 
   // ---------- Render ----------
@@ -6019,6 +6058,7 @@
         case 'goTracking': if (!can('tracking_view')) { denyToast(); return; } if (confirmDiscardIfDirty()) { state.view = 'tracking'; render(); } break;
         case 'goUsers': if (!(state.currentUser && state.currentUser.isAdmin)) { denyToast(); return; } state.view = 'users'; render(); break;
         case 'logout': handleLogout(); break;
+        case 'toggleSidebarCollapsed': toggleSidebarCollapsed(); break;
         // No confirmDiscardIfDirty() guard here (unlike goDashboard/goTracking): uploads always
         // save immediately regardless of manual-save mode, and a pending edit sitting in
         // state.orders rides along safely into that save rather than needing to be discarded
