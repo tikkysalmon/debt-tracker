@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.1';
+  var APP_BUILD = '2026-08-05.2';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -5963,7 +5963,18 @@
     // the actual browser viewport, cutting off the modal's own header/top content exactly like the
     // reported "มองไม่เห็นข้อมูลด้านบน" bug. Fixed by just not animating this element.
     document.getElementById('app').innerHTML =
-      '<div style="min-height:100vh; background: linear-gradient(160deg, #f3f1fb 0%, #eef2fb 45%, #f6f4fd 100%); position:relative; overflow-x:hidden; display:flex; flex-direction:column;">' +
+      // overflow-x:hidden alone (used to hide the two blob divs below) makes overflow-y compute to
+      // 'auto' (CSS mismatch rule: a 'visible' axis paired with a non-visible one becomes 'auto') —
+      // and ANY non-visible overflow-y here turns this wrapper into its own scroll container. Since
+      // its height is only min-height:100vh (it just grows to fit content, so it never actually
+      // scrolls itself), the real document ends up scrolling instead — but #appSidebar's
+      // position:sticky anchors to THIS wrapper as its nearest scroll container, which never
+      // scrolls, so the sidebar just rode along with the page instead of staying pinned (reported
+      // as "เลื่อนหน้าเว็บขึ้นลง แถบเมนูไม่อยู่ที่เดิม", 2026-08-05). `overflow:clip` clips the
+      // blobs the same as hidden but — unlike hidden — never establishes a scroll container, so it
+      // doesn't hijack sticky's positioning reference; verified via Playwright (sidebar bounding box
+      // stays at scrollY-independent y=0, and clip still confines the blobs, no horizontal scrollbar).
+      '<div style="min-height:100vh; background: linear-gradient(160deg, #f3f1fb 0%, #eef2fb 45%, #f6f4fd 100%); position:relative; overflow:clip; display:flex; flex-direction:column;">' +
         '<div style="position:absolute; top:-120px; right:-100px; width:420px; height:420px; border-radius:50%; background:radial-gradient(circle, rgba(124,92,255,0.30), transparent 70%); filter:blur(10px); pointer-events:none; animation:floatBlobA 14s ease-in-out infinite;"></div>' +
         '<div style="position:absolute; bottom:-160px; left:-140px; width:480px; height:480px; border-radius:50%; background:radial-gradient(circle, rgba(79,124,255,0.22), transparent 70%); filter:blur(10px); pointer-events:none; animation:floatBlobB 16s ease-in-out infinite;"></div>' +
         '<div id="buildBanner" style="position:relative; z-index:3;">' + buildBannerInner() + '</div>' +
