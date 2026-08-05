@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.5';
+  var APP_BUILD = '2026-08-05.6';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -217,7 +217,7 @@
     toggleVerifiedCRM: 'tracking_edit', saveCallLog: 'tracking_edit', commitChanges: 'tracking_edit',
     confirmSendSms: 'send_sms', addSmsTemplate: 'send_sms', deleteSmsTemplate: 'send_sms',
     confirmSendEmail: 'send_letter', issueLetter: 'send_letter',
-    onDebtFile: 'upload_files', onPaymentFile: 'upload_files', onCustomerInfo: 'upload_files', onLetterheadFile: 'upload_files',
+    onDebtFile: 'upload_files', onPaymentFile: 'upload_files', onCustomerInfo: 'upload_files', onLetterheadFile: 'upload_files', onEmailReportFile: 'upload_files',
     deleteInstallment: 'delete_data', cancelOrder: 'delete_data',
     // Full data wipe — too dangerous to leave as a togglable permission; admin-only no matter what.
     clearToEmpty: '__admin__', resetToSample: '__admin__',
@@ -1334,6 +1334,7 @@
     uploadMsgDebt: '',
     uploadMsgPayment: '',
     uploadMsgCustomerInfo: '',
+    uploadMsgEmailReport: '',
     view: 'dashboard',
     showCancelledDetail: false,
     showMultiOrderDetail: false,
@@ -2894,7 +2895,12 @@
           return;
         }
         var emailField = track === 'accessory' ? 'accessoryEmailHistory' : 'emailHistory';
-        var emailHistory = (order[emailField] || []).concat([{ at: nowTimestamp(), by: currentActorName(), to: to, letterNo: entry.no }]);
+        // messageId (Thaibulk's own transaction UUID, when the response includes one) lets a future
+        // status-report import (onEmailReportFileChange) match this exact send precisely instead of
+        // falling back to the (subject + recipient + letterNo) heuristic that older entries need —
+        // see there for why: Thaibulk's Email API has no status-check endpoint to query directly.
+        var sentMessageId = (r.data && r.data.data && r.data.data.message_id) || '';
+        var emailHistory = (order[emailField] || []).concat([{ at: nowTimestamp(), by: currentActorName(), to: to, letterNo: entry.no, messageId: sentMessageId }]);
         updateOrderField(orderId, emailField, emailHistory);
         state.emailModalTarget = null;
         state.emailModalTrack = '';
@@ -3545,6 +3551,24 @@
       items.slice().reverse().map(renderItem).join('') +
     '</div>';
   }
+  // Status/reason/opens/clicks come from Thaibulk's own dashboard export, matched in via
+  // onEmailReportFileChange (see there) — not something the app can query live (Thaibulk's Email
+  // API has no status-check endpoint, confirmed against their published OpenAPI spec 2026-08-05),
+  // so this can be stale/missing until someone uploads a fresh export. 'bounced'/'complained' are
+  // the two failure statuses seen in real exports so far; anything else not in STATUS_LABELS is
+  // shown as-is (neutral color) rather than guessed at, since the full set of values Thaibulk uses
+  // isn't documented anywhere — safer to show the raw string than mislabel it green/red wrongly.
+  var EMAIL_STATUS_LABELS = { bounced: 'ส่งไม่สำเร็จ (Bounced)', complained: 'ถูกร้องเรียน (Spam)', delivered: 'ส่งสำเร็จ', sent: 'ส่งสำเร็จ' };
+  var EMAIL_STATUS_BAD = { bounced: true, complained: true, failed: true };
+  function emailStatusBadge(h) {
+    if (!h.status) return '';
+    var isBad = !!EMAIL_STATUS_BAD[h.status];
+    var label = EMAIL_STATUS_LABELS[h.status] || h.status;
+    var color = isBad ? '#c92a2a' : '#0b7a5b';
+    var bg = isBad ? 'rgba(224,49,49,0.10)' : 'rgba(18,184,134,0.10)';
+    return '<div style="margin-top:4px; display:inline-block; background:' + bg + '; color:' + color + '; font-weight:700; font-size:10.5px; padding:2px 8px; border-radius:10px;">' + esc(label) + '</div>' +
+      (h.statusReason ? '<div style="color:#8a86a3; font-size:10.5px; margin-top:2px;">เหตุผล: ' + esc(h.statusReason) + '</div>' : '');
+  }
   function trackingCard(accentColor, icon, title, count, bodyHtml) {
     return '<div style="background:#fff; border:1px solid rgba(124,92,255,0.14); border-left:4px solid ' + accentColor + '; border-radius:16px; padding:14px 16px; box-shadow:0 4px 14px rgba(124,92,255,0.06); display:flex; flex-direction:column; gap:10px; min-width:0;">' +
       '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">' +
@@ -3624,6 +3648,7 @@
         return '<div style="background:rgba(29,78,216,0.05); border:1px solid rgba(29,78,216,0.12); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' +
           '<div style="font-weight:700; color:#1d4ed8; margin-bottom:2px;">🕐 ' + esc(h.at) + ' · ครั้งที่ ' + h.letterNo + (h.by ? ' · โดย ' + esc(h.by) : '') + '</div>' +
           '<div style="color:#6b6785;">ถึง ' + esc(h.to) + '</div>' +
+          emailStatusBadge(h) +
         '</div>';
       });
     var letterBody =
@@ -4548,6 +4573,105 @@
     }).catch(function (err) { state.uploadMsgCustomerInfo = 'เกิดข้อผิดพลาด: ' + err.message; render(); });
   }
 
+  // Imports Thaibulk's own "email-api-report" dashboard export (สถานะการส่ง/bounced/opened/etc.) —
+  // confirmed 2026-08-05 against Thaibulk's published Email API spec that there is NO endpoint to
+  // query send status live, so this file (manually exported from their dashboard) is the only way
+  // to bring that status into the debt letter's "ประวัติส่งอีเมล" history. Two-tier matching:
+  //   1) message_id — exact, if this entry was sent AFTER 2026-08-05 (confirmSendEmail started
+  //      storing Thaibulk's own transaction id on every new send from that point on).
+  //   2) subject + recipient + letterNo — for OLDER entries sent before message_id was captured.
+  //      The subject line is always built server-side (api/send-email.js) as exactly
+  //      "หนังสือทวงถามให้ชำระหนี้ค้างชำระ (ครั้งที่ N) เลขที่คำสั่งซื้อ SO-XXXX" — parsed back out
+  //      here to find the matching order/letterNo without needing message_id at all.
+  // Only ever writes status/statusReason/opens/clicks/statusUpdatedAt/messageId onto an EXISTING
+  // emailHistory/accessoryEmailHistory entry that already matched — never creates new history
+  // entries, never touches any other order field, per explicit user request not to affect anything
+  // else in the data.
+  var EMAIL_SUBJECT_RE = /ครั้งที่\s*(\d+)\)\s*เลขที่คำสั่งซื้อ\s*(\S+)/;
+  function onEmailReportFileChange(file) {
+    if (!file) return;
+    if (!window.XLSX) { state.uploadMsgEmailReport = 'ไม่พบไลบรารีอ่านไฟล์ กรุณาลองใหม่'; render(); return; }
+    var ALIASES = {
+      messageId: ['message_id', 'messageid'],
+      to: ['อีเมลผู้รับ', 'email', 'to'],
+      subject: ['หัวข้ออีเมล', 'subject'],
+      opens: ['จำนวนเปิด', 'opens'],
+      clicks: ['จำนวนคลิก', 'clicks'],
+      status: ['สถานะการส่ง', 'status'],
+      reason: ['เหตุผล', 'reason']
+    };
+    readRows(file).then(function (rows) {
+      if (!rows.length) { state.uploadMsgEmailReport = '⚠️ ไม่พบข้อมูลในไฟล์'; render(); return; }
+      var headers = Object.keys(rows[0]);
+      if (!headerKey(headers, ALIASES.to) || !headerKey(headers, ALIASES.status)) {
+        state.uploadMsgEmailReport = '⚠️ จับคู่คอลัมน์ "อีเมลผู้รับ" / "สถานะการส่ง" ไม่ได้เลย (ยังไม่นำเข้าข้อมูล) — ตรวจว่าเป็นไฟล์ export จาก Thaibulk ที่ถูกต้อง\nหัวคอลัมน์ในไฟล์นี้คือ: ' + headers.join(' | ');
+        render();
+        return;
+      }
+      var orders = state.orders.map(function (o) {
+        return Object.assign({}, o, {
+          emailHistory: (o.emailHistory || []).map(function (h) { return Object.assign({}, h); }),
+          accessoryEmailHistory: (o.accessoryEmailHistory || []).map(function (h) { return Object.assign({}, h); })
+        });
+      });
+      var byMessageId = {};
+      orders.forEach(function (o) {
+        ['emailHistory', 'accessoryEmailHistory'].forEach(function (field) {
+          (o[field] || []).forEach(function (h) { if (h.messageId) byMessageId[h.messageId] = h; });
+        });
+      });
+      function findByOrderIdLetterAndTo(orderIdFromSubject, letterNo, to) {
+        for (var i = 0; i < orders.length; i++) {
+          var o = orders[i];
+          if (o.orderId !== orderIdFromSubject && o.accessoryOrderId !== orderIdFromSubject) continue;
+          var m = (o.emailHistory || []).find(function (h) { return h.letterNo === letterNo && String(h.to || '').trim().toLowerCase() === to; });
+          if (m) return m;
+          m = (o.accessoryEmailHistory || []).find(function (h) { return h.letterNo === letterNo && String(h.to || '').trim().toLowerCase() === to; });
+          if (m) return m;
+        }
+        return null;
+      }
+      var matched = 0, unchanged = 0, unmatched = 0;
+      rows.forEach(function (r) {
+        var messageId = String(resolveField(r, ALIASES.messageId) || '').trim();
+        var to = String(resolveField(r, ALIASES.to) || '').trim().toLowerCase();
+        var subject = String(resolveField(r, ALIASES.subject) || '');
+        var status = String(resolveField(r, ALIASES.status) || '').trim();
+        var reason = String(resolveField(r, ALIASES.reason) || '').trim();
+        var opens = toNumber(resolveField(r, ALIASES.opens));
+        var clicks = toNumber(resolveField(r, ALIASES.clicks));
+        if (!to || !status) { unmatched++; return; }
+        var entry = messageId ? byMessageId[messageId] : null;
+        if (!entry) {
+          var m = subject.match(EMAIL_SUBJECT_RE);
+          if (!m) { unmatched++; return; }
+          entry = findByOrderIdLetterAndTo(m[2], Number(m[1]), to);
+        }
+        if (!entry) { unmatched++; return; }
+        if (entry.status === status && entry.statusReason === reason && entry.opens === opens && entry.clicks === clicks) { unchanged++; return; }
+        entry.status = status;
+        entry.statusReason = reason;
+        entry.opens = opens;
+        entry.clicks = clicks;
+        if (messageId) entry.messageId = messageId;
+        entry.statusUpdatedAt = nowTimestamp();
+        matched++;
+      });
+      if (matched === 0 && unchanged === 0) {
+        state.uploadMsgEmailReport = '⚠️ อ่านไฟล์ได้ ' + rows.length + ' แถว แต่จับคู่กับประวัติการส่งอีเมลในระบบไม่ได้เลย (ยังไม่บันทึก) — ตรวจว่าเป็นไฟล์ export จาก Thaibulk ที่ถูกต้อง และเคยส่งอีเมลจดหมายทวงหนี้ของ SO เหล่านี้จากระบบนี้แล้ว';
+        render();
+        return;
+      }
+      state.orders = orders;
+      state.hasUnsavedChanges = false;
+      savePersisted();
+      state.uploadMsgEmailReport = '✅ อัปเดตสถานะสำเร็จ ' + matched + ' ฉบับ'
+        + (unchanged ? (' · ไม่มีการเปลี่ยนแปลง ' + unchanged + ' ฉบับ') : '')
+        + (unmatched ? (' · ไม่พบข้อมูลที่ตรงกัน ' + unmatched + ' แถว') : '');
+      render();
+    }).catch(function (err) { state.uploadMsgEmailReport = 'เกิดข้อผิดพลาด: ' + err.message; render(); });
+  }
+
   // ---------- Render: shared bits ----------
   function donut(size, inset, conic) {
     return '<div style="width:' + size + 'px; height:' + size + 'px; border-radius:50%; background:' + conic + '; position:relative; flex-shrink:0;">' +
@@ -4873,6 +4997,13 @@
         '<label for="letterheadFileInputTop" style="display:inline-flex; align-items:center; gap:8px; background:linear-gradient(135deg,#7c5cff,#6647e0); color:#fff; padding:10px 20px; border-radius:12px; font-size:14px; font-weight:600; cursor:pointer; box-shadow:0 6px 16px rgba(124,92,255,0.35);">⬆ ' + (state.letterheadImageUrl ? 'เปลี่ยนรูปหัวฟอร์ม' : 'อัปโหลดรูปหัวฟอร์ม') + '</label>' +
         '<input id="letterheadFileInputTop" type="file" accept="image/*" data-action="onLetterheadFile" style="display:none;" />' +
         (state.uploadMsgLetterhead ? '<div style="margin-top:10px; font-size:13px; color:' + (state.uploadMsgLetterhead.indexOf('⚠️') >= 0 ? '#a5620d' : '#4b3fa0') + '; white-space:pre-line; line-height:1.65;">' + esc(state.uploadMsgLetterhead) + '</div>' : '') +
+      '</div>' +
+      '<div style="background:rgba(255,255,255,0.55); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.8); border-radius:20px; padding:22px 24px; box-shadow:0 8px 30px rgba(124,92,255,0.10);">' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:16px; color:#2b2540; margin-bottom:10px;">📊 สถานะการส่งอีเมลจดหมายทวงหนี้</div>' +
+        '<div style="font-size:12.5px; color:#6b6785; margin-bottom:14px; line-height:1.6;">ไฟล์ export "email-api-report" จากหน้า Dashboard ของ Thaibulk (คอลัมน์: message_id, อีเมลผู้รับ, หัวข้ออีเมล, จำนวนเปิด, จำนวนคลิก, สถานะการส่ง, เหตุผล)<br><span style="color:#0b7a5b;">อัปได้ซ้ำเรื่อยๆ — จับคู่กับจดหมายที่เคยส่งจากระบบนี้แล้วอัปเดตสถานะ (Bounced/สำเร็จ/ฯลฯ) ไว้ที่ "ประวัติส่งอีเมล" ไม่กระทบข้อมูลอื่น</span></div>' +
+        '<label for="emailReportFileInputTop" style="display:inline-flex; align-items:center; gap:8px; background:linear-gradient(135deg,#7c5cff,#6647e0); color:#fff; padding:10px 20px; border-radius:12px; font-size:14px; font-weight:600; cursor:pointer; box-shadow:0 6px 16px rgba(124,92,255,0.35);">⬆ อัพโหลดไฟล์ Excel/CSV</label>' +
+        '<input id="emailReportFileInputTop" type="file" accept=".csv,.xlsx,.xls" data-action="onEmailReportFile" style="display:none;" />' +
+        (state.uploadMsgEmailReport ? '<div style="margin-top:10px; font-size:13px; color:' + (state.uploadMsgEmailReport.indexOf('⚠️') >= 0 ? '#a5620d' : '#4b3fa0') + '; white-space:pre-line; line-height:1.65;">' + esc(state.uploadMsgEmailReport) + '</div>' : '') +
       '</div>' +
     '</div>';
   }
@@ -5628,7 +5759,7 @@
       emailHistoryHtml = '<div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:8px;">📨 ประวัติการส่ง (' + emailHistory.length + ' ครั้ง)</div>' +
         '<div style="display:flex; flex-direction:column; gap:6px; margin-bottom:16px; max-height:140px; overflow-y:auto;">' +
         emailHistory.slice().reverse().map(function (h) {
-          return '<div style="background:rgba(37,99,235,0.05); border:1px solid rgba(37,99,235,0.15); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' + esc(h.at) + ' · ' + esc(h.to) + ' · ครั้งที่ ' + h.letterNo + (h.by ? ' · โดย ' + esc(h.by) : '') + '</div>';
+          return '<div style="background:rgba(37,99,235,0.05); border:1px solid rgba(37,99,235,0.15); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' + esc(h.at) + ' · ' + esc(h.to) + ' · ครั้งที่ ' + h.letterNo + (h.by ? ' · โดย ' + esc(h.by) : '') + emailStatusBadge(h) + '</div>';
         }).join('') +
         '</div>';
     }
@@ -6373,6 +6504,7 @@
         case 'onPaymentFile': onPaymentFileChange(t.files[0]); t.value = ''; break;
         case 'onCustomerInfo': onCustomerInfoFileChange(t.files[0]); t.value = ''; break;
         case 'onLetterheadFile': onLetterheadFileChange(t.files[0]); t.value = ''; break;
+        case 'onEmailReportFile': onEmailReportFileChange(t.files[0]); t.value = ''; break;
         case 'smsModalPhone': state.smsModalPhone = t.value; break;
         case 'emailModalTo': state.emailModalTo = t.value; break;
         case 'emailModalLetterNo': state.emailModalLetterNo = Number(t.value); break;
