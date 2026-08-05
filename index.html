@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.3';
+  var APP_BUILD = '2026-08-05.4';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -525,6 +525,33 @@
     if (changed) _lastRepairChanged = true;
     return changed ? fixed : orders;
   }
+  // Retroactive one-time fix for orders whose ยอดผ่อนต่องวด was computed by the OLD
+  // (pre-2026-08-05) version of updateOrderField's recalc, which stored the raw unrounded division
+  // result instead of a proper 2-decimal satang amount (see splitEvenlyRounded/updateOrderField) —
+  // caught via a customer report where a demand letter's total didn't match 5 งวด × the on-screen
+  // per-งวด amount. Only orders that actually went through that recalc are touched —
+  // _discountAppliedToInstallments is set exclusively by it — so imported data (never flagged) is
+  // never re-derived here. Recomputes from the same three stored fields (ราคาสินค้า/ยอดวางดาวน์/
+  // ส่วนลด) that produced the drifted values in the first place, so it's deterministic and safe to
+  // re-run every load.
+  function repairFractionalInstallmentAmounts(orders) {
+    var changed = false;
+    var fixed = orders.map(function (o) {
+      if (!o._discountAppliedToInstallments || !o.installments || !o.installments.length || !(toNumber(o.productPrice) > 0)) return o;
+      var dueSplit = splitEvenlyRounded(Math.max(0, toNumber(o.productPrice) - toNumber(o.downPayment) - toNumber(o.discount)), o.installments.length);
+      var touched = false;
+      var newInstallments = o.installments.map(function (inst, idx) {
+        if (Math.abs(Number(inst.amountDue || 0) - dueSplit[idx]) < 0.005) return inst;
+        touched = true;
+        return Object.assign({}, inst, { amountDue: dueSplit[idx] });
+      });
+      if (!touched) return o;
+      changed = true;
+      return Object.assign({}, o, { installments: newInstallments });
+    });
+    if (changed) _lastRepairChanged = true;
+    return changed ? fixed : orders;
+  }
   // Built-in demo orderIds from generateMock() below — a freshly-seeded cloud file (first-ever
   // connect on a brand-new dataset, e.g. ?dataset=old) starts out holding these, and a since-fixed
   // bug (see applySnapshot's isSampleData handling) could flip isSampleData to false while this
@@ -772,7 +799,7 @@
     var rawTrackingReturnAt = data.customerTrackingReturnAt || {};
     var rawKeys = data.appliedPaymentKeys || [];
     if (Array.isArray(data.orders)) {
-      state.orders = repairStaleSampleOrders(repairOverpaidInstallments(repairAccessoryProductNames(repairPostponedDueDates(repairDueDateSchedules(repairInvalidStatusOverrides(data.orders))))));
+      state.orders = repairStaleSampleOrders(repairFractionalInstallmentAmounts(repairOverpaidInstallments(repairAccessoryProductNames(repairPostponedDueDates(repairDueDateSchedules(repairInvalidStatusOverrides(data.orders)))))));
       // Trust an explicit flag from the payload when present (see cloudSaveNow) — only fall back to
       // the old length-based guess for snapshots saved before that existed.
       state.isSampleData = typeof data.isSampleData === 'boolean' ? data.isSampleData : (data.orders.length === 0 ? state.isSampleData : false);
@@ -1226,7 +1253,7 @@
   ];
   // ---------- State ----------
   var state = {
-    orders: repairStaleSampleOrders(repairOverpaidInstallments(repairAccessoryProductNames(repairPostponedDueDates(repairDueDateSchedules(repairInvalidStatusOverrides((persisted && persisted.orders && persisted.orders.length) ? persisted.orders : generateMock())))))),
+    orders: repairStaleSampleOrders(repairFractionalInstallmentAmounts(repairOverpaidInstallments(repairAccessoryProductNames(repairPostponedDueDates(repairDueDateSchedules(repairInvalidStatusOverrides((persisted && persisted.orders && persisted.orders.length) ? persisted.orders : generateMock()))))))),
     // Staff auth/permissions (2026-08). currentUser is null until a login succeeds — every render
     // path that shows real data only ever runs after that, see bootApp()/renderAuthGate() at the
     // bottom of this file.
@@ -2906,6 +2933,22 @@
     var track = order.installments && order.installments.length ? 'main' : 'accessory';
     updateInstallment(orderId, anchor.no, 'status', 'ยกเลิกบิล', track);
   }
+  // Splits totalDue evenly across n งวด, rounded to the nearest satang — the raw quotient (e.g.
+  // 15,295 / 6 = 2549.1666...) used to be stored as-is, so every individual งวด LOOKED like a clean
+  // 2-decimal number on screen (fmtMoney rounds for display) but wasn't really one. Summing any
+  // subset of them for a report/letter (e.g. the demand-letter total, which adds up just the
+  // overdue งวด) then drifted a few satang from what staff sees on screen and manually adds up
+  // themselves — reported 2026-08-05 as the printed letter total (฿12,745.83) not matching 5 งวด ×
+  // the on-screen ฿2,549.17 (฿12,745.85). Fixed by rounding each งวด to the nearest satang and
+  // dumping whatever the division doesn't split evenly onto the LAST งวด, so the grand total across
+  // every งวด still lands exactly on totalDue and every individual งวด is genuinely the 2-decimal
+  // number it displays as.
+  function splitEvenlyRounded(totalDue, n) {
+    var per = Math.round((totalDue / n) * 100) / 100;
+    var out = [];
+    for (var i = 0; i < n; i++) out.push(i === n - 1 ? Math.round((totalDue - per * (n - 1)) * 100) / 100 : per);
+    return out;
+  }
   function updateOrderField(orderId, field, value) {
     state.orders = state.orders.map(function (o) {
       if (o.orderId !== orderId) return o;
@@ -2921,17 +2964,17 @@
       // computing ยอดคงเหลือ (that used to double-count it — see computeOrdersUncached).
       // Only fires once ราคาสินค้าถูกกรอกแล้ว so orders that haven't set it yet don't get zeroed out.
       if ((field === 'productPrice' || field === 'downPayment' || field === 'discount') && toNumber(updated.productPrice) > 0 && updated.installments.length) {
-        var perInstallment = Math.max(0, toNumber(updated.productPrice) - toNumber(updated.downPayment) - toNumber(updated.discount)) / updated.installments.length;
-        updated.installments = updated.installments.map(function (inst) {
-          return Object.assign({}, inst, { amountDue: perInstallment });
+        var dueSplit = splitEvenlyRounded(Math.max(0, toNumber(updated.productPrice) - toNumber(updated.downPayment) - toNumber(updated.discount)), updated.installments.length);
+        updated.installments = updated.installments.map(function (inst, idx) {
+          return Object.assign({}, inst, { amountDue: dueSplit[idx] });
         });
         updated._discountAppliedToInstallments = true;
       }
       // Same recalc, same rules, for the separately-billed อุปกรณ์เสริม track.
       if ((field === 'accessoryProductPrice' || field === 'accessoryDownPayment') && toNumber(updated.accessoryProductPrice) > 0 && updated.accessoryInstallments.length) {
-        var perAccessoryInstallment = Math.max(0, toNumber(updated.accessoryProductPrice) - toNumber(updated.accessoryDownPayment)) / updated.accessoryInstallments.length;
-        updated.accessoryInstallments = updated.accessoryInstallments.map(function (inst) {
-          return Object.assign({}, inst, { amountDue: perAccessoryInstallment });
+        var accDueSplit = splitEvenlyRounded(Math.max(0, toNumber(updated.accessoryProductPrice) - toNumber(updated.accessoryDownPayment)), updated.accessoryInstallments.length);
+        updated.accessoryInstallments = updated.accessoryInstallments.map(function (inst, idx) {
+          return Object.assign({}, inst, { amountDue: accDueSplit[idx] });
         });
       }
       return updated;
