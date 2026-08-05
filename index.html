@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.11';
+  var APP_BUILD = '2026-08-05.12';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -3821,20 +3821,56 @@
     }
     return '';
   }
-  // Payment-file "วันที่รับชำระ" cells specifically: confirmed 2026-08-05 by inspecting a real
-  // "รับชำระวันที่..." QR-payment reconciliation export cell-by-cell (not just its displayed text)
-  // that every REAL Excel date-typed cell in that column had day and month swapped at the source —
-  // e.g. a true 5 Aug 2026 payment was stored as the serial for 5 May 2026. Proven systematic, not a
-  // one-off: ~99% of ~2,200 rows clustered into exactly the swapped versions of "1-5 Jul"/"1-5 Aug"
-  // (matching the file's own recent date range), and the ~30 rows that were plain TEXT instead of a
-  // real date cell (a human typed those directly, e.g. "25/07/2026") were already correctly day-
-  // first and untouched by this — so the swap is specific to how this export tool WRITES a real
-  // Excel date serial, not a general property of every payment file. Only used for paidDate in
-  // onPaymentFileChange; toDateString elsewhere (debtor file, other date columns) is unaffected.
-  // Only swaps when the result is still a valid month (<=12) — otherwise falls through unchanged,
-  // so a differently-sourced file that doesn't have this bug is never silently corrupted.
-  function toDateStringPaymentCell(v) {
-    if (v instanceof Date && !isNaN(v.getTime()) && v.getDate() <= 12) {
+  // Payment-file "วันที่รับชำระ": confirmed 2026-08-05 by inspecting a real "รับชำระวันที่..."
+  // QR-payment reconciliation export cell-by-cell (not just its displayed text) that every REAL
+  // Excel date-typed cell in that column had day and month swapped AT THE SOURCE — e.g. a true
+  // 5 Aug 2026 payment was stored as the serial for 5 May 2026. Confirmed systematic (not row
+  // noise): ~99% of ~2,200 rows clustered into exactly the swapped versions of "1-5 Jul"/"1-5 Aug"
+  // (this file's real date range), while the ~30 rows that were plain TEXT instead of a real date
+  // cell (a human typed those directly, e.g. "25/07/2026") were already correctly day-first and
+  // unaffected — the swap is specific to how THIS export tool writes a real Excel date serial, not
+  // a property of every payment file, so it must be detected per-import, never assumed.
+  //
+  // detectPaymentDateSwap self-calibrates once per import using whichever dates in the SAME column
+  // are already trustworthy: the file's own string-typed cells (parsed day-first, same as every
+  // other date in this app) when any exist, else "today" as a loose sanity anchor. For every real
+  // Date-typed cell it compares the unswapped vs swapped interpretation against that reference
+  // (payments are always recent, so the correct interpretation should land within ~60 days of it)
+  // and only calls it a swap when that's DECISIVELY the better fit for the whole column (>50% of
+  // cells AND at least 60% absolute agreement) — a close call defaults to "no swap" since a wrong
+  // guess here would corrupt every payment date in the import, worse than leaving it unswapped.
+  var PAYMENT_DATE_SWAP_WINDOW_MS = 60 * 24 * 3600 * 1000;
+  function detectPaymentDateSwap(rows, paidDateAliases) {
+    var trustedIso = [];
+    rows.forEach(function (r) {
+      var v = resolveField(r, paidDateAliases);
+      if (typeof v === 'string' && v) {
+        var iso = toDateString(v);
+        if (iso) trustedIso.push(iso);
+      }
+    });
+    var refIso = trustedIso.length ? trustedIso.sort()[Math.floor(trustedIso.length / 2)] : toDateString(new Date());
+    var refTime = refIso ? new Date(refIso).getTime() : NaN;
+    if (isNaN(refTime)) return false;
+    var unswappedHits = 0, swappedHits = 0, total = 0;
+    rows.forEach(function (r) {
+      var v = resolveField(r, paidDateAliases);
+      if (!(v instanceof Date) || isNaN(v.getTime())) return;
+      total++;
+      var unswappedTime = new Date(v.getFullYear(), v.getMonth(), v.getDate()).getTime();
+      if (Math.abs(unswappedTime - refTime) <= PAYMENT_DATE_SWAP_WINDOW_MS) unswappedHits++;
+      if (v.getDate() <= 12) {
+        var swappedIso = isoOf(v.getFullYear(), v.getDate(), v.getMonth() + 1);
+        var swappedTime = swappedIso ? new Date(swappedIso).getTime() : NaN;
+        if (!isNaN(swappedTime) && Math.abs(swappedTime - refTime) <= PAYMENT_DATE_SWAP_WINDOW_MS) swappedHits++;
+      }
+    });
+    if (total === 0) return false;
+    return swappedHits > unswappedHits && swappedHits >= total * 0.6;
+  }
+  // Only swaps when the result is still a valid month (<=12) — otherwise falls through unchanged.
+  function toDateStringPaymentCell(v, shouldSwap) {
+    if (shouldSwap && v instanceof Date && !isNaN(v.getTime()) && v.getDate() <= 12) {
       return isoOf(v.getFullYear(), v.getDate(), v.getMonth() + 1);
     }
     return toDateString(v);
@@ -4301,6 +4337,9 @@
     };
     readRows(file).then(function (rows) {
       var headers = rows.length ? Object.keys(rows[0]) : [];
+      // Decided ONCE for the whole file — see detectPaymentDateSwap for why (a source-system bug
+      // confirmed 2026-08-05, but only in some exports, never assumed).
+      var shouldSwapPaidDate = detectPaymentDateSwap(rows, ALIASES.paidDate);
       var orders = state.orders.map(function (o) {
         return Object.assign({}, o, {
           installments: o.installments.map(function (i) { return Object.assign({}, i); }),
@@ -4371,7 +4410,7 @@
           if (PAYMENT_STATUSES[status] || toNumber(amountPaid) > 0) {
             if (inst.verifiedCRM) { inst.verifiedCRM = false; inst.verifiedCRMAt = ''; inst.verifiedCRMBy = ''; }
             inst.amountPaid = toNumber(amountPaid);
-            if (paidDate !== '') inst.paidDate = toDateStringPaymentCell(paidDate);
+            if (paidDate !== '') inst.paidDate = toDateStringPaymentCell(paidDate, shouldSwapPaidDate);
             setPaid++;
           } else {
             statusOnly++;
@@ -4394,7 +4433,8 @@
         state.hasUnsavedChanges = false;
         savePersisted();
         state.uploadMsgPayment = 'อัปเดตประวัติสถานะสำเร็จ: ตั้งยอดชำระ ' + setPaid + ' งวด · อัปเดตสถานะอย่างเดียว ' + statusOnly + ' งวด'
-          + (missedSnap ? (' · ไม่พบ ' + missedSnap + ' แถว (SO หรืองวดที่ไม่ตรงกับข้อมูลลูกหนี้ เช่น รหัสงวด 900+ ที่ยังไม่ทราบความหมาย)') : '');
+          + (missedSnap ? (' · ไม่พบ ' + missedSnap + ' แถว (SO หรืองวดที่ไม่ตรงกับข้อมูลลูกหนี้ เช่น รหัสงวด 900+ ที่ยังไม่ทราบความหมาย)') : '')
+          + (shouldSwapPaidDate ? '\nℹ️ ตรวจพบว่าไฟล์นี้สลับวัน/เดือนในคอลัมน์วันที่รับชำระ — ระบบแก้ให้อัตโนมัติแล้ว' : '');
         render();
         return;
       }
@@ -4412,7 +4452,7 @@
       // Sorted by paidDate first so multiple rows for the same order land on consecutive งวด in the
       // right order regardless of the file's own row order.
       var sortedRows = rows.slice().sort(function (a, b) {
-        return toDateStringPaymentCell(resolveField(a, ALIASES.paidDate)).localeCompare(toDateStringPaymentCell(resolveField(b, ALIASES.paidDate)));
+        return toDateStringPaymentCell(resolveField(a, ALIASES.paidDate), shouldSwapPaidDate).localeCompare(toDateStringPaymentCell(resolveField(b, ALIASES.paidDate), shouldSwapPaidDate));
       });
       var added = 0, addedPenalty = 0, missed = 0, duplicate = 0, duplicateDate = 0, updatedOnly = 0;
       sortedRows.forEach(function (r) {
@@ -4422,7 +4462,7 @@
         var order = match.order, trackList = match.list;
         var amountPaid = resolveField(r, ALIASES.amountPaid);
         var paidDate = resolveField(r, ALIASES.paidDate);
-        var paidDateStr = toDateStringPaymentCell(paidDate);
+        var paidDateStr = toDateStringPaymentCell(paidDate, shouldSwapPaidDate);
         var status = resolveField(r, ALIASES.status);
         var discount = resolveField(r, ALIASES.discount);
         var note = resolveField(r, ALIASES.note);
@@ -4538,7 +4578,8 @@
         + (updatedOnly ? (' · อัปเดตข้อมูลอื่น ' + updatedOnly + ' แถว') : '')
         + (duplicateDate ? (' · ข้ามแถววันที่ซ้ำ ' + duplicateDate + ' แถว (มีอยู่ในระบบแล้ว)') : '')
         + (duplicate ? (' · ข้ามแถวซ้ำ ' + duplicate + ' แถว (บวกไปแล้ว)') : '')
-        + (missed ? (' · ไม่พบ ' + missed + ' แถว') : '');
+        + (missed ? (' · ไม่พบ ' + missed + ' แถว') : '')
+        + (shouldSwapPaidDate ? '\nℹ️ ตรวจพบว่าไฟล์นี้สลับวัน/เดือนในคอลัมน์วันที่รับชำระ — ระบบแก้ให้อัตโนมัติแล้ว' : '');
       render();
     }).catch(function (err) { state.uploadMsgPayment = 'เกิดข้อผิดพลาด: ' + err.message; render(); });
   }
