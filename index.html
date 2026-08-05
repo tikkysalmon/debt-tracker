@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.2';
+  var APP_BUILD = '2026-08-05.3';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -733,7 +733,14 @@
     }).catch(function () { return ''; });
   }
   // Click handler for issued-letter PDF "⬇ ดาวน์โหลด" links (see renderLetterHistory-ish spots) —
-  // replaces a static <a href> that pointed straight at the (now-private) object URL.
+  // replaces a static <a href> that pointed straight at the (now-private) object URL. Before the
+  // bucket went private, this was a plain <a href="[public url]" target="_blank"> with no
+  // `download` attribute — opening the PDF in a new tab let the browser's own PDF viewer show a
+  // preview first, and staff downloaded from there if they wanted to. Setting `a.download` here
+  // (added when this became a blob: URL) forced an immediate save-as instead, silently dropping
+  // that preview step (user report, 2026-08-05). Fixed by dropping `download` again — a synthetic
+  // <a target="_blank"> click (not window.open, which async promise callbacks like this one can
+  // get popup-blocked) still just navigates to the blob URL, so the browser's own viewer renders it.
   function downloadLetterPdf(value) {
     var path = storagePathFromValue(value);
     if (!path || !db) return;
@@ -741,7 +748,7 @@
       if (res.error || !res.data) { alert('ดาวน์โหลดไม่สำเร็จ: ' + (res.error ? res.error.message : 'ไม่พบไฟล์')); return; }
       var blobUrl = URL.createObjectURL(res.data);
       var a = document.createElement('a');
-      a.href = blobUrl; a.download = path.split('/').pop(); a.target = '_blank';
+      a.href = blobUrl; a.target = '_blank'; a.rel = 'noopener';
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       setTimeout(function () { URL.revokeObjectURL(blobUrl); }, 30000);
     }).catch(function (err) { alert('ดาวน์โหลดไม่สำเร็จ: ' + (err && err.message ? err.message : String(err))); });
