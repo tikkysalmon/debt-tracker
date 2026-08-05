@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.6';
+  var APP_BUILD = '2026-08-05.7';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -4576,17 +4576,22 @@
   // Imports Thaibulk's own "email-api-report" dashboard export (สถานะการส่ง/bounced/opened/etc.) —
   // confirmed 2026-08-05 against Thaibulk's published Email API spec that there is NO endpoint to
   // query send status live, so this file (manually exported from their dashboard) is the only way
-  // to bring that status into the debt letter's "ประวัติส่งอีเมล" history. Two-tier matching:
+  // to bring that status into the debt letter's "ประวัติส่งอีเมล" history. Match tiers, in order:
   //   1) message_id — exact, if this entry was sent AFTER 2026-08-05 (confirmSendEmail started
   //      storing Thaibulk's own transaction id on every new send from that point on).
-  //   2) subject + recipient + letterNo — for OLDER entries sent before message_id was captured.
-  //      The subject line is always built server-side (api/send-email.js) as exactly
-  //      "หนังสือทวงถามให้ชำระหนี้ค้างชำระ (ครั้งที่ N) เลขที่คำสั่งซื้อ SO-XXXX" — parsed back out
-  //      here to find the matching order/letterNo without needing message_id at all.
+  //   2) subject + recipient + letterNo — the subject line is always built server-side
+  //      (api/send-email.js) as exactly "...(ครั้งที่ N) เลขที่คำสั่งซื้อ SO-XXXX", parsed back out
+  //      to find the exact order + letterNo without needing message_id at all.
+  //   3) recipient email alone (per explicit user request, 2026-08-05 — tier 2 left some real rows
+  //      unmatched, e.g. an order's SO changed since the letter was sent, or a subject Thaibulk
+  //      itself modified) — ONLY auto-applied when the recipient has exactly one send anywhere in
+  //      the whole dataset (narrowed to matching ครั้งที่ first if the subject at least parsed);
+  //      2+ candidates for the same address is left unmatched rather than guessing wrong.
   // Only ever writes status/statusReason/opens/clicks/statusUpdatedAt/messageId onto an EXISTING
   // emailHistory/accessoryEmailHistory entry that already matched — never creates new history
   // entries, never touches any other order field, per explicit user request not to affect anything
-  // else in the data.
+  // else in the data. Every unmatched row's reason is kept (not just a count) so staff can actually
+  // see why, instead of a bare number with no way to check it.
   var EMAIL_SUBJECT_RE = /ครั้งที่\s*(\d+)\)\s*เลขที่คำสั่งซื้อ\s*(\S+)/;
   function onEmailReportFileChange(file) {
     if (!file) return;
@@ -4614,10 +4619,14 @@
           accessoryEmailHistory: (o.accessoryEmailHistory || []).map(function (h) { return Object.assign({}, h); })
         });
       });
-      var byMessageId = {};
+      var byMessageId = {}, byRecipient = {};
       orders.forEach(function (o) {
         ['emailHistory', 'accessoryEmailHistory'].forEach(function (field) {
-          (o[field] || []).forEach(function (h) { if (h.messageId) byMessageId[h.messageId] = h; });
+          (o[field] || []).forEach(function (h) {
+            if (h.messageId) byMessageId[h.messageId] = h;
+            var key = String(h.to || '').trim().toLowerCase();
+            if (key) (byRecipient[key] = byRecipient[key] || []).push(h);
+          });
         });
       });
       function findByOrderIdLetterAndTo(orderIdFromSubject, letterNo, to) {
@@ -4631,7 +4640,27 @@
         }
         return null;
       }
-      var matched = 0, unchanged = 0, unmatched = 0;
+      // Returns { entry } on a confident match, or { skipReason } explaining why not (surfaced to
+      // staff in the summary below instead of a silent/bare count).
+      function findEntry(messageId, to, subject) {
+        if (messageId && byMessageId[messageId]) return { entry: byMessageId[messageId] };
+        var m = subject.match(EMAIL_SUBJECT_RE);
+        var letterNo = m ? Number(m[1]) : null;
+        if (m) {
+          var byOrder = findByOrderIdLetterAndTo(m[2], letterNo, to);
+          if (byOrder) return { entry: byOrder };
+        }
+        var candidates = byRecipient[to] || [];
+        if (letterNo != null) {
+          var narrowed = candidates.filter(function (c) { return c.letterNo === letterNo; });
+          if (narrowed.length === 1) return { entry: narrowed[0] };
+        }
+        if (candidates.length === 1) return { entry: candidates[0] };
+        if (candidates.length > 1) return { skipReason: 'อีเมล ' + to + ': พบ ' + candidates.length + ' ฉบับที่เคยส่งถึงที่อยู่นี้ ระบุแน่ชัดไม่ได้ว่าเป็นฉบับไหน' };
+        if (!m) return { skipReason: 'อีเมล ' + to + ': อ่านหัวข้ออีเมลไม่ได้ และไม่พบประวัติการส่งถึงที่อยู่นี้ในระบบเลย' };
+        return { skipReason: 'อีเมล ' + to + ' (SO ' + m[2] + ' ครั้งที่ ' + letterNo + '): ไม่พบคำสั่งซื้อ/ประวัติการส่งที่ตรงกันในระบบ' };
+      }
+      var matched = 0, unchanged = 0, unmatchedReasons = [];
       rows.forEach(function (r) {
         var messageId = String(resolveField(r, ALIASES.messageId) || '').trim();
         var to = String(resolveField(r, ALIASES.to) || '').trim().toLowerCase();
@@ -4640,14 +4669,10 @@
         var reason = String(resolveField(r, ALIASES.reason) || '').trim();
         var opens = toNumber(resolveField(r, ALIASES.opens));
         var clicks = toNumber(resolveField(r, ALIASES.clicks));
-        if (!to || !status) { unmatched++; return; }
-        var entry = messageId ? byMessageId[messageId] : null;
-        if (!entry) {
-          var m = subject.match(EMAIL_SUBJECT_RE);
-          if (!m) { unmatched++; return; }
-          entry = findByOrderIdLetterAndTo(m[2], Number(m[1]), to);
-        }
-        if (!entry) { unmatched++; return; }
+        if (!to || !status) { unmatchedReasons.push('แถวไม่มีอีเมลผู้รับ/สถานะการส่ง — ข้ามแถวนี้'); return; }
+        var found = findEntry(messageId, to, subject);
+        if (!found.entry) { unmatchedReasons.push(found.skipReason); return; }
+        var entry = found.entry;
         if (entry.status === status && entry.statusReason === reason && entry.opens === opens && entry.clicks === clicks) { unchanged++; return; }
         entry.status = status;
         entry.statusReason = reason;
@@ -4658,7 +4683,7 @@
         matched++;
       });
       if (matched === 0 && unchanged === 0) {
-        state.uploadMsgEmailReport = '⚠️ อ่านไฟล์ได้ ' + rows.length + ' แถว แต่จับคู่กับประวัติการส่งอีเมลในระบบไม่ได้เลย (ยังไม่บันทึก) — ตรวจว่าเป็นไฟล์ export จาก Thaibulk ที่ถูกต้อง และเคยส่งอีเมลจดหมายทวงหนี้ของ SO เหล่านี้จากระบบนี้แล้ว';
+        state.uploadMsgEmailReport = '⚠️ อ่านไฟล์ได้ ' + rows.length + ' แถว แต่จับคู่กับประวัติการส่งอีเมลในระบบไม่ได้เลย (ยังไม่บันทึก) — ตรวจว่าเป็นไฟล์ export จาก Thaibulk ที่ถูกต้อง และเคยส่งอีเมลจดหมายทวงหนี้ของ SO เหล่านี้จากระบบนี้แล้ว\n' + unmatchedReasons.slice(0, 10).join('\n');
         render();
         return;
       }
@@ -4667,7 +4692,7 @@
       savePersisted();
       state.uploadMsgEmailReport = '✅ อัปเดตสถานะสำเร็จ ' + matched + ' ฉบับ'
         + (unchanged ? (' · ไม่มีการเปลี่ยนแปลง ' + unchanged + ' ฉบับ') : '')
-        + (unmatched ? (' · ไม่พบข้อมูลที่ตรงกัน ' + unmatched + ' แถว') : '');
+        + (unmatchedReasons.length ? ('\n⚠️ ไม่พบข้อมูลที่ตรงกัน ' + unmatchedReasons.length + ' แถว:\n' + unmatchedReasons.slice(0, 10).join('\n') + (unmatchedReasons.length > 10 ? '\n...' : '')) : '');
       render();
     }).catch(function (err) { state.uploadMsgEmailReport = 'เกิดข้อผิดพลาด: ' + err.message; render(); });
   }
