@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-04.3';
+  var APP_BUILD = '2026-08-05.1';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -6054,8 +6054,12 @@
       var a = t.getAttribute('data-action');
       if (!actionAllowed(a)) { denyToast(); return; }
       switch (a) {
-        case 'goDashboard': if (confirmDiscardIfDirty()) { state.view = 'dashboard'; render(); } break;
-        case 'goTracking': if (!can('tracking_view')) { denyToast(); return; } if (confirmDiscardIfDirty()) { state.view = 'tracking'; render(); } break;
+        // Discard-confirm only matters when actually leaving the ติดตามหนี้ view (where edits happen) —
+        // gate on state.view === 'tracking' so a stray hasUnsavedChanges carried over from tracking
+        // (e.g. via goUsers/goUpload, which don't clear it) doesn't re-surface this popup later while
+        // the user is already on an unrelated menu (จัดการผู้ใช้งาน/อัพโหลดไฟล์, etc.).
+        case 'goDashboard': if (state.view !== 'tracking' || confirmDiscardIfDirty()) { state.view = 'dashboard'; render(); } break;
+        case 'goTracking': if (!can('tracking_view')) { denyToast(); return; } if (state.view !== 'tracking' || confirmDiscardIfDirty()) { state.view = 'tracking'; render(); } break;
         case 'goUsers': if (!(state.currentUser && state.currentUser.isAdmin)) { denyToast(); return; } state.view = 'users'; render(); break;
         case 'logout': handleLogout(); break;
         case 'toggleSidebarCollapsed': toggleSidebarCollapsed(); break;
