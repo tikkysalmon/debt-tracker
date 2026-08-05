@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.8';
+  var APP_BUILD = '2026-08-05.9';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -3554,18 +3554,46 @@
   // Status/reason/opens/clicks come from Thaibulk's own dashboard export, matched in via
   // onEmailReportFileChange (see there) — not something the app can query live (Thaibulk's Email
   // API has no status-check endpoint, confirmed against their published OpenAPI spec 2026-08-05),
-  // so this can be stale/missing until someone uploads a fresh export. 'bounced'/'complained' are
-  // the two failure statuses seen in real exports so far; anything else not in STATUS_LABELS is
-  // shown as-is (neutral color) rather than guessed at, since the full set of values Thaibulk uses
-  // isn't documented anywhere — safer to show the raw string than mislabel it green/red wrongly.
-  var EMAIL_STATUS_LABELS = { bounced: 'ส่งไม่สำเร็จ (Bounced)', complained: 'ถูกร้องเรียน (Spam)', delivered: 'ส่งสำเร็จ', sent: 'ส่งสำเร็จ' };
-  var EMAIL_STATUS_BAD = { bounced: true, complained: true, failed: true };
+  // so this can be stale/missing until someone uploads a fresh export. Labels/colors below mirror
+  // Thaibulk's own dashboard legend (Delivered/Hard Bounced/Soft Bounced/Rejected/Failed, per user
+  // screenshot 2026-08-05) exactly. Real exports seen so far only ever carry the generic raw value
+  // "bounced" for BOTH hard and soft cases (Thaibulk's dashboard does its own hard/soft split
+  // client-side) — resolveEmailStatusKey mirrors that split here using the "เหตุผล" text (temporary-
+  // sounding wording → soft, everything else → hard, since every real "bounced" row seen so far had
+  // a clearly-permanent reason). delivered/rejected/failed/soft_bounced raw spellings below are
+  // this app's best guess at Thaibulk's likely field values (never confirmed against a real
+  // export of those statuses) — if one ever shows up displaying the raw English string instead of
+  // proper Thai, that row's exact raw value needs adding here.
+  var EMAIL_STATUS_META = {
+    delivered: { label: 'ส่งสำเร็จ', color: '#0b7a5b', bg: 'rgba(18,184,134,0.10)' },
+    hard_bounced: { label: 'ส่งไม่สำเร็จอย่างถาวร (อีเมลผู้รับไม่มีอยู่จริง หรือ ไม่สามารถใช้งานได้)', color: '#2b2540', bg: 'rgba(43,37,64,0.10)' },
+    soft_bounced: { label: 'ส่งไม่สำเร็จชั่วคราว (เมลบ็อกซ์ของผู้รับเต็ม, อีเมลมีขนาดใหญ่เกินไป)', color: '#6b6785', bg: 'rgba(107,103,133,0.10)' },
+    rejected: { label: 'อีเมลถูกปฏิเสธ', color: '#a5620d', bg: 'rgba(240,140,0,0.10)' },
+    failed: { label: 'ส่งไม่สำเร็จด้วยเหตุผลอื่นๆ', color: '#c92a2a', bg: 'rgba(224,49,49,0.10)' },
+    complained: { label: 'ถูกร้องเรียน (Spam)', color: '#c92a2a', bg: 'rgba(224,49,49,0.10)' }
+  };
+  // Normalizes raw status spellings ("Hard Bounced" / "hard_bounced" / "hard-bounced" / "hardbounce"
+  // all → 'hard_bounced') so the exact formatting Thaibulk happens to export in doesn't matter.
+  var EMAIL_STATUS_KEY_ALIASES = {
+    delivered: 'delivered', sent: 'delivered', success: 'delivered',
+    hardbounced: 'hard_bounced', hardbounce: 'hard_bounced',
+    softbounced: 'soft_bounced', softbounce: 'soft_bounced',
+    rejected: 'rejected', failed: 'failed', complained: 'complained', complaint: 'complained'
+  };
+  var EMAIL_SOFT_BOUNCE_REASON_RE = /temporary|soft|mailbox.*full|over.?quota|quota exceeded|too large|message size|size limit/i;
+  function resolveEmailStatusKey(rawStatus, reason) {
+    var norm = String(rawStatus || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+    if (EMAIL_STATUS_KEY_ALIASES[norm]) return EMAIL_STATUS_KEY_ALIASES[norm];
+    if (norm === 'bounced' || norm === 'bounce') return EMAIL_SOFT_BOUNCE_REASON_RE.test(reason || '') ? 'soft_bounced' : 'hard_bounced';
+    return null;
+  }
   function emailStatusBadge(h) {
     if (!h.status) return '';
-    var isBad = !!EMAIL_STATUS_BAD[h.status];
-    var label = EMAIL_STATUS_LABELS[h.status] || h.status;
-    var color = isBad ? '#c92a2a' : '#0b7a5b';
-    var bg = isBad ? 'rgba(224,49,49,0.10)' : 'rgba(18,184,134,0.10)';
+    var key = resolveEmailStatusKey(h.status, h.statusReason);
+    var meta = key && EMAIL_STATUS_META[key];
+    var label = meta ? meta.label : h.status;
+    var color = meta ? meta.color : '#6b6785';
+    var bg = meta ? meta.bg : 'rgba(107,103,133,0.10)';
     return '<div style="margin-top:4px; display:inline-block; background:' + bg + '; color:' + color + '; font-weight:700; font-size:10.5px; padding:2px 8px; border-radius:10px;">' + esc(label) + '</div>' +
       (h.statusReason ? '<div style="color:#8a86a3; font-size:10.5px; margin-top:2px;">เหตุผล: ' + esc(h.statusReason) + '</div>' : '');
   }
