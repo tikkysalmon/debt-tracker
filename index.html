@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.10';
+  var APP_BUILD = '2026-08-05.11';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -3821,6 +3821,24 @@
     }
     return '';
   }
+  // Payment-file "วันที่รับชำระ" cells specifically: confirmed 2026-08-05 by inspecting a real
+  // "รับชำระวันที่..." QR-payment reconciliation export cell-by-cell (not just its displayed text)
+  // that every REAL Excel date-typed cell in that column had day and month swapped at the source —
+  // e.g. a true 5 Aug 2026 payment was stored as the serial for 5 May 2026. Proven systematic, not a
+  // one-off: ~99% of ~2,200 rows clustered into exactly the swapped versions of "1-5 Jul"/"1-5 Aug"
+  // (matching the file's own recent date range), and the ~30 rows that were plain TEXT instead of a
+  // real date cell (a human typed those directly, e.g. "25/07/2026") were already correctly day-
+  // first and untouched by this — so the swap is specific to how this export tool WRITES a real
+  // Excel date serial, not a general property of every payment file. Only used for paidDate in
+  // onPaymentFileChange; toDateString elsewhere (debtor file, other date columns) is unaffected.
+  // Only swaps when the result is still a valid month (<=12) — otherwise falls through unchanged,
+  // so a differently-sourced file that doesn't have this bug is never silently corrupted.
+  function toDateStringPaymentCell(v) {
+    if (v instanceof Date && !isNaN(v.getTime()) && v.getDate() <= 12) {
+      return isoOf(v.getFullYear(), v.getDate(), v.getMonth() + 1);
+    }
+    return toDateString(v);
+  }
   // Sortable key for the old system's own edit-log timestamp column ("04/05/26, 17:59"), used only
   // to pick the latest row per SO+งวด when importing a status-history export — never stored.
   function parseLogTimestamp(v) {
@@ -4353,7 +4371,7 @@
           if (PAYMENT_STATUSES[status] || toNumber(amountPaid) > 0) {
             if (inst.verifiedCRM) { inst.verifiedCRM = false; inst.verifiedCRMAt = ''; inst.verifiedCRMBy = ''; }
             inst.amountPaid = toNumber(amountPaid);
-            if (paidDate !== '') inst.paidDate = toDateString(paidDate);
+            if (paidDate !== '') inst.paidDate = toDateStringPaymentCell(paidDate);
             setPaid++;
           } else {
             statusOnly++;
@@ -4394,7 +4412,7 @@
       // Sorted by paidDate first so multiple rows for the same order land on consecutive งวด in the
       // right order regardless of the file's own row order.
       var sortedRows = rows.slice().sort(function (a, b) {
-        return toDateString(resolveField(a, ALIASES.paidDate)).localeCompare(toDateString(resolveField(b, ALIASES.paidDate)));
+        return toDateStringPaymentCell(resolveField(a, ALIASES.paidDate)).localeCompare(toDateStringPaymentCell(resolveField(b, ALIASES.paidDate)));
       });
       var added = 0, addedPenalty = 0, missed = 0, duplicate = 0, duplicateDate = 0, updatedOnly = 0;
       sortedRows.forEach(function (r) {
@@ -4404,7 +4422,7 @@
         var order = match.order, trackList = match.list;
         var amountPaid = resolveField(r, ALIASES.amountPaid);
         var paidDate = resolveField(r, ALIASES.paidDate);
-        var paidDateStr = toDateString(paidDate);
+        var paidDateStr = toDateStringPaymentCell(paidDate);
         var status = resolveField(r, ALIASES.status);
         var discount = resolveField(r, ALIASES.discount);
         var note = resolveField(r, ALIASES.note);
