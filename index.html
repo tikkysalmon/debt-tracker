@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.7';
+  var APP_BUILD = '2026-08-05.8';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -4581,23 +4581,39 @@
   //      storing Thaibulk's own transaction id on every new send from that point on).
   //   2) subject + recipient + letterNo — the subject line is always built server-side
   //      (api/send-email.js) as exactly "...(ครั้งที่ N) เลขที่คำสั่งซื้อ SO-XXXX", parsed back out
-  //      to find the exact order + letterNo without needing message_id at all.
-  //   3) recipient email alone (per explicit user request, 2026-08-05 — tier 2 left some real rows
-  //      unmatched, e.g. an order's SO changed since the letter was sent, or a subject Thaibulk
-  //      itself modified) — ONLY auto-applied when the recipient has exactly one send anywhere in
-  //      the whole dataset (narrowed to matching ครั้งที่ first if the subject at least parsed);
-  //      2+ candidates for the same address is left unmatched rather than guessing wrong.
-  // Only ever writes status/statusReason/opens/clicks/statusUpdatedAt/messageId onto an EXISTING
-  // emailHistory/accessoryEmailHistory entry that already matched — never creates new history
-  // entries, never touches any other order field, per explicit user request not to affect anything
-  // else in the data. Every unmatched row's reason is kept (not just a count) so staff can actually
-  // see why, instead of a bare number with no way to check it.
+  //      to find the exact order + letterNo without needing message_id at all. If the order is real
+  //      but has NO emailHistory/accessoryEmailHistory entry for that letterNo+recipient at all, the
+  //      entry is RECREATED (not just updated) — user investigated their own "ไม่พบข้อมูลที่ตรงกัน"
+  //      rows 2026-08-05 and confirmed the actual root cause: these were real sends that DID go out
+  //      (Thaibulk's own log proves it — the subject only this app's server ever generates, from a
+  //      real orderId in this dataset), but the local emailHistory entry never made it into the
+  //      shared state because of the concurrent-save race fixed earlier the same day (an in-flight
+  //      local edit silently lost to another client's save landing first). Safe to recreate here
+  //      specifically because tier 2's match is unusually strong proof of provenance (exact
+  //      server-generated subject template + a real order in this exact dataset), unlike tier 3.
+  //   3) recipient email alone — for genuinely unclear cases (e.g. an order's SO changed since the
+  //      letter was sent). ONLY auto-applied when the recipient has exactly one send anywhere in the
+  //      whole dataset (narrowed to matching ครั้งที่ first if the subject at least parsed); 2+
+  //      candidates for the same address is left unmatched rather than guessing wrong. Never
+  //      recreates a missing entry (too weak a match to fabricate a history record from).
+  // Never touches any order field other than emailHistory/accessoryEmailHistory entries it matched
+  // or recreated under the above proof, per explicit user request not to affect anything else in
+  // the data. Every still-unmatched row's reason is kept (not just a count) so staff can check it.
   var EMAIL_SUBJECT_RE = /ครั้งที่\s*(\d+)\)\s*เลขที่คำสั่งซื้อ\s*(\S+)/;
+  function formatEmailReportTimestamp(raw) {
+    var s = String(raw || '').trim();
+    if (!s) return nowTimestamp();
+    var d = new Date(s.replace(' ', 'T'));
+    if (isNaN(d.getTime())) return s;
+    var pad = function (n) { return String(n).padStart(2, '0'); };
+    return pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + '/' + d.getFullYear() + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
   function onEmailReportFileChange(file) {
     if (!file) return;
     if (!window.XLSX) { state.uploadMsgEmailReport = 'ไม่พบไลบรารีอ่านไฟล์ กรุณาลองใหม่'; render(); return; }
     var ALIASES = {
       messageId: ['message_id', 'messageid'],
+      sentAt: ['วัน / เวลาที่ส่ง', 'วันเวลาที่ส่ง', 'วันที่ส่ง'],
       to: ['อีเมลผู้รับ', 'email', 'to'],
       subject: ['หัวข้ออีเมล', 'subject'],
       opens: ['จำนวนเปิด', 'opens'],
@@ -4640,15 +4656,36 @@
         }
         return null;
       }
-      // Returns { entry } on a confident match, or { skipReason } explaining why not (surfaced to
-      // staff in the summary below instead of a silent/bare count).
-      function findEntry(messageId, to, subject) {
+      // Only reachable once tier 2's exact orderId+letterNo lookup already found the order but no
+      // matching history entry — see the big comment above for why recreating here is safe.
+      function recreateEntry(orderIdFromSubject, letterNo, toRaw, sentAtRaw) {
+        for (var i = 0; i < orders.length; i++) {
+          var o = orders[i];
+          var field = o.orderId === orderIdFromSubject ? 'emailHistory' : (o.accessoryOrderId === orderIdFromSubject ? 'accessoryEmailHistory' : null);
+          if (!field) continue;
+          var entry = {
+            at: formatEmailReportTimestamp(sentAtRaw), by: 'กู้คืนจากประวัติ Thaibulk (ของเดิมสูญหายจากบัคซิงก์ข้อมูลก่อน 2026-08-05)',
+            to: toRaw, letterNo: letterNo
+          };
+          o[field] = (o[field] || []).concat([entry]);
+          var key = toRaw.trim().toLowerCase();
+          if (key) (byRecipient[key] = byRecipient[key] || []).push(entry);
+          return entry;
+        }
+        return null;
+      }
+      // Returns { entry, recreated } on a confident match, or { skipReason } explaining why not
+      // (surfaced to staff in the summary below instead of a silent/bare count).
+      function findEntry(messageId, to, toRaw, subject, sentAtRaw) {
         if (messageId && byMessageId[messageId]) return { entry: byMessageId[messageId] };
         var m = subject.match(EMAIL_SUBJECT_RE);
         var letterNo = m ? Number(m[1]) : null;
         if (m) {
-          var byOrder = findByOrderIdLetterAndTo(m[2], letterNo, to);
+          var orderIdFromSubject = m[2];
+          var byOrder = findByOrderIdLetterAndTo(orderIdFromSubject, letterNo, to);
           if (byOrder) return { entry: byOrder };
+          var recreated = recreateEntry(orderIdFromSubject, letterNo, toRaw, sentAtRaw);
+          if (recreated) return { entry: recreated, recreated: true };
         }
         var candidates = byRecipient[to] || [];
         if (letterNo != null) {
@@ -4657,23 +4694,26 @@
         }
         if (candidates.length === 1) return { entry: candidates[0] };
         if (candidates.length > 1) return { skipReason: 'อีเมล ' + to + ': พบ ' + candidates.length + ' ฉบับที่เคยส่งถึงที่อยู่นี้ ระบุแน่ชัดไม่ได้ว่าเป็นฉบับไหน' };
-        if (!m) return { skipReason: 'อีเมล ' + to + ': อ่านหัวข้ออีเมลไม่ได้ และไม่พบประวัติการส่งถึงที่อยู่นี้ในระบบเลย' };
-        return { skipReason: 'อีเมล ' + to + ' (SO ' + m[2] + ' ครั้งที่ ' + letterNo + '): ไม่พบคำสั่งซื้อ/ประวัติการส่งที่ตรงกันในระบบ' };
+        if (m) return { skipReason: 'อีเมล ' + to + ' (SO ' + m[2] + ' ครั้งที่ ' + letterNo + '): ไม่พบคำสั่งซื้อนี้ในระบบเลย และไม่พบประวัติการส่งถึงที่อยู่นี้ในระบบด้วย' };
+        return { skipReason: 'อีเมล ' + to + ': อ่านหัวข้ออีเมลไม่ได้ และไม่พบประวัติการส่งถึงที่อยู่นี้ในระบบเลย' };
       }
-      var matched = 0, unchanged = 0, unmatchedReasons = [];
+      var matched = 0, unchanged = 0, recreatedCount = 0, unmatchedReasons = [];
       rows.forEach(function (r) {
         var messageId = String(resolveField(r, ALIASES.messageId) || '').trim();
-        var to = String(resolveField(r, ALIASES.to) || '').trim().toLowerCase();
+        var toRaw = String(resolveField(r, ALIASES.to) || '').trim();
+        var to = toRaw.toLowerCase();
         var subject = String(resolveField(r, ALIASES.subject) || '');
+        var sentAtRaw = resolveField(r, ALIASES.sentAt);
         var status = String(resolveField(r, ALIASES.status) || '').trim();
         var reason = String(resolveField(r, ALIASES.reason) || '').trim();
         var opens = toNumber(resolveField(r, ALIASES.opens));
         var clicks = toNumber(resolveField(r, ALIASES.clicks));
         if (!to || !status) { unmatchedReasons.push('แถวไม่มีอีเมลผู้รับ/สถานะการส่ง — ข้ามแถวนี้'); return; }
-        var found = findEntry(messageId, to, subject);
+        var found = findEntry(messageId, to, toRaw, subject, sentAtRaw);
         if (!found.entry) { unmatchedReasons.push(found.skipReason); return; }
+        if (found.recreated) recreatedCount++;
         var entry = found.entry;
-        if (entry.status === status && entry.statusReason === reason && entry.opens === opens && entry.clicks === clicks) { unchanged++; return; }
+        if (!found.recreated && entry.status === status && entry.statusReason === reason && entry.opens === opens && entry.clicks === clicks) { unchanged++; return; }
         entry.status = status;
         entry.statusReason = reason;
         entry.opens = opens;
@@ -4691,6 +4731,7 @@
       state.hasUnsavedChanges = false;
       savePersisted();
       state.uploadMsgEmailReport = '✅ อัปเดตสถานะสำเร็จ ' + matched + ' ฉบับ'
+        + (recreatedCount ? (' (กู้คืนประวัติที่หายไปจากบัคซิงก์เดิม ' + recreatedCount + ' ฉบับ)') : '')
         + (unchanged ? (' · ไม่มีการเปลี่ยนแปลง ' + unchanged + ' ฉบับ') : '')
         + (unmatchedReasons.length ? ('\n⚠️ ไม่พบข้อมูลที่ตรงกัน ' + unmatchedReasons.length + ' แถว:\n' + unmatchedReasons.slice(0, 10).join('\n') + (unmatchedReasons.length > 10 ? '\n...' : '')) : '');
       render();
