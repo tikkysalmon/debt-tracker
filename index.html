@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.14';
+  var APP_BUILD = '2026-08-05.15';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1356,6 +1356,7 @@
     filterUnverifiedCRM: false, // "แสดงเฉพาะที่ยังตรวจสอบไม่ครบ" — unrelated to the (unused) filterCrmStatus dropdown above
     filterGrade: 'all',
     filterPurchaseTypes: [],
+    filterLockSystem: 'all', filterLockMode: 'all',
     dueFrom: '', dueTo: '', paidFrom: '', paidTo: '', contractFrom: '', contractTo: '',
     customerNotes: (persisted && persisted.customerNotes) || {},
     customerTrackingReturn: (persisted && persisted.customerTrackingReturn) || {},
@@ -1393,6 +1394,7 @@
     appliedUnverifiedCRM: false,
     appliedGrade: 'all',
     appliedPurchaseTypes: [], // types EXCLUDED from results; empty = show every purchase type
+    appliedLockSystem: 'all', appliedLockMode: 'all',
     appliedDueFrom: '', appliedDueTo: '', appliedPaidFrom: '', appliedPaidTo: '', appliedContractFrom: '', appliedContractTo: ''
   };
 
@@ -1961,9 +1963,10 @@
     }
     // Shared shape for sections 1-3: distinct-customer count (จำนวนกี่คน — a customer with 2
     // qualifying bills counts once), total ค้างชำระจริงๆ value summed across just the qualifying
-    // orders, a contract-month breakdown, and how many have no lockSystem on file.
+    // orders, a contract-month breakdown, a per-lockSystem (Soti/Marena/...) customer-count
+    // breakdown, and how many have no lockSystem on file at all.
     function debtorSegment(matchFn) {
-      var custSet = {}, totalValue = 0, byMonth = {}, noLockCustSet = {};
+      var custSet = {}, totalValue = 0, byMonth = {}, noLockCustSet = {}, bySystemCustSet = {};
       active.forEach(function (o) {
         if (!matchFn(o)) return;
         var key = customerKey(o);
@@ -1972,9 +1975,11 @@
         var monthKey = o.contractDate ? o.contractDate.slice(0, 7) : 'ไม่ทราบเดือน';
         byMonth[monthKey] = (byMonth[monthKey] || 0) + 1;
         if (!o.lockSystem) noLockCustSet[key] = true;
+        else (bySystemCustSet[o.lockSystem] = bySystemCustSet[o.lockSystem] || {})[key] = true;
       });
       var months = Object.keys(byMonth).sort().map(function (m) { return { month: m, count: byMonth[m] }; });
-      return { customerCount: Object.keys(custSet).length, totalValueDisp: fmtMoney(totalValue), months: months, noLockCount: Object.keys(noLockCustSet).length };
+      var bySystem = Object.keys(bySystemCustSet).sort().map(function (s) { return { system: s, count: Object.keys(bySystemCustSet[s]).length }; });
+      return { customerCount: Object.keys(custSet).length, totalValueDisp: fmtMoney(totalValue), months: months, noLockCount: Object.keys(noLockCustSet).length, bySystem: bySystem };
     }
     var seg1 = debtorSegment(function (o) { return firstOverdueNo(o.installments) === 1; });
     var seg2 = debtorSegment(function (o) { return firstOverdueNo(o.installments) === 2; });
@@ -2103,7 +2108,8 @@
       purchaseTypes: state.appliedPurchaseTypes,
       dueFrom: state.appliedDueFrom, dueTo: state.appliedDueTo,
       paidFrom: state.appliedPaidFrom, paidTo: state.appliedPaidTo,
-      contractFrom: state.appliedContractFrom, contractTo: state.appliedContractTo
+      contractFrom: state.appliedContractFrom, contractTo: state.appliedContractTo,
+      lockSystem: state.appliedLockSystem, lockMode: state.appliedLockMode
     };
     function inRange(dateStr, from, to) {
       if (!dateStr) return false;
@@ -2169,6 +2175,15 @@
     if (f.contractFrom || f.contractTo) {
       filteredOrders = filteredOrders.filter(function (o) { return inRange(o.contractDate, f.contractFrom, f.contractTo); });
     }
+    // ระบบล็อคเครื่อง/โหมดการล็อค (2026-08-05) — reference-only fields from the Soti/Marena import
+    // (see onLockSystemFileChange), same "ทุกสถานะ = no filter" convention as the other dropdowns.
+    // 'none' is a synthetic option meaning "not in either lock system" (o.lockSystem empty).
+    if (f.lockSystem !== 'all') {
+      filteredOrders = filteredOrders.filter(function (o) { return f.lockSystem === 'none' ? !o.lockSystem : o.lockSystem === f.lockSystem; });
+    }
+    if (f.lockMode !== 'all') {
+      filteredOrders = filteredOrders.filter(function (o) { return o.lockSystemMode === f.lockMode; });
+    }
     // ยอดค้างชำระ/งวดค้าง in the results table normally show the order's WHOLE ค้างชำระ total
     // (trueOverdueRaw/overdueCount from computeOrdersUncached) — but once a per-งวด filter narrows
     // which งวด actually matched, staff expect the column to reflect just that filtered slice, not
@@ -2226,6 +2241,7 @@
       state.filterUnverifiedCRM !== state.appliedUnverifiedCRM ||
       state.filterGrade !== state.appliedGrade ||
       state.filterPurchaseTypes.join(',') !== state.appliedPurchaseTypes.join(',') ||
+      state.filterLockSystem !== state.appliedLockSystem || state.filterLockMode !== state.appliedLockMode ||
       state.dueFrom !== state.appliedDueFrom || state.dueTo !== state.appliedDueTo ||
       state.paidFrom !== state.appliedPaidFrom || state.paidTo !== state.appliedPaidTo ||
       state.contractFrom !== state.appliedContractFrom || state.contractTo !== state.appliedContractTo;
@@ -2286,6 +2302,8 @@
     state.appliedUnverifiedCRM = state.filterUnverifiedCRM;
     state.appliedGrade = state.filterGrade;
     state.appliedPurchaseTypes = state.filterPurchaseTypes.slice();
+    state.appliedLockSystem = state.filterLockSystem;
+    state.appliedLockMode = state.filterLockMode;
     state.appliedDueFrom = state.dueFrom; state.appliedDueTo = state.dueTo;
     state.appliedPaidFrom = state.paidFrom; state.appliedPaidTo = state.paidTo;
     state.appliedContractFrom = state.contractFrom; state.appliedContractTo = state.contractTo;
@@ -2315,9 +2333,9 @@
       page: 1,
       selectedCustomerId: null,
       query: '', filterAccountStatus: 'all', filterDueStatus: 'all', filterPaymentStatuses: [],
-      filterCrmStatus: 'all', filterUnverifiedCRM: false, filterGrade: 'all', filterPurchaseTypes: [], dueFrom: '', dueTo: '', paidFrom: '', paidTo: '', contractFrom: '', contractTo: '',
+      filterCrmStatus: 'all', filterUnverifiedCRM: false, filterGrade: 'all', filterPurchaseTypes: [], filterLockSystem: 'all', filterLockMode: 'all', dueFrom: '', dueTo: '', paidFrom: '', paidTo: '', contractFrom: '', contractTo: '',
       appliedQuery: '', appliedAccountStatus: 'all', appliedDueStatus: 'all', appliedPaymentStatuses: [], appliedUnverifiedCRM: false,
-      appliedGrade: 'all', appliedPurchaseTypes: [], appliedDueFrom: '', appliedDueTo: '', appliedPaidFrom: '', appliedPaidTo: '',
+      appliedGrade: 'all', appliedPurchaseTypes: [], appliedLockSystem: 'all', appliedLockMode: 'all', appliedDueFrom: '', appliedDueTo: '', appliedPaidFrom: '', appliedPaidTo: '',
       appliedContractFrom: '', appliedContractTo: ''
     });
     render();
@@ -5273,16 +5291,22 @@
     var r = CV.report;
     if (!r) return '';
     function segCard(title, seg) {
+      // No max-height/scroll — per explicit user request, the card grows to fit every month so
+      // nothing is hidden behind a scrollbar.
       var monthsHtml = seg.months.length
-        ? '<div style="display:flex; flex-direction:column; gap:4px; margin-top:10px; max-height:140px; overflow-y:auto;">' +
+        ? '<div style="display:flex; flex-direction:column; gap:4px; margin-top:10px;">' +
             seg.months.map(function (m) { return '<div style="display:flex; justify-content:space-between; font-size:12px; color:#6b6785;"><span>' + esc(m.month) + '</span><span style="font-weight:600; color:#2b2540;">' + m.count + ' ราย</span></div>'; }).join('') +
           '</div>'
         : '<div style="font-size:12px; color:#b3b0c4; margin-top:8px;">ไม่มีข้อมูล</div>';
+      var systemStatsHtml = seg.bySystem.map(function (s) {
+        return '<div><div style="font-size:11.5px; color:#6b6785;">ระบบ ' + esc(s.system) + '</div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:19px; color:#0b7285;">' + s.count + ' ราย</div></div>';
+      }).join('');
       return '<div style="background:#fff; border:1px solid rgba(124,92,255,0.14); border-radius:16px; padding:18px 20px; box-shadow:0 4px 14px rgba(124,92,255,0.06);">' +
         '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:14.5px; color:#2b2540; margin-bottom:12px;">' + esc(title) + '</div>' +
         '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:14px; margin-bottom:6px;">' +
           '<div><div style="font-size:11.5px; color:#6b6785;">จำนวนลูกหนี้</div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:19px; color:#e03131;">' + seg.customerCount + ' ราย</div></div>' +
           '<div><div style="font-size:11.5px; color:#6b6785;">มูลค่าค้างชำระ</div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:19px; color:#e03131;">฿' + seg.totalValueDisp + '</div></div>' +
+          systemStatsHtml +
           '<div><div style="font-size:11.5px; color:#6b6785;">ไม่มีในระบบล็อคเครื่อง</div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:19px; color:#8a4b00;">' + seg.noLockCount + ' ราย</div></div>' +
         '</div>' +
         '<div style="font-size:11.5px; color:#6b6785; font-weight:600; margin-top:10px;">แยกตามเดือนที่ทำสัญญา</div>' +
@@ -6003,6 +6027,14 @@
               selOpt('all', 'ทุกสถานะ', state.filterGrade === 'all') + selOpt('A', 'เกรด A — ไม่เคยค้างชำระ', state.filterGrade === 'A') + selOpt('B', 'เกรด B — ค้างชำระ 1 งวด', state.filterGrade === 'B') + selOpt('หนี้สงสัยจะสูญ', 'หนี้สงสัยจะสูญ — ค้าง ≥2 งวด', state.filterGrade === 'หนี้สงสัยจะสูญ') +
             '</select></div>' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">🛒 ประเภทการซื้อ</div>' + renderPurchaseTypeFilter() + '</div>' +
+          '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">🔒 ระบบล็อคเครื่อง</div>' +
+            '<select data-action="filter" data-key="filterLockSystem" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13.5px; color:#2b2540;">' +
+              selOpt('all', 'ทุกสถานะ', state.filterLockSystem === 'all') + selOpt('Soti', 'Soti', state.filterLockSystem === 'Soti') + selOpt('Marena', 'Marena', state.filterLockSystem === 'Marena') + selOpt('none', 'ไม่มีในระบบล็อคเครื่อง', state.filterLockSystem === 'none') +
+            '</select></div>' +
+          '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">🔓 โหมดการล็อค</div>' +
+            '<select data-action="filter" data-key="filterLockMode" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13.5px; color:#2b2540;">' +
+              selOpt('all', 'ทุกสถานะ', state.filterLockMode === 'all') + selOpt('Normal', 'Normal', state.filterLockMode === 'Normal') + selOpt('Hard lock', 'Hard lock', state.filterLockMode === 'Hard lock') + selOpt('Soft lock', 'Soft lock', state.filterLockMode === 'Soft lock') +
+            '</select></div>' +
         '</div>' +
         '<label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; color:#2b2540; font-weight:600; margin-bottom:14px; user-select:none;">' +
           '<input type="checkbox" data-action="toggleUnverifiedCRM"' + (state.filterUnverifiedCRM ? ' checked' : '') + ' style="width:16px; height:16px; accent-color:#7c5cff; cursor:pointer;" />' +
