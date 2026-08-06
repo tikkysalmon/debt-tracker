@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.15';
+  var APP_BUILD = '2026-08-05.16';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -2054,19 +2054,25 @@
       return { no: n, issuedCount: Object.keys(issuedByNo[n] || {}).length, sentCount: Object.keys(sentByNo[n] || {}).length };
     });
 
-    // Section 7: กิจกรรมรายวัน (SMS/จดหมาย) — defaults to the last 7 days, overridable via the
+    // Section 7: กิจกรรมรายวัน (โทร/SMS/จดหมาย) — defaults to the last 7 days, overridable via the
     // date-range inputs (state.reportDateFrom/reportDateTo), per explicit user request. Zero-filled
     // (every day in range appears even with no activity) so a quiet day doesn't just look "missing".
+    // โทร added 2026-08-05 (same shape as SMS/letter, per explicit user request) — callHistory only
+    // ever lives on whichever order pickContactOrder() picked for that customer (see saveCallLog),
+    // not necessarily every one of their orders, but scanning every active order here still counts
+    // each real entry exactly once since it only exists on the one order it was saved to.
+    var DAILY_ZERO = { calls: 0, sms: 0, letterIssued: 0, letterSent: 0 };
     var defaultFrom = (function () { var d = new Date(todayIso); d.setDate(d.getDate() - 6); return isoOf(d.getFullYear(), d.getMonth() + 1, d.getDate()); })();
     var rangeFrom = state.reportDateFrom || defaultFrom;
     var rangeTo = state.reportDateTo || todayIso;
     var dailyMap = {};
     function bumpDaily(dateIso, field) {
       if (!dateIso || dateIso < rangeFrom || dateIso > rangeTo) return;
-      dailyMap[dateIso] = dailyMap[dateIso] || { sms: 0, letterIssued: 0, letterSent: 0 };
+      dailyMap[dateIso] = dailyMap[dateIso] || Object.assign({}, DAILY_ZERO);
       dailyMap[dateIso][field]++;
     }
     active.forEach(function (o) {
+      (o.callHistory || []).forEach(function (h) { bumpDaily(historyAtToIso(h.at), 'calls'); });
       var smsEvents = (o.smsHistory || []).concat(
         o.installments.concat(o.accessoryInstallments || []).reduce(function (acc, i) { return acc.concat(i.smsHistory || []); }, [])
       );
@@ -2079,7 +2085,7 @@
       var cursor = rangeFrom;
       var guard = 0; // hard cap so a garbage/inverted date range can never spin this forever
       while (cursor <= rangeTo && guard < 3660) {
-        dailyRows.push(Object.assign({ date: cursor }, dailyMap[cursor] || { sms: 0, letterIssued: 0, letterSent: 0 }));
+        dailyRows.push(Object.assign({ date: cursor }, DAILY_ZERO, dailyMap[cursor] || {}));
         var dt = new Date(cursor); dt.setDate(dt.getDate() + 1);
         cursor = isoOf(dt.getFullYear(), dt.getMonth() + 1, dt.getDate());
         guard++;
@@ -5340,15 +5346,15 @@
     '</div>';
     var section7 = '<div style="background:#fff; border:1px solid rgba(124,92,255,0.14); border-radius:16px; padding:18px 20px; box-shadow:0 4px 14px rgba(124,92,255,0.06);">' +
       '<div style="display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; margin-bottom:14px;">' +
-        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:14.5px; color:#2b2540;">7. กิจกรรมติดตามหนี้รายวัน (SMS/จดหมาย)</div>' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:14.5px; color:#2b2540;">7. กิจกรรมติดตามหนี้รายวัน (โทร/SMS/จดหมาย)</div>' +
         '<div style="display:flex; align-items:center; gap:8px; font-size:12.5px; color:#6b6785;">' +
           'จาก <input type="date" value="' + esc(r.rangeFrom) + '" data-action="reportDateFrom" style="border:1px solid rgba(124,92,255,0.25); border-radius:8px; padding:6px 10px; font-size:12.5px; color:#2b2540;" />' +
           'ถึง <input type="date" value="' + esc(r.rangeTo) + '" data-action="reportDateTo" style="border:1px solid rgba(124,92,255,0.25); border-radius:8px; padding:6px 10px; font-size:12.5px; color:#2b2540;" />' +
         '</div>' +
       '</div>' +
       (r.dailyRows.length
-        ? '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr style="text-align:left; color:#6b6785; border-bottom:1px solid rgba(124,92,255,0.12);"><th style="padding:8px 12px;">วันที่</th><th style="padding:8px 12px;">SMS (ครั้ง)</th><th style="padding:8px 12px;">ออกจดหมาย (ครั้ง)</th><th style="padding:8px 12px;">ส่งอีเมล (ครั้ง)</th></tr></thead><tbody>' +
-            r.dailyRows.map(function (d) { return '<tr style="border-bottom:1px solid rgba(124,92,255,0.06);"><td style="padding:8px 12px; font-weight:600; color:#2b2540;">' + esc(fmtDate(d.date)) + '</td><td style="padding:8px 12px; color:#7c5cff; font-weight:600;">' + d.sms + '</td><td style="padding:8px 12px; color:#b3261e; font-weight:600;">' + d.letterIssued + '</td><td style="padding:8px 12px; color:#1d4ed8; font-weight:600;">' + d.letterSent + '</td></tr>'; }).join('') +
+        ? '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr style="text-align:left; color:#6b6785; border-bottom:1px solid rgba(124,92,255,0.12);"><th style="padding:8px 12px;">วันที่</th><th style="padding:8px 12px;">โทร (ครั้ง)</th><th style="padding:8px 12px;">SMS (ครั้ง)</th><th style="padding:8px 12px;">ออกจดหมาย (ครั้ง)</th><th style="padding:8px 12px;">ส่งอีเมล (ครั้ง)</th></tr></thead><tbody>' +
+            r.dailyRows.map(function (d) { return '<tr style="border-bottom:1px solid rgba(124,92,255,0.06);"><td style="padding:8px 12px; font-weight:600; color:#2b2540;">' + esc(fmtDate(d.date)) + '</td><td style="padding:8px 12px; color:#0b7285; font-weight:600;">' + d.calls + '</td><td style="padding:8px 12px; color:#7c5cff; font-weight:600;">' + d.sms + '</td><td style="padding:8px 12px; color:#b3261e; font-weight:600;">' + d.letterIssued + '</td><td style="padding:8px 12px; color:#1d4ed8; font-weight:600;">' + d.letterSent + '</td></tr>'; }).join('') +
           '</tbody></table></div>'
         : '<div style="font-size:13px; color:#b3b0c4;">เลือกช่วงวันที่ที่ถูกต้อง</div>') +
     '</div>';
