@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.25';
+  var APP_BUILD = '2026-08-05.26';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -2605,9 +2605,16 @@
       var list = track === 'accessory' ? (ord.accessoryInstallments || []) : (ord.installments || []);
       var inst = list.find(function (i) { return i.no === no; });
       if (!inst) return null;
-      var netDue = Math.max(0, toNumber(inst.amountDue) - toNumber(inst.discount) - toNumber(inst.amountPaid));
+      // {ยอดค้าง} in a per-งวด SMS now quotes the customer's FULL overdue total across this track
+      // (mainOverdueDisp/accessoryOverdueDisp — the same LATE_STATUSES-based cumulative total the
+      // order-level "ส่ง SMS ทวงหนี้" button already used, so both paths now agree), not just this
+      // one installment's own remaining amount — per explicit user request 2026-08-05: a customer
+      // who's already been overdue for several งวด before this one shouldn't get an SMS that
+      // understates what they actually owe by only quoting the latest งวด in isolation.
+      // {งวดที่} still names the specific งวด that triggered this particular reminder.
+      var totalAmount = track === 'accessory' ? ord.accessoryOverdueDisp : ord.mainOverdueDisp;
       return {
-        name: ord.customerName, amount: fmtMoney(netDue), dueDate: fmtDate(inst.dueDate), no: inst.no,
+        name: ord.customerName, amount: totalAmount, dueDate: fmtDate(inst.dueDate), no: inst.no,
         contractNo: ord.contractNo || ord.soDisplay, orderNo: track === 'accessory' ? (ord.accessoryOrderId || ord.orderId) : ord.orderId,
         phone: ord.phone, history: inst.smsHistory || []
       };
