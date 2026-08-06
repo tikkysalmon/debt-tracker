@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.26';
+  var APP_BUILD = '2026-08-06.01';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1043,8 +1043,11 @@
   // often enough that one save's edits would silently get clobbered by another's ("ข้อมูลเด้งกลับ",
   // reported 2026-08-05). Holding this lock for the WHOLE cycle means no other client can even be
   // mid-download when this one uploads, so there's no gap left to race in.
-  var SAVE_LOCK_STALE_MS = 25000; // a hair under cloudSaveNow's 30s watchdog — a tab that crashed or
-  // lost network mid-save (so never reached releaseSaveLock) can't wedge everyone else out forever.
+  var SAVE_LOCK_STALE_MS = 25000; // a tab that crashed or lost network mid-save (so never reached
+  // releaseSaveLock — e.g. a power outage killing the machine outright) can't wedge everyone else
+  // out forever; acquireSaveLock's own deadline below MUST stay comfortably longer than this, or a
+  // client that starts waiting right as the holder dies gives up before the lock ever goes stale
+  // enough to steal (found 2026-08-06: was 20s vs this 25s — a guaranteed-lose race, not just rare).
   function tryAcquireSaveLockOnce() {
     var nowIso = new Date().toISOString();
     return db.from('app_state_sync').update({ locked_by: myClientId, locked_at: nowIso })
@@ -1065,10 +1068,13 @@
         });
       });
   }
-  // Retries with a short jittered delay while someone else holds the lock; gives up after ~20s so a
+  // Retries with a short jittered delay while someone else holds the lock; gives up after ~33s so a
   // genuinely stuck situation surfaces as an actionable "offline" error instead of hanging forever.
+  // Must stay longer than SAVE_LOCK_STALE_MS (25s) with real margin — otherwise a waiting client can
+  // give up before a crashed holder's lock ever becomes stealable, turning "someone's tab died" into
+  // "nobody else can save either" instead of a clean, automatic handoff.
   function acquireSaveLock() {
-    var deadline = Date.now() + 20000;
+    var deadline = Date.now() + 33000;
     function loop() {
       return tryAcquireSaveLockOnce().then(function (ok) {
         if (ok) return true;
@@ -1098,20 +1104,22 @@
     // Safety-net: even with the try/catch in proceed() below, a Supabase call that never settles
     // (flaky connection, browser tab backgrounded mid-request, etc.) would otherwise leave this
     // stuck on "กำลังบันทึก…" forever with no way out except reloading the page. If THIS save
-    // hasn't resolved within 30s — well beyond the ~15-20MB payload's normal round-trip — force a
-    // reset so staff see an actionable offline state instead of a frozen spinner. Also best-effort
-    // releases the save lock in case this client is still holding it — SAVE_LOCK_STALE_MS is a
-    // backstop for a fully-dead tab, but a live tab that just gave up should let go immediately
-    // rather than block everyone else for the rest of that window.
+    // hasn't resolved within 45s — well beyond acquireSaveLock's own 33s deadline plus the
+    // ~15-20MB payload's normal round-trip — force a reset so staff see an actionable offline state
+    // instead of a frozen spinner. Also best-effort releases the save lock in case this client is
+    // still holding it — SAVE_LOCK_STALE_MS is a backstop for a fully-dead tab, but a live tab that
+    // just gave up should let go immediately rather than block everyone else for the rest of that
+    // window. Must stay longer than acquireSaveLock's deadline (33s) or this would fire and reset
+    // cloudSaveInFlight WHILE a legitimate stale-lock steal is still in progress underneath it.
     var watchdogTimer = setTimeout(function () {
       cloudSaveInFlight = false;
       cloudStatus = 'offline';
-      cloudErrorDetail = 'บันทึกใช้เวลานานเกินไป (หมดเวลา 30 วินาที) — ระบบรีเซ็ตสถานะให้แล้ว ลองบันทึกอีกครั้ง';
-      console.error('[cloudSaveNow] watchdog fired — save never resolved within 30s');
+      cloudErrorDetail = 'บันทึกใช้เวลานานเกินไป (หมดเวลา 45 วินาที) — ระบบรีเซ็ตสถานะให้แล้ว ลองบันทึกอีกครั้ง';
+      console.error('[cloudSaveNow] watchdog fired — save never resolved within 45s');
       updateCloudStatus();
       releaseSaveLock();
       if (cloudSavePending) { cloudSavePending = false; cloudSaveNow(); }
-    }, 30000);
+    }, 45000);
     var baseOrders = lastServerSnapshot.orders;
     var baseNotes = lastServerSnapshot.customerNotes;
     var baseTrackingReturn = lastServerSnapshot.customerTrackingReturn;
@@ -1149,7 +1157,7 @@
       if (!gotLock) {
         cloudStatus = 'offline';
         cloudErrorDetail = 'ระบบกำลังถูกพนักงานท่านอื่นบันทึกอยู่นานเกินไป — ลองใหม่อีกครั้ง';
-        console.error('[cloudSaveNow] could not acquire save lock within 20s');
+        console.error('[cloudSaveNow] could not acquire save lock within 33s');
         updateCloudStatus();
         finishSave(false);
         return;
