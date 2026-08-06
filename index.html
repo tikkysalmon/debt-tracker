@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.23';
+  var APP_BUILD = '2026-08-05.24';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1497,7 +1497,19 @@
       // 7 statuses) — those still drive grading (เกรด A/B/หนี้สงสัยจะสูญ), age buckets, purchase-type
       // breakdown, and the monthly trend, which are a distinct, established "at risk" concept nobody
       // asked to change.
-      var trueOverdueInsts = allInstallments.filter(function (i) { return STATUS_TO_GROUP[i.effectiveStatus] === 'ค้างชำระ'; });
+      // Also requires an actual positive remaining balance, not just a matching status (fixed
+      // 2026-08-05, user report: "ปิดยอด"/0 ยอดค้างชำระ but งวดค้าง still showed 2 งวด). A งวด that
+      // was manually set to a MANUAL_ONLY_STATUSES status (e.g. ล็อคเครื่อง) while genuinely overdue
+      // stays frozen at that status even after a later lump-sum early settlement pays it off via
+      // cascadeOverpayment — PAYMENT_CLEARS_OVERRIDE_STATUSES only auto-releases เปลี่ยนภาพพักหน้าจอ,
+      // every other manual status needs a staff member to click ⟲ before it reflects reality. Until
+      // then it kept counting toward งวดค้าง (misleadingly showing "still owes N งวด") even though
+      // trueOverdueRaw already correctly nets to ฿0 for it via the Math.max(0, ...) below — this
+      // just makes the COUNT agree with the amount instead of contradicting it.
+      var trueOverdueInsts = allInstallments.filter(function (i) {
+        if (STATUS_TO_GROUP[i.effectiveStatus] !== 'ค้างชำระ') return false;
+        return Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)) > 0.005;
+      });
       var trueOverdueRaw = trueOverdueInsts.reduce(function (s, i) { return s + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0);
       var overdueCount = trueOverdueInsts.length;
       // Only the currently-overdue (ค้างชำระ group) งวด need cross-checking against the CRM each
@@ -1955,12 +1967,17 @@
     var active = orders.filter(function (o) { return !o.isCancelled && !o.isSold && !o.isBillCancelled; });
 
     // "ค้างชำระตั้งแต่งวดที่ N" = the customer's EARLIEST overdue งวด (STATUS_GROUP_META's ค้างชำระ
-    // group — same canonical "ค้างชำระจริงๆ" definition used everywhere else in this app, see
-    // trueOverdueRaw) is exactly งวดที่ N. Scoped to the MAIN track only — a hasAccessory order's
-    // งวดที่ numbering is genuinely ambiguous between its two separately-billed schedules, and this
-    // wasn't specified, so the (far more common) main-track-only reading is the safe default.
+    // group AND a genuinely positive remaining balance — same canonical "ค้างชำระจริงๆ" definition
+    // fixed 2026-08-05 in trueOverdueInsts above, so a งวด frozen at a stale manual status after an
+    // early lump-sum settlement doesn't count here either) is exactly งวดที่ N. Scoped to the MAIN
+    // track only — a hasAccessory order's งวดที่ numbering is genuinely ambiguous between its two
+    // separately-billed schedules, and this wasn't specified, so the (far more common) main-track-
+    // only reading is the safe default.
     function firstOverdueNo(insts) {
-      var nos = insts.filter(function (i) { return STATUS_TO_GROUP[i.effectiveStatus] === 'ค้างชำระ'; }).map(function (i) { return i.no; });
+      var nos = insts.filter(function (i) {
+        if (STATUS_TO_GROUP[i.effectiveStatus] !== 'ค้างชำระ') return false;
+        return Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)) > 0.005;
+      }).map(function (i) { return i.no; });
       return nos.length ? Math.min.apply(null, nos) : null;
     }
     // Shared shape for sections 1-3: distinct-customer count (จำนวนกี่คน — a customer with 2
