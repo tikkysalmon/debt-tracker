@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.16';
+  var APP_BUILD = '2026-08-05.17';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -2205,20 +2205,29 @@
     // matching April ล็อคเครื่อง งวด, not the customer's full history). filteredInstallments/
     // filteredAccessoryInstallments (used by exportFilteredCsv) have no STATUS_TO_GROUP restriction
     // — they reflect whatever the filters actually selected (e.g. ชำระแล้ว or a paid-date range
-    // still needs to export correctly), unlike ยอดค้างชำระ which is specifically the overdue subset.
+    // still needs to export correctly).
     // Recomputed only on this locally-scoped copy of the filtered rows — never mutates the cached
     // computeOrders() result other views rely on — and only when a per-งวด filter is active;
     // otherwise the unfiltered totals/full installment lists stand.
+    //
+    // ยอดค้างชำระ/งวดค้าง used to ALSO restrict to just the STATUS_TO_GROUP==='ค้างชำระ' subset of
+    // the matched งวด, so it stayed "the overdue total" even when the filter also matched e.g.
+    // ชำระแล้ว งวด in the same due-date range — but that meant filtering to a non-overdue status
+    // entirely (e.g. "สถานะการชำระ" = ยังไม่ถึงกำหนดชำระ) always summed an empty set and showed
+    // ฿0.00, which read as broken rather than "correctly zero overdue" (user report 2026-08-05).
+    // Dropped that extra restriction — the column/count now just reflect whatever the per-งวด
+    // filters actually matched, same universe as filteredInstallments below, so the on-screen total
+    // and the CSV export always agree and any filter selection shows a real amount.
     if (hasPerInstFilter) {
       filteredOrders = filteredOrders.map(function (o) {
         var filteredInstallments = o.installments.filter(instMatchesPerInstFilters);
         var filteredAccessoryInstallments = (o.accessoryInstallments || []).filter(instMatchesPerInstFilters);
-        var overdueMatches = filteredInstallments.concat(filteredAccessoryInstallments).filter(function (i) { return STATUS_TO_GROUP[i.effectiveStatus] === 'ค้างชำระ'; });
-        var raw = overdueMatches.reduce(function (s, i) { return s + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0);
+        var matches = filteredInstallments.concat(filteredAccessoryInstallments);
+        var raw = matches.reduce(function (s, i) { return s + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0);
         return Object.assign({}, o, {
           filteredInstallments: filteredInstallments,
           filteredAccessoryInstallments: filteredAccessoryInstallments,
-          trueOverdueRaw: raw, trueOverdueDisp: fmtMoney(raw), overdueCount: overdueMatches.length
+          trueOverdueRaw: raw, trueOverdueDisp: fmtMoney(raw), overdueCount: matches.length
         });
       });
     }
