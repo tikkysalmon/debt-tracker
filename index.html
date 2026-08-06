@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.22';
+  var APP_BUILD = '2026-08-05.23';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -5364,6 +5364,15 @@
         (sub ? '<div style="font-size:11.5px; font-weight:600; color:' + color + '; opacity:0.8; margin-top:2px;">' + sub + '</div>' : '') +
       '</div>';
     }
+    // One consistent color per lock system, reused everywhere a system name shows up on this page
+    // (top tiles + per-month rows below) — per explicit user request 2026-08-05 ("เพิ่มสีแต่ละระบบ").
+    // ไม่มีในระบบล็อคเครื่อง keeps the amber it already used elsewhere in the app; any future system
+    // name not in this map falls back to the same amber rather than colliding with Soti/Marena.
+    function lockSystemColor(system) {
+      if (system === 'Soti') return { color: '#4f46e5', bg: 'rgba(79,70,229,0.08)' };
+      if (system === 'Marena') return { color: '#0b7285', bg: 'rgba(11,114,133,0.08)' };
+      return { color: '#8a4b00', bg: 'rgba(240,140,0,0.08)' };
+    }
     function segCard(num, title, seg) {
       // Reformatted 2026-08-05 (user: "จัดรูปแบบการ์ดใหม่") — primary stats (จำนวนลูกหนี้/มูลค่า
       // ค้างชำระ) and the lock-system breakdown used to sit in one flat auto-fit grid, where
@@ -5371,33 +5380,33 @@
       // filled a row — now two clearly-labeled groups instead: primary stats on top, ระบบล็อคเครื่อง
       // (including ไม่มีในระบบ) grouped together underneath its own sub-header.
       var systemTiles = seg.bySystem.map(function (s) {
-        return statTile('ระบบ ' + s.system, s.count + ' ราย', '#0b7285', 'rgba(11,114,133,0.08)', '฿' + s.valueDisp);
-      }).join('') + statTile('ไม่มีในระบบล็อคเครื่อง', seg.noLockCount + ' ราย', '#8a4b00', 'rgba(240,140,0,0.08)', '฿' + seg.noLockValueDisp);
-      // Per-month rows now also break down by lockSystem (count + มูลค่า each), per explicit user
-      // request 2026-08-05 — shown as small pills under each month so it stays scannable even with
-      // several systems. No max-height/scroll on the list itself (separate earlier request) — the
-      // card just grows to fit every month.
-      // Per-month system breakdown redesigned 2026-08-05 (user: "เปลี่ยนจาก pill เป็นตารางย่อย") —
-      // was a row of pills that wrapped messily once a month had all 3 systems; now a small
-      // 3-column sub-table (ระบบ/จำนวน/มูลค่า) nested under each month's header line instead.
-      // Each system row is now clickable — opens renderReportDrilldownModal showing the exact
-      // matching customer list (same table as ติดตามหนี้), per explicit user request 2026-08-05.
+        var c = lockSystemColor(s.system);
+        return statTile('ระบบ ' + s.system, s.count + ' ราย', c.color, c.bg, '฿' + s.valueDisp);
+      }).join('') + statTile('ไม่มีในระบบล็อคเครื่อง', seg.noLockCount + ' ราย', lockSystemColor('').color, lockSystemColor('').bg, '฿' + seg.noLockValueDisp);
+      // Per-month system breakdown, redesigned twice on 2026-08-05: pills → a table (per user
+      // request "เปลี่ยนจาก pill เป็นตารางย่อย") → now separated, color-coded bars per system (user:
+      // "แยกแถบแต่ละระบบออกจากกันและให้เพิ่มสีแต่ละระบบด้วย") — the plain table read as one
+      // undifferentiated block, so each system now gets its own spaced-out, color-coded row instead
+      // of a borderless table row, using the same lockSystemColor() as the top tiles above for a
+      // consistent palette across the whole card. Still clickable — opens
+      // renderReportDrilldownModal with the exact matching customer list.
       var monthsHtml = seg.months.length
         ? '<div style="display:flex; flex-direction:column; gap:10px; margin-top:10px;">' +
             seg.months.map(function (m) {
               var sysRows = m.systems.map(function (s) {
-                return '<tr data-action="showReportDrilldown" data-seg="' + num + '" data-group="' + esc(s.groupKey) + '" title="คลิกดูรายชื่อลูกค้า" style="cursor:pointer;">' +
-                  '<td style="padding:4px 10px; color:#2b2540; font-weight:600;">' + esc(s.system) + '</td>' +
-                  '<td style="padding:4px 10px; color:#6b6785; text-align:right;">' + s.count + ' ราย</td>' +
-                  '<td style="padding:4px 10px; color:#0b7285; font-weight:700; text-align:right;">฿' + s.valueDisp + '</td>' +
-                '</tr>';
+                var c = lockSystemColor(s.system);
+                return '<div data-action="showReportDrilldown" data-seg="' + num + '" data-group="' + esc(s.groupKey) + '" title="คลิกดูรายชื่อลูกค้า" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:10px; background:' + c.bg + '; border-left:3px solid ' + c.color + '; border-radius:8px; padding:6px 12px;">' +
+                  '<span style="font-size:11.5px; font-weight:700; color:' + c.color + ';">' + esc(s.system) + '</span>' +
+                  '<span style="font-size:11px; color:#6b6785;">' + s.count + ' ราย</span>' +
+                  '<span style="font-size:11.5px; font-weight:700; color:' + c.color + ';">฿' + s.valueDisp + '</span>' +
+                '</div>';
               }).join('');
               return '<div style="background:rgba(124,92,255,0.045); border-radius:12px; padding:10px 14px;">' +
-                '<div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:' + (sysRows ? '6px' : '0') + ';">' +
+                '<div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:' + (sysRows ? '8px' : '0') + ';">' +
                   '<span style="font-size:12.5px; font-weight:700; color:#2b2540;">🗓 ' + esc(m.monthDisp) + '</span>' +
                   '<span style="font-size:12px; color:#6b6785;">' + m.count + ' ราย · <span style="font-weight:700; color:#e03131;">฿' + m.valueDisp + '</span></span>' +
                 '</div>' +
-                (sysRows ? '<table style="width:100%; border-collapse:collapse; font-size:11.5px; background:#fff; border-radius:8px; overflow:hidden;"><thead><tr style="background:rgba(124,92,255,0.06); color:#6b6785;"><th style="padding:4px 10px; text-align:left; font-weight:600;">ระบบ</th><th style="padding:4px 10px; text-align:right; font-weight:600;">จำนวน</th><th style="padding:4px 10px; text-align:right; font-weight:600;">มูลค่า</th></tr></thead><tbody>' + sysRows + '</tbody></table>' : '') +
+                (sysRows ? '<div style="display:flex; flex-direction:column; gap:6px;">' + sysRows + '</div>' : '') +
               '</div>';
             }).join('') +
           '</div>'
