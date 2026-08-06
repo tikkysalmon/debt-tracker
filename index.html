@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-06.02';
+  var APP_BUILD = '2026-08-06.03';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -370,19 +370,34 @@
   // One-time self-heal for data already corrupted by an earlier bug: regular payment-file imports
   // used to write the transaction status ("สำเร็จ") straight into inst.status with statusOverride
   // = true, permanently hiding the real auto-computed status (ชำระแล้ว/ค้างชำระ/etc) — and the
-  // "แก้ไขรับชำระ" history-snapshot import did the same for EVERY status it saw, not just the 4
-  // that genuinely need to stick (see MANUAL_ONLY_STATUSES). Clears any override that isn't one of
-  // those 4, so the status goes back to recomputing live from ยอดชำระ/ยอดผ่อนต่องวด — which is what
-  // was silently broken: later payment files kept updating ยอดชำระ/วันที่ชำระ correctly but สถานะ
-  // stayed frozen on whatever this bug last recorded. Runs on every load (local + cloud), covers
-  // both tracks — cheap no-op once the bad data is gone.
+  // "แก้ไขรับชำระ" history-snapshot import did the same for EVERY status it saw. Later payment
+  // files kept updating ยอดชำระ/วันที่ชำระ correctly but สถานะ stayed frozen on whatever this bug
+  // last recorded. Runs on every load (local + cloud), covers both tracks — cheap no-op once the
+  // bad data is gone.
+  // BUG (found 2026-08-06): originally cleared any override whose status wasn't in
+  // MANUAL_ONLY_STATUSES — but that whitelist was only ever meant to gate what an IMPORT is allowed
+  // to freeze (see its own comment: "Only THESE may set statusOverride=true from an import"), not
+  // what a STAFF MEMBER may freeze by hand from the per-งวด status dropdown. updateInstallment sets
+  // statusOverride=true unconditionally for ANY status a staff member manually picks — so picking
+  // e.g. ชำระแล้ว/ค้างชำระ/เกินกำหนดชำระ (valid statuses, just not in the narrow 7-item whitelist)
+  // got silently wiped back to the auto-computed value on the very next cloud sync, making it LOOK
+  // like the status "bounced back" the moment you changed it (user report: "ไม่สามารถเปลี่ยนสถานะ
+  // การชำระเงินเป็นสถานะอื่นๆ ได้" — picking a status worked, but reverted; confirmed via follow-up:
+  // "เลือกสถานะอื่นได้ แต่เด้งกลับ"). Narrowed to only clear genuinely-invalid data: (1) a status
+  // string with no STATUS_META entry at all (e.g. "สำเร็จ" — this bug's actual signature, never a
+  // real status to begin with), or (2) a SYSTEM_ONLY_STATUSES value (เปลี่ยนภาพพักหน้าจอ (ระบบ)/
+  // ล็อคเครื่อง (ระบบ)) — these are computeStatus()'s own pure auto-output and must NEVER carry a
+  // staff override (nothing in the current app ever legitimately sets one), so any override=true
+  // found sitting on one is leftover bad data, not a real manual choice to protect. A REAL status a
+  // staff member deliberately picked (in EDITABLE_STATUS_OPTIONS, whether or not it's also one of
+  // the 7 MANUAL_ONLY_STATUSES) is left alone.
   var _lastRepairChanged = false;
   function repairInvalidStatusOverrides(orders) {
     var changed = false;
     function fixList(list) {
       var touched = false;
       var insts = (list || []).map(function (i) {
-        if (i.statusOverride && !MANUAL_ONLY_STATUSES[i.status]) {
+        if (i.statusOverride && i.status && (!STATUS_META[i.status] || SYSTEM_ONLY_STATUSES[i.status])) {
           touched = true;
           return Object.assign({}, i, { status: '', statusOverride: false });
         }
