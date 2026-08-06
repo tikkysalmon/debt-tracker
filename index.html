@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.18';
+  var APP_BUILD = '2026-08-05.19';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -5335,9 +5335,14 @@
       '</div>';
     }
     function segCard(num, title, seg) {
+      // Reformatted 2026-08-05 (user: "จัดรูปแบบการ์ดใหม่") — primary stats (จำนวนลูกหนี้/มูลค่า
+      // ค้างชำระ) and the lock-system breakdown used to sit in one flat auto-fit grid, where
+      // ไม่มีในระบบล็อคเครื่อง often ended up alone on its own orphaned row once Marena+Soti already
+      // filled a row — now two clearly-labeled groups instead: primary stats on top, ระบบล็อคเครื่อง
+      // (including ไม่มีในระบบ) grouped together underneath its own sub-header.
       var systemTiles = seg.bySystem.map(function (s) {
         return statTile('ระบบ ' + s.system, s.count + ' ราย', '#0b7285', 'rgba(11,114,133,0.08)');
-      }).join('');
+      }).join('') + statTile('ไม่มีในระบบล็อคเครื่อง', seg.noLockCount + ' ราย', '#8a4b00', 'rgba(240,140,0,0.08)');
       // Per-month rows now also break down by lockSystem (count + มูลค่า each), per explicit user
       // request 2026-08-05 — shown as small pills under each month so it stays scannable even with
       // several systems. No max-height/scroll on the list itself (separate earlier request) — the
@@ -5360,14 +5365,18 @@
         : '<div style="font-size:12px; color:#b3b0c4; margin-top:8px;">ไม่มีข้อมูล</div>';
       return cardWrap(
         sectionHeader(num, '📋', title) +
-        '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; margin-bottom:8px;">' +
+        '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:16px;">' +
           statTile('จำนวนลูกหนี้', seg.customerCount + ' ราย', '#e03131', 'rgba(224,49,49,0.08)') +
           statTile('มูลค่าค้างชำระ', '฿' + seg.totalValueDisp, '#e03131', 'rgba(224,49,49,0.08)') +
-          systemTiles +
-          statTile('ไม่มีในระบบล็อคเครื่อง', seg.noLockCount + ' ราย', '#8a4b00', 'rgba(240,140,0,0.08)') +
         '</div>' +
-        '<div style="font-size:12px; color:#6b6785; font-weight:700; margin-top:14px; margin-bottom:2px;">แยกตามเดือนที่ทำสัญญา</div>' +
-        monthsHtml
+        '<div style="border-top:1px solid rgba(124,92,255,0.10); padding-top:12px;">' +
+          '<div style="font-size:11.5px; color:#6b6785; font-weight:700; margin-bottom:8px;">🔒 แยกตามระบบล็อคเครื่อง</div>' +
+          '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:10px;">' + systemTiles + '</div>' +
+        '</div>' +
+        '<div style="border-top:1px solid rgba(124,92,255,0.10); padding-top:12px; margin-top:14px;">' +
+          '<div style="font-size:11.5px; color:#6b6785; font-weight:700; margin-bottom:2px;">📅 แยกตามเดือนที่ทำสัญญา</div>' +
+          monthsHtml +
+        '</div>'
       );
     }
     var section123 = '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:20px; margin-bottom:24px;">' +
@@ -5982,6 +5991,11 @@
   function renderDueBuckets(orders) {
     var active = orders.filter(function (o) { return !o.isCancelled && !o.isSold && !o.isBillCancelled; });
     var b = { due7: 0, due3: 0, dueToday: 0, od10: 0, od30: 0, odOver30: 0 };
+    // มูลค่ารวม per bucket (บาท), same amount basis as ยอดค้างชำระ elsewhere — Math.max(0, ยังค้าง
+    // ของ "current" งวด นี้เอง ไม่ใช่ยอดรวมทั้งบิล) — per explicit user request 2026-08-05 to show
+    // จำนวนเงินรวม alongside the existing count/percentage.
+    var v = { due7: 0, due3: 0, dueToday: 0, od10: 0, od30: 0, odOver30: 0 };
+    var totalValue = 0;
     active.forEach(function (o) {
       // When a per-งวด filter (ครบกำหนดตั้งแต่-ถึง / สถานะการชำระ) is active, computeView() attaches
       // filteredInstallments — only the งวด that actually matched (see exportFilteredCsv for the same
@@ -5993,27 +6007,30 @@
       var pool = o.filteredInstallments || o.installments;
       var cur = pool.find(function (i) { return i.effectiveStatus !== 'ชำระแล้ว'; });
       if (!cur) return;
+      var amt = Math.max(0, Number(cur.amountDue || 0) - Number(cur.amountPaid || 0) - Number(cur.discount || 0));
+      totalValue += amt;
       var d = dueDiffDays(cur);
       if (d === null) return;
-      if (d < 0 && d >= -7) b.due7++;
-      if (d < 0 && d >= -3) b.due3++;
-      if (d === 0) b.dueToday++;
-      else if (d >= 1 && d <= 10) b.od10++;
-      else if (d >= 11 && d <= 30) b.od30++;
-      else if (d > 30) b.odOver30++;
+      if (d < 0 && d >= -7) { b.due7++; v.due7 += amt; }
+      if (d < 0 && d >= -3) { b.due3++; v.due3 += amt; }
+      if (d === 0) { b.dueToday++; v.dueToday += amt; }
+      else if (d >= 1 && d <= 10) { b.od10++; v.od10 += amt; }
+      else if (d >= 11 && d <= 30) { b.od30++; v.od30 += amt; }
+      else if (d > 30) { b.odOver30++; v.odOver30 += amt; }
     });
     var total = active.length;
     var totalOverdue = b.od10 + b.od30 + b.odOver30;
+    var totalOverdueValue = v.od10 + v.od30 + v.odOver30;
     function pct(n) { return total > 0 ? (n / total * 100).toFixed(1) : '0.0'; }
     var tiles = [
-      { label: 'ทั้งหมด', count: total, pctDisp: '', color: '#2b2540', bg: 'rgba(43,37,64,0.06)' },
-      { label: 'ครบกำหนดภายใน 7 วัน', count: b.due7, pctDisp: pct(b.due7), color: '#4f7cff', bg: 'rgba(79,124,255,0.10)' },
-      { label: 'ครบกำหนดภายใน 3 วัน', count: b.due3, pctDisp: pct(b.due3), color: '#c2650a', bg: 'rgba(240,140,0,0.10)' },
-      { label: 'ครบกำหนดวันนี้', count: b.dueToday, pctDisp: pct(b.dueToday), color: '#c2650a', bg: 'rgba(240,140,0,0.10)' },
-      { label: 'เกินกำหนด 0 ถึง 10 วัน', count: b.od10, pctDisp: pct(b.od10), color: '#c99a00', bg: 'rgba(201,154,0,0.10)' },
-      { label: 'เกินกำหนด 11 ถึง 30 วัน', count: b.od30, pctDisp: pct(b.od30), color: '#e0562f', bg: 'rgba(224,86,47,0.10)' },
-      { label: 'เกินกำหนดมากกว่า 30 วัน', count: b.odOver30, pctDisp: pct(b.odOver30), color: '#e03131', bg: 'rgba(224,49,49,0.12)' },
-      { label: 'เกินกำหนดทั้งหมด', count: totalOverdue, pctDisp: pct(totalOverdue), color: '#9c1f4a', bg: 'rgba(156,31,74,0.10)' }
+      { label: 'ทั้งหมด', count: total, valueDisp: fmtMoney(totalValue), pctDisp: '', color: '#2b2540', bg: 'rgba(43,37,64,0.06)' },
+      { label: 'ครบกำหนดภายใน 7 วัน', count: b.due7, valueDisp: fmtMoney(v.due7), pctDisp: pct(b.due7), color: '#4f7cff', bg: 'rgba(79,124,255,0.10)' },
+      { label: 'ครบกำหนดภายใน 3 วัน', count: b.due3, valueDisp: fmtMoney(v.due3), pctDisp: pct(b.due3), color: '#c2650a', bg: 'rgba(240,140,0,0.10)' },
+      { label: 'ครบกำหนดวันนี้', count: b.dueToday, valueDisp: fmtMoney(v.dueToday), pctDisp: pct(b.dueToday), color: '#c2650a', bg: 'rgba(240,140,0,0.10)' },
+      { label: 'เกินกำหนด 0 ถึง 10 วัน', count: b.od10, valueDisp: fmtMoney(v.od10), pctDisp: pct(b.od10), color: '#c99a00', bg: 'rgba(201,154,0,0.10)' },
+      { label: 'เกินกำหนด 11 ถึง 30 วัน', count: b.od30, valueDisp: fmtMoney(v.od30), pctDisp: pct(b.od30), color: '#e0562f', bg: 'rgba(224,86,47,0.10)' },
+      { label: 'เกินกำหนดมากกว่า 30 วัน', count: b.odOver30, valueDisp: fmtMoney(v.odOver30), pctDisp: pct(b.odOver30), color: '#e03131', bg: 'rgba(224,49,49,0.12)' },
+      { label: 'เกินกำหนดทั้งหมด', count: totalOverdue, valueDisp: fmtMoney(totalOverdueValue), pctDisp: pct(totalOverdue), color: '#9c1f4a', bg: 'rgba(156,31,74,0.10)' }
     ];
     return '<div style="margin-bottom:20px;">' +
       '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540; margin-bottom:12px;">📊 รายงานสินเชื่อที่ครบกำหนด</div>' +
@@ -6022,6 +6039,7 @@
           return '<div style="background:' + t.bg + '; border-radius:14px; padding:16px 14px; text-align:center;">' +
             '<div style="font-size:12px; color:#6b6785; margin-bottom:8px; line-height:1.3;">' + t.label + '</div>' +
             '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:19px; color:' + t.color + ';">' + t.count + (t.pctDisp ? ' <span style="font-size:11.5px; font-weight:600; opacity:0.75;">(' + t.pctDisp + '%)</span>' : '') + '</div>' +
+            '<div style="font-size:11.5px; font-weight:600; color:' + t.color + '; opacity:0.85; margin-top:2px;">฿' + t.valueDisp + '</div>' +
           '</div>';
         }).join('') +
       '</div>' +
