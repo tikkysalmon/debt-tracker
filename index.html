@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-06.04';
+  var APP_BUILD = '2026-08-06.05';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1445,30 +1445,36 @@
     var dueMid = new Date(due.getFullYear(), due.getMonth(), due.getDate());
     return todayMid >= dueMid;
   }
+  // เปลี่ยนภาพพักหน้าจอ (plain, manual — see confirmPostpone) now also expires once its OWN due
+  // date arrives, not just on payment: a "เลื่อนวันชำระ" postpone sets this status as a placeholder
+  // for the deferral period, but once that (possibly-postponed) due date itself is reached, the
+  // account must fall back to the normal auto-computed status (ถึงกำหนดชำระ/เกินกำหนดชำระ/
+  // เปลี่ยนภาพพักหน้าจอ (ระบบ)/ล็อคเครื่อง (ระบบ)) referencing THAT date — dueDate here is already
+  // whatever confirmPostpone last set it to, so computeStatus(i, CFG) below naturally uses the
+  // latest one with no extra plumbing needed.
+  // BUG (found 2026-08-06): the due-date staleness check used i.dueDate as-is, with no way to tell
+  // "this date is a still-pending postpone deferral" apart from "this งวด was already overdue and a
+  // staff member picked เปลี่ยนภาพพักหน้าจอ directly from the status dropdown, without going through
+  // เลื่อนวันชำระ" — isDueDateReached() is true immediately in the second case (the whole reason
+  // staff want this status is that the due date already passed), so the override went stale the
+  // INSTANT it was set, silently falling straight back to the auto-computed status with no visible
+  // effect (user report 2026-08-06: "ยังเปลี่ยนไปสถานะ เปลี่ยนภาพพักหน้าจอ ไม่ได้"). Only treat the
+  // due date as an active-deferral placeholder (and thus expirable) when it still matches
+  // confirmPostpone's own last-recorded `to` date — a direct manual pick never touches
+  // postponeHistory/dueDate, so it no longer matches and the override behaves like every other
+  // MANUAL_ONLY_STATUSES pick (sticky until payment or ⟲).
+  // Extracted as a standalone single-installment function (2026-08-06) — updateInstallment needs to
+  // know a งวด's CURRENT displayed status before applying a new one, e.g. to detect a "ล็อคเครื่อง
+  // (ระบบ) → ล็อคเครื่อง" transition for the auto lock-mode update below, without duplicating this.
+  function effectiveStatusOf(i) {
+    var lastPostpone = i.postponeHistory && i.postponeHistory.length ? i.postponeHistory[i.postponeHistory.length - 1] : null;
+    var dueDateIsActivePostpone = !!(lastPostpone && lastPostpone.to === i.dueDate);
+    var overrideStale = PAYMENT_CLEARS_OVERRIDE_STATUSES[i.status] && (Number(i.amountPaid || 0) > 0 || (dueDateIsActivePostpone && isDueDateReached(i)));
+    return ((i.statusOverride && !overrideStale || !AUTO_STATUS_ENABLED) && i.status) ? i.status : computeStatus(i, CFG);
+  }
   function withEffectiveStatus(list) {
     return list.map(function (i) {
-      // เปลี่ยนภาพพักหน้าจอ (plain, manual — see confirmPostpone) now also expires once its OWN
-      // due date arrives, not just on payment: a "เลื่อนวันชำระ" postpone sets this status as a
-      // placeholder for the deferral period, but once that (possibly-postponed) due date itself is
-      // reached, the account must fall back to the normal auto-computed status (ถึงกำหนดชำระ/
-      // เกินกำหนดชำระ/เปลี่ยนภาพพักหน้าจอ (ระบบ)/ล็อคเครื่อง (ระบบ)) referencing THAT date — dueDate
-      // here is already whatever confirmPostpone last set it to, so computeStatus(i, CFG) below
-      // naturally uses the latest one with no extra plumbing needed.
-      // BUG (found 2026-08-06): the due-date staleness check used i.dueDate as-is, with no way to
-      // tell "this date is a still-pending postpone deferral" apart from "this งวด was already
-      // overdue and a staff member picked เปลี่ยนภาพพักหน้าจอ directly from the status dropdown,
-      // without going through เลื่อนวันชำระ" — isDueDateReached() is true immediately in the second
-      // case (the whole reason staff want this status is that the due date already passed), so the
-      // override went stale the INSTANT it was set, silently falling straight back to the
-      // auto-computed status with no visible effect (user report 2026-08-06: "ยังเปลี่ยนไปสถานะ
-      // เปลี่ยนภาพพักหน้าจอ ไม่ได้"). Only treat the due date as an active-deferral placeholder (and
-      // thus expirable) when it still matches confirmPostpone's own last-recorded `to` date — a
-      // direct manual pick never touches postponeHistory/dueDate, so it no longer matches and the
-      // override behaves like every other MANUAL_ONLY_STATUSES pick (sticky until payment or ⟲).
-      var lastPostpone = i.postponeHistory && i.postponeHistory.length ? i.postponeHistory[i.postponeHistory.length - 1] : null;
-      var dueDateIsActivePostpone = !!(lastPostpone && lastPostpone.to === i.dueDate);
-      var overrideStale = PAYMENT_CLEARS_OVERRIDE_STATUSES[i.status] && (Number(i.amountPaid || 0) > 0 || (dueDateIsActivePostpone && isDueDateReached(i)));
-      var status = ((i.statusOverride && !overrideStale || !AUTO_STATUS_ENABLED) && i.status) ? i.status : computeStatus(i, CFG);
+      var status = effectiveStatusOf(i);
       var m = STATUS_META[status] || { color: '#94a3b8' };
       return Object.assign({}, i, {
         effectiveStatus: status,
@@ -3259,12 +3265,40 @@
   // single-target/penalty paths), and the old-system status-history snapshot import — must clear
   // verifiedCRM so the aggregate status correctly goes back to needing re-verification.
   var CRM_INVALIDATING_FIELDS = { amountPaid: true, amountDue: true, discount: true, dueDate: true };
+  // Auto lock-mode update (2026-08-06, per explicit user request) — when staff act on a real device
+  // check (Soti/Marena) by picking a งวด's status by hand, the order's own ระบบล็อคเครื่อง โหมด
+  // (still reference-only, see lockSystemColor/onLockSystemFileChange) should follow along instead
+  // of staying whatever the last file import said, which can go stale the moment reality on the
+  // device changes. Only 3 specific transitions requested — everything else leaves lockSystemMode
+  // untouched: (1)/(2) escalating a system-auto-flagged งวด (ล็อคเครื่อง (ระบบ)) to a real, deliberate
+  // Hard/Soft lock action; (3) any งวด reaching ชำระแล้ว means the device should be back to Normal,
+  // regardless of what it was before — a paid installment overrides any lock state. Deliberately NOT
+  // extended to other status combinations (e.g. เปลี่ยนภาพพักหน้าจอ (ระบบ) as the FROM state) since
+  // the user only specified these 3; don't broaden without a fresh explicit ask.
+  function autoLockModeFromStatusChange(oldEffectiveStatus, newStatus) {
+    if (newStatus === 'ชำระแล้ว') return 'Normal';
+    if (oldEffectiveStatus === 'ล็อคเครื่อง (ระบบ)' && newStatus === 'ล็อคเครื่อง') return 'Hard lock';
+    if (oldEffectiveStatus === 'ล็อคเครื่อง (ระบบ)' && newStatus === 'เปลี่ยนภาพพักหน้าจอ') return 'Soft lock';
+    return null;
+  }
   function updateInstallment(orderId, no, field, value, track) {
     var key = trackKey(track);
     var cascadeAll = field === 'status' && ACCOUNT_LEVEL_STATUSES.indexOf(value) !== -1;
     state.orders = state.orders.map(function (o) {
       if (o.orderId !== orderId) return o;
       var orderPatch = field === 'status' ? (stickyAccountStatusPatch(value) || {}) : {};
+      // Only meaningful once a lock system is already on file (Soti/Marena) — nothing to update
+      // otherwise. Reads the งวด's status BEFORE this edit applies, so the transition (not just the
+      // destination) can be checked.
+      if (field === 'status' && !cascadeAll && o.lockSystem) {
+        var targetInst = (o[key] || []).find(function (i) { return i.no === no; });
+        if (targetInst) {
+          var newMode = autoLockModeFromStatusChange(effectiveStatusOf(targetInst), value);
+          if (newMode && newMode !== o.lockSystemMode) {
+            orderPatch = Object.assign({}, orderPatch, { lockSystemMode: newMode, lockSystemUpdatedAt: nowTimestamp() });
+          }
+        }
+      }
       var patch2 = {};
       if (cascadeAll) {
         var cascadeInst = function (i) { return Object.assign({}, i, { status: value, statusOverride: true }); };
