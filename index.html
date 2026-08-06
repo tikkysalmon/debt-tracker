@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-06.06';
+  var APP_BUILD = '2026-08-06.07';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -428,6 +428,43 @@
     });
     if (changed) _lastRepairChanged = true;
     return changed ? fixed : orders;
+  }
+  // One-time self-heal (2026-08-06): catches up orders that reached ยกเลิกสัญญา คืนเครื่อง BEFORE
+  // updateInstallment's auto-sync shipped (build .06) — or where a staff member re-picked the
+  // per-งวด dropdown's ALREADY-selected ยกเลิกสัญญา คืนเครื่อง option again (browsers never fire a
+  // 'change' event when a <select>'s value doesn't actually change, so updateInstallment's own
+  // in-the-moment sync never runs for a no-op re-pick either) — either way, an already-cancelled
+  // order can be stuck showing a stale 🔎 ติดตามเครื่องคืน tag and/or an outdated lockSystemMode with
+  // no way to trigger the fix short of un-cancelling and re-cancelling it. Runs on every load (same
+  // as the other repairXxx functions) so it also self-heals going forward if the same gap recurs.
+  // Different shape from its neighbors — touches customerTrackingReturn (a separate top-level state
+  // slice, not part of orders) too, so it takes/returns both instead of just an orders array.
+  function repairCancelledOrderSync(orders, trackingReturn, trackingReturnAt) {
+    var trPatch = {}, trAtPatch = {}, trChanged = false, ordersChanged = false;
+    var fixedOrders = orders.map(function (o) {
+      if (!o.isCancelled) return o;
+      var patch = {};
+      if (o.lockSystem && o.lockSystemMode !== 'นำออกจากระบบแล้ว') {
+        patch.lockSystemMode = 'นำออกจากระบบแล้ว';
+        patch.lockSystemUpdatedAt = nowTimestamp();
+      }
+      var ck = customerKey(o);
+      var raw = trackingReturn[ck];
+      if (raw === true || raw === 'tracking') {
+        trPatch[ck] = 'received';
+        trAtPatch[ck] = nowTimestamp();
+        trChanged = true;
+      }
+      if (!Object.keys(patch).length) return o;
+      ordersChanged = true;
+      return Object.assign({}, o, patch);
+    });
+    if (ordersChanged) _lastRepairChanged = true;
+    return {
+      orders: ordersChanged ? fixedOrders : orders,
+      trackingReturn: trChanged ? Object.assign({}, trackingReturn, trPatch) : trackingReturn,
+      trackingReturnAt: trChanged ? Object.assign({}, trackingReturnAt, trAtPatch) : trackingReturnAt
+    };
   }
   // One-time self-heal for ดาวน์+อุปกรณ์เสริม orders imported before the accessory track existed:
   // their productList is a single "เครื่อง / อุปกรณ์เสริม" string (the old joinText behavior) with
@@ -833,6 +870,10 @@
     state.customerNotes = rawNotes;
     state.customerTrackingReturn = rawTrackingReturn;
     state.customerTrackingReturnAt = rawTrackingReturnAt;
+    var syncFix = repairCancelledOrderSync(state.orders, state.customerTrackingReturn, state.customerTrackingReturnAt);
+    state.orders = syncFix.orders;
+    state.customerTrackingReturn = syncFix.trackingReturn;
+    state.customerTrackingReturnAt = syncFix.trackingReturnAt;
     // Not merged (last-save-wins), same treatment as isSampleData below — templates are edited
     // rarely enough that this doesn't need the full 3-way merge machinery orders/notes get. Falls
     // back to whatever's already local (never blank) if the snapshot predates this field existing.
@@ -1433,6 +1474,14 @@
     appliedLockSystem: 'all', appliedLockMode: 'all',
     appliedDueFrom: '', appliedDueTo: '', appliedPaidFrom: '', appliedPaidTo: '', appliedContractFrom: '', appliedContractTo: ''
   };
+  // Same one-time catch-up as applySnapshot() runs on every cloud sync — needed here too so a fresh
+  // page load off locally-persisted data (before the first cloud round-trip) also self-heals.
+  (function () {
+    var syncFix = repairCancelledOrderSync(state.orders, state.customerTrackingReturn, state.customerTrackingReturnAt);
+    state.orders = syncFix.orders;
+    state.customerTrackingReturn = syncFix.trackingReturn;
+    state.customerTrackingReturnAt = syncFix.trackingReturnAt;
+  })();
 
   // ---------- Derivations ----------
   // Deriving every installment is expensive on large datasets (100k+ rows) and render() runs on
