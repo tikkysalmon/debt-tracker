@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.17';
+  var APP_BUILD = '2026-08-05.18';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1963,21 +1963,31 @@
     }
     // Shared shape for sections 1-3: distinct-customer count (จำนวนกี่คน — a customer with 2
     // qualifying bills counts once), total ค้างชำระจริงๆ value summed across just the qualifying
-    // orders, a contract-month breakdown, a per-lockSystem (Soti/Marena/...) customer-count
-    // breakdown, and how many have no lockSystem on file at all.
+    // orders, a contract-month breakdown (itself broken down by lockSystem — count AND value per
+    // system within each month, per explicit user request 2026-08-05), a per-lockSystem customer-
+    // count breakdown for the segment as a whole, and how many have no lockSystem on file at all.
     function debtorSegment(matchFn) {
       var custSet = {}, totalValue = 0, byMonth = {}, noLockCustSet = {}, bySystemCustSet = {};
       active.forEach(function (o) {
         if (!matchFn(o)) return;
         var key = customerKey(o);
-        totalValue += o.trueOverdueRaw;
+        var val = o.trueOverdueRaw;
+        totalValue += val;
         custSet[key] = true;
         var monthKey = o.contractDate ? o.contractDate.slice(0, 7) : 'ไม่ทราบเดือน';
-        byMonth[monthKey] = (byMonth[monthKey] || 0) + 1;
+        var sysKey = o.lockSystem || 'ไม่มีในระบบล็อคเครื่อง';
+        var mm = byMonth[monthKey] = byMonth[monthKey] || { count: 0, value: 0, bySystem: {} };
+        mm.count++; mm.value += val;
+        var ms = mm.bySystem[sysKey] = mm.bySystem[sysKey] || { count: 0, value: 0 };
+        ms.count++; ms.value += val;
         if (!o.lockSystem) noLockCustSet[key] = true;
         else (bySystemCustSet[o.lockSystem] = bySystemCustSet[o.lockSystem] || {})[key] = true;
       });
-      var months = Object.keys(byMonth).sort().map(function (m) { return { month: m, count: byMonth[m] }; });
+      var months = Object.keys(byMonth).sort().map(function (m) {
+        var mm = byMonth[m];
+        var systems = Object.keys(mm.bySystem).sort().map(function (s) { return { system: s, count: mm.bySystem[s].count, valueDisp: fmtMoney(mm.bySystem[s].value) }; });
+        return { month: m, count: mm.count, valueDisp: fmtMoney(mm.value), systems: systems };
+      });
       var bySystem = Object.keys(bySystemCustSet).sort().map(function (s) { return { system: s, count: Object.keys(bySystemCustSet[s]).length }; });
       return { customerCount: Object.keys(custSet).length, totalValueDisp: fmtMoney(totalValue), months: months, noLockCount: Object.keys(noLockCustSet).length, bySystem: bySystem };
     }
@@ -5305,71 +5315,109 @@
     }
     var r = CV.report;
     if (!r) return '';
-    function segCard(title, seg) {
-      // No max-height/scroll — per explicit user request, the card grows to fit every month so
-      // nothing is hidden behind a scrollbar.
-      var monthsHtml = seg.months.length
-        ? '<div style="display:flex; flex-direction:column; gap:4px; margin-top:10px;">' +
-            seg.months.map(function (m) { return '<div style="display:flex; justify-content:space-between; font-size:12px; color:#6b6785;"><span>' + esc(m.month) + '</span><span style="font-weight:600; color:#2b2540;">' + m.count + ' ราย</span></div>'; }).join('') +
-          '</div>'
-        : '<div style="font-size:12px; color:#b3b0c4; margin-top:8px;">ไม่มีข้อมูล</div>';
-      var systemStatsHtml = seg.bySystem.map(function (s) {
-        return '<div><div style="font-size:11.5px; color:#6b6785;">ระบบ ' + esc(s.system) + '</div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:19px; color:#0b7285;">' + s.count + ' ราย</div></div>';
-      }).join('');
-      return '<div style="background:#fff; border:1px solid rgba(124,92,255,0.14); border-radius:16px; padding:18px 20px; box-shadow:0 4px 14px rgba(124,92,255,0.06);">' +
-        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:14.5px; color:#2b2540; margin-bottom:12px;">' + esc(title) + '</div>' +
-        '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:14px; margin-bottom:6px;">' +
-          '<div><div style="font-size:11.5px; color:#6b6785;">จำนวนลูกหนี้</div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:19px; color:#e03131;">' + seg.customerCount + ' ราย</div></div>' +
-          '<div><div style="font-size:11.5px; color:#6b6785;">มูลค่าค้างชำระ</div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:19px; color:#e03131;">฿' + seg.totalValueDisp + '</div></div>' +
-          systemStatsHtml +
-          '<div><div style="font-size:11.5px; color:#6b6785;">ไม่มีในระบบล็อคเครื่อง</div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:19px; color:#8a4b00;">' + seg.noLockCount + ' ราย</div></div>' +
-        '</div>' +
-        '<div style="font-size:11.5px; color:#6b6785; font-weight:600; margin-top:10px;">แยกตามเดือนที่ทำสัญญา</div>' +
-        monthsHtml +
+    // Shared visual language for this page (2026-08-05 redesign, per explicit "ตกแต่งการ์ด" request)
+    // — same glass-panel look Dashboard already uses (rgba white + blur + soft shadow), a numbered
+    // gradient badge per section so the 7 items stay easy to scan, and colored stat tiles instead of
+    // bare numbers stacked in a grid.
+    function cardWrap(bodyHtml, extraStyle) {
+      return '<div style="background:rgba(255,255,255,0.65); backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px); border:1px solid rgba(255,255,255,0.85); border-radius:20px; padding:22px 24px; box-shadow:0 8px 26px rgba(124,92,255,0.08);' + (extraStyle || '') + '">' + bodyHtml + '</div>';
+    }
+    function sectionHeader(num, icon, title) {
+      return '<div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">' +
+        '<div style="width:30px; height:30px; border-radius:10px; background:linear-gradient(135deg,#7c5cff,#6647e0); color:#fff; display:flex; align-items:center; justify-content:center; font-family:\'Prompt\',sans-serif; font-weight:700; font-size:14px; flex-shrink:0; box-shadow:0 4px 10px rgba(124,92,255,0.3);">' + num + '</div>' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:15px; color:#2b2540;">' + icon + ' ' + esc(title) + '</div>' +
       '</div>';
     }
-    var section123 = '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:20px; margin-bottom:28px;">' +
-      segCard('1. ค้างชำระตั้งแต่งวดที่ 1', r.seg1) +
-      segCard('2. ค้างชำระตั้งแต่งวดที่ 2', r.seg2) +
-      segCard('3. ค้างเกิน 2 งวด แต่ยังจ่ายอยู่ (ชำระภายใน 30 วันล่าสุด)', r.seg3) +
-    '</div>';
-    var section4 = '<div style="background:#fff; border:1px solid rgba(124,92,255,0.14); border-radius:16px; padding:18px 20px; box-shadow:0 4px 14px rgba(124,92,255,0.06); margin-bottom:20px;">' +
-      '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:14.5px; color:#2b2540; margin-bottom:6px;">4. ลูกหนี้ค้างชำระที่มีการโทรติดตามแล้ว</div>' +
-      '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:22px; color:#4f46e5;">' + r.calledCount + ' ราย</div>' +
-    '</div>';
-    var section5 = '<div style="background:#fff; border:1px solid rgba(124,92,255,0.14); border-radius:16px; padding:18px 20px; box-shadow:0 4px 14px rgba(124,92,255,0.06); margin-bottom:20px;">' +
-      '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:14.5px; color:#2b2540; margin-bottom:12px;">5. ลูกหนี้ค้างชำระที่ส่ง SMS ทวงหนี้ แยกตาม Template</div>' +
-      (r.seg5.length
-        ? '<div style="display:flex; flex-direction:column; gap:6px;">' +
-            r.seg5.map(function (s) { return '<div style="display:flex; justify-content:space-between; align-items:center; padding:8px 12px; background:rgba(124,92,255,0.05); border-radius:10px; font-size:13px;"><span style="color:#2b2540;">' + esc(s.template) + '</span><span style="font-weight:700; color:#4f46e5;">' + s.customerCount + ' ราย</span></div>'; }).join('') +
+    function statTile(label, value, color, bg) {
+      return '<div style="background:' + bg + '; border-radius:14px; padding:12px 14px;">' +
+        '<div style="font-size:11px; color:#6b6785; margin-bottom:4px;">' + esc(label) + '</div>' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:' + color + ';">' + value + '</div>' +
+      '</div>';
+    }
+    function segCard(num, title, seg) {
+      var systemTiles = seg.bySystem.map(function (s) {
+        return statTile('ระบบ ' + s.system, s.count + ' ราย', '#0b7285', 'rgba(11,114,133,0.08)');
+      }).join('');
+      // Per-month rows now also break down by lockSystem (count + มูลค่า each), per explicit user
+      // request 2026-08-05 — shown as small pills under each month so it stays scannable even with
+      // several systems. No max-height/scroll on the list itself (separate earlier request) — the
+      // card just grows to fit every month.
+      var monthsHtml = seg.months.length
+        ? '<div style="display:flex; flex-direction:column; gap:8px; margin-top:10px;">' +
+            seg.months.map(function (m) {
+              var sysBadges = m.systems.map(function (s) {
+                return '<span style="display:inline-flex; align-items:center; background:rgba(11,114,133,0.10); color:#0b7285; padding:3px 10px; border-radius:20px; font-size:11px; font-weight:600; white-space:nowrap;">' + esc(s.system) + ' · ' + s.count + ' ราย · ฿' + s.valueDisp + '</span>';
+              }).join('');
+              return '<div style="background:rgba(124,92,255,0.045); border-radius:12px; padding:10px 14px;">' +
+                '<div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:' + (sysBadges ? '7px' : '0') + ';">' +
+                  '<span style="font-size:12.5px; font-weight:700; color:#2b2540;">🗓 ' + esc(m.month) + '</span>' +
+                  '<span style="font-size:12px; color:#6b6785;">' + m.count + ' ราย · <span style="font-weight:700; color:#e03131;">฿' + m.valueDisp + '</span></span>' +
+                '</div>' +
+                (sysBadges ? '<div style="display:flex; gap:6px; flex-wrap:wrap;">' + sysBadges + '</div>' : '') +
+              '</div>';
+            }).join('') +
           '</div>'
-        : '<div style="font-size:13px; color:#b3b0c4;">ยังไม่มีการส่ง SMS ให้ลูกหนี้ที่ค้างชำระ</div>') +
+        : '<div style="font-size:12px; color:#b3b0c4; margin-top:8px;">ไม่มีข้อมูล</div>';
+      return cardWrap(
+        sectionHeader(num, '📋', title) +
+        '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; margin-bottom:8px;">' +
+          statTile('จำนวนลูกหนี้', seg.customerCount + ' ราย', '#e03131', 'rgba(224,49,49,0.08)') +
+          statTile('มูลค่าค้างชำระ', '฿' + seg.totalValueDisp, '#e03131', 'rgba(224,49,49,0.08)') +
+          systemTiles +
+          statTile('ไม่มีในระบบล็อคเครื่อง', seg.noLockCount + ' ราย', '#8a4b00', 'rgba(240,140,0,0.08)') +
+        '</div>' +
+        '<div style="font-size:12px; color:#6b6785; font-weight:700; margin-top:14px; margin-bottom:2px;">แยกตามเดือนที่ทำสัญญา</div>' +
+        monthsHtml
+      );
+    }
+    var section123 = '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:20px; margin-bottom:24px;">' +
+      segCard(1, 'ค้างชำระตั้งแต่งวดที่ 1', r.seg1) +
+      segCard(2, 'ค้างชำระตั้งแต่งวดที่ 2', r.seg2) +
+      segCard(3, 'ค้างเกิน 2 งวด แต่ยังจ่ายอยู่ (ชำระภายใน 30 วันล่าสุด)', r.seg3) +
     '</div>';
-    var section6 = '<div style="background:#fff; border:1px solid rgba(124,92,255,0.14); border-radius:16px; padding:18px 20px; box-shadow:0 4px 14px rgba(124,92,255,0.06); margin-bottom:20px;">' +
-      '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:14.5px; color:#2b2540; margin-bottom:12px;">6. ลูกหนี้ค้างชำระที่ออก/ส่งจดหมายทวงหนี้ แยกตามครั้งที่</div>' +
+    var section4 = cardWrap(
+      sectionHeader(4, '📞', 'ลูกหนี้ค้างชำระที่มีการโทรติดตามแล้ว') +
+      '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:28px; color:#4f46e5;">' + r.calledCount + ' <span style="font-size:14px; font-weight:600; color:#8a86a3;">ราย</span></div>',
+      ' margin-bottom:20px;'
+    );
+    var section5 = cardWrap(
+      sectionHeader(5, '💬', 'ลูกหนี้ค้างชำระที่ส่ง SMS ทวงหนี้ แยกตาม Template') +
+      (r.seg5.length
+        ? '<div style="display:flex; flex-direction:column; gap:8px;">' +
+            r.seg5.map(function (s) { return '<div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:rgba(124,92,255,0.05); border-radius:12px; font-size:13px;"><span style="color:#2b2540; font-weight:600;">' + esc(s.template) + '</span><span style="font-weight:700; color:#4f46e5; background:rgba(79,70,229,0.10); padding:3px 12px; border-radius:20px;">' + s.customerCount + ' ราย</span></div>'; }).join('') +
+          '</div>'
+        : '<div style="font-size:13px; color:#b3b0c4;">ยังไม่มีการส่ง SMS ให้ลูกหนี้ที่ค้างชำระ</div>'),
+      ' margin-bottom:20px;'
+    );
+    var section6 = cardWrap(
+      sectionHeader(6, '✉️', 'ลูกหนี้ค้างชำระที่ออก/ส่งจดหมายทวงหนี้ แยกตามครั้งที่') +
       (r.seg6.length
-        ? '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr style="text-align:left; color:#6b6785; border-bottom:1px solid rgba(124,92,255,0.12);"><th style="padding:8px 12px;">ครั้งที่</th><th style="padding:8px 12px;">ออกจดหมาย (ราย)</th><th style="padding:8px 12px;">ส่งอีเมล (ราย)</th></tr></thead><tbody>' +
-            r.seg6.map(function (s) { return '<tr style="border-bottom:1px solid rgba(124,92,255,0.06);"><td style="padding:8px 12px; font-weight:600; color:#2b2540;">ครั้งที่ ' + s.no + '</td><td style="padding:8px 12px; color:#b3261e; font-weight:600;">' + s.issuedCount + '</td><td style="padding:8px 12px; color:#1d4ed8; font-weight:600;">' + s.sentCount + '</td></tr>'; }).join('') +
+        ? '<div style="overflow-x:auto; border-radius:12px; border:1px solid rgba(124,92,255,0.10);"><table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr style="text-align:left; color:#6b6785; background:rgba(124,92,255,0.06);"><th style="padding:10px 14px;">ครั้งที่</th><th style="padding:10px 14px;">📄 ออกจดหมาย (ราย)</th><th style="padding:10px 14px;">📧 ส่งอีเมล (ราย)</th></tr></thead><tbody>' +
+            r.seg6.map(function (s, idx) { return '<tr style="background:' + (idx % 2 ? 'rgba(124,92,255,0.02)' : 'transparent') + ';"><td style="padding:9px 14px; font-weight:700; color:#2b2540;">ครั้งที่ ' + s.no + '</td><td style="padding:9px 14px; color:#b3261e; font-weight:600;">' + s.issuedCount + '</td><td style="padding:9px 14px; color:#1d4ed8; font-weight:600;">' + s.sentCount + '</td></tr>'; }).join('') +
           '</tbody></table></div>'
-        : '<div style="font-size:13px; color:#b3b0c4;">ยังไม่มีการออก/ส่งจดหมายให้ลูกหนี้ที่ค้างชำระ</div>') +
-    '</div>';
-    var section7 = '<div style="background:#fff; border:1px solid rgba(124,92,255,0.14); border-radius:16px; padding:18px 20px; box-shadow:0 4px 14px rgba(124,92,255,0.06);">' +
-      '<div style="display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; margin-bottom:14px;">' +
-        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:14.5px; color:#2b2540;">7. กิจกรรมติดตามหนี้รายวัน (โทร/SMS/จดหมาย)</div>' +
+        : '<div style="font-size:13px; color:#b3b0c4;">ยังไม่มีการออก/ส่งจดหมายให้ลูกหนี้ที่ค้างชำระ</div>'),
+      ' margin-bottom:20px;'
+    );
+    var section7 = cardWrap(
+      '<div style="display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; margin-bottom:16px;">' +
+        sectionHeader(7, '📈', 'กิจกรรมติดตามหนี้รายวัน (โทร/SMS/จดหมาย)').replace('margin-bottom:16px;', 'margin-bottom:0;') +
         '<div style="display:flex; align-items:center; gap:8px; font-size:12.5px; color:#6b6785;">' +
           'จาก <input type="date" value="' + esc(r.rangeFrom) + '" data-action="reportDateFrom" style="border:1px solid rgba(124,92,255,0.25); border-radius:8px; padding:6px 10px; font-size:12.5px; color:#2b2540;" />' +
           'ถึง <input type="date" value="' + esc(r.rangeTo) + '" data-action="reportDateTo" style="border:1px solid rgba(124,92,255,0.25); border-radius:8px; padding:6px 10px; font-size:12.5px; color:#2b2540;" />' +
         '</div>' +
       '</div>' +
       (r.dailyRows.length
-        ? '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr style="text-align:left; color:#6b6785; border-bottom:1px solid rgba(124,92,255,0.12);"><th style="padding:8px 12px;">วันที่</th><th style="padding:8px 12px;">โทร (ครั้ง)</th><th style="padding:8px 12px;">SMS (ครั้ง)</th><th style="padding:8px 12px;">ออกจดหมาย (ครั้ง)</th><th style="padding:8px 12px;">ส่งอีเมล (ครั้ง)</th></tr></thead><tbody>' +
-            r.dailyRows.map(function (d) { return '<tr style="border-bottom:1px solid rgba(124,92,255,0.06);"><td style="padding:8px 12px; font-weight:600; color:#2b2540;">' + esc(fmtDate(d.date)) + '</td><td style="padding:8px 12px; color:#0b7285; font-weight:600;">' + d.calls + '</td><td style="padding:8px 12px; color:#7c5cff; font-weight:600;">' + d.sms + '</td><td style="padding:8px 12px; color:#b3261e; font-weight:600;">' + d.letterIssued + '</td><td style="padding:8px 12px; color:#1d4ed8; font-weight:600;">' + d.letterSent + '</td></tr>'; }).join('') +
+        ? '<div style="overflow-x:auto; border-radius:12px; border:1px solid rgba(124,92,255,0.10);"><table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr style="text-align:left; color:#6b6785; background:rgba(124,92,255,0.06);"><th style="padding:10px 14px;">วันที่</th><th style="padding:10px 14px;">📞 โทร</th><th style="padding:10px 14px;">💬 SMS</th><th style="padding:10px 14px;">📄 ออกจดหมาย</th><th style="padding:10px 14px;">📧 ส่งอีเมล</th></tr></thead><tbody>' +
+            r.dailyRows.map(function (d, idx) { return '<tr style="background:' + (idx % 2 ? 'rgba(124,92,255,0.02)' : 'transparent') + ';"><td style="padding:8px 14px; font-weight:700; color:#2b2540;">' + esc(fmtDate(d.date)) + '</td><td style="padding:8px 14px; color:#0b7285; font-weight:600;">' + d.calls + '</td><td style="padding:8px 14px; color:#7c5cff; font-weight:600;">' + d.sms + '</td><td style="padding:8px 14px; color:#b3261e; font-weight:600;">' + d.letterIssued + '</td><td style="padding:8px 14px; color:#1d4ed8; font-weight:600;">' + d.letterSent + '</td></tr>'; }).join('') +
           '</tbody></table></div>'
-        : '<div style="font-size:13px; color:#b3b0c4;">เลือกช่วงวันที่ที่ถูกต้อง</div>') +
-    '</div>';
+        : '<div style="font-size:13px; color:#b3b0c4;">เลือกช่วงวันที่ที่ถูกต้อง</div>')
+    );
     return '<div>' +
-      '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:20px; color:#2b2540; margin-bottom:4px;">📊 Report</div>' +
-      '<div style="font-size:12.5px; color:#8a86a3; margin-bottom:22px;">อัปเดตสดทุกครั้งที่ข้อมูลในระบบเปลี่ยนแปลง — เฉพาะผู้ดูแลระบบ (Admin) เท่านั้น</div>' +
+      '<div style="display:flex; align-items:center; gap:12px; margin-bottom:4px;">' +
+        '<div style="width:38px; height:38px; border-radius:12px; background:linear-gradient(135deg,#7c5cff,#6647e0); display:flex; align-items:center; justify-content:center; box-shadow:0 6px 16px rgba(124,92,255,0.3); font-size:18px;">📊</div>' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:21px; color:#2b2540;">Report</div>' +
+      '</div>' +
+      '<div style="font-size:12.5px; color:#8a86a3; margin-bottom:22px; margin-left:50px;">อัปเดตสดทุกครั้งที่ข้อมูลในระบบเปลี่ยนแปลง — เฉพาะผู้ดูแลระบบ (Admin) เท่านั้น</div>' +
       section123 + section4 + section5 + section6 + section7 +
     '</div>';
   }
