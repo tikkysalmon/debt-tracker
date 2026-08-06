@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-06.05';
+  var APP_BUILD = '2026-08-06.06';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -330,7 +330,18 @@
   // toggleCustomerTrackingReturn) — always looked up live off state.customerTrackingReturn rather
   // than cached onto the order object, since computeOrders() is cached on state.orders' identity and
   // toggling this tag never touches state.orders (see the long comment in computeOrdersUncached).
-  function isCustomerTrackingReturn(o) { return !!(state.customerTrackingReturn && state.customerTrackingReturn[customerKey(o)]); }
+  // Extended 2026-08-06 from a plain boolean to a 3-state value: '' / undefined (off), 'tracking'
+  // (🔎 actively chasing the device — the old `true`, kept as an alias below for existing saved
+  // data), or 'received' (✅ device confirmed back — auto-set when a staff member changes a งวด's
+  // status to ยกเลิกสัญญา คืนเครื่อง on a customer who was being tracked, see updateInstallment).
+  function trackingReturnState(o) {
+    var v = state.customerTrackingReturn && state.customerTrackingReturn[customerKey(o)];
+    if (v === true || v === 'tracking') return 'tracking';
+    if (v === 'received') return 'received';
+    return '';
+  }
+  function isCustomerTrackingReturn(o) { return trackingReturnState(o) === 'tracking'; }
+  function isCustomerTrackingReceived(o) { return trackingReturnState(o) === 'received'; }
   function computeStatus(inst, cfg) {
     var due = new Date(inst.dueDate);
     var amountDue = Number(inst.amountDue || 0);
@@ -2575,10 +2586,13 @@
   // nowTimestamp() restamps on every toggle, on OR off, so staff always see when it was last
   // touched, not just whether it's currently on. Like every other edit in manual-save mode, this
   // only flips hasUnsavedChanges — it isn't actually persisted until 💾 บันทึกการเปลี่ยนแปลง.
+  // Manual click always toggles OFF<->'tracking' (start/stop chasing the device) — 'received' is
+  // system-set only (see updateInstallment), but clicking a 'received' badge still needs to clear
+  // it (dismiss the confirmation) rather than get stuck, so both non-off states go back to off here.
   function toggleCustomerTrackingReturn() {
     if (!state.selectedCustomerId) return;
     var key = state.selectedCustomerId;
-    var next = !state.customerTrackingReturn[key];
+    var next = state.customerTrackingReturn[key] ? '' : 'tracking';
     var trPatch = {}; trPatch[key] = next;
     state.customerTrackingReturn = Object.assign({}, state.customerTrackingReturn, trPatch);
     var atPatch = {}; atPatch[key] = nowTimestamp();
@@ -3269,14 +3283,18 @@
   // check (Soti/Marena) by picking a งวด's status by hand, the order's own ระบบล็อคเครื่อง โหมด
   // (still reference-only, see lockSystemColor/onLockSystemFileChange) should follow along instead
   // of staying whatever the last file import said, which can go stale the moment reality on the
-  // device changes. Only 3 specific transitions requested — everything else leaves lockSystemMode
+  // device changes. Only 4 specific transitions requested — everything else leaves lockSystemMode
   // untouched: (1)/(2) escalating a system-auto-flagged งวด (ล็อคเครื่อง (ระบบ)) to a real, deliberate
   // Hard/Soft lock action; (3) any งวด reaching ชำระแล้ว means the device should be back to Normal,
-  // regardless of what it was before — a paid installment overrides any lock state. Deliberately NOT
-  // extended to other status combinations (e.g. เปลี่ยนภาพพักหน้าจอ (ระบบ) as the FROM state) since
-  // the user only specified these 3; don't broaden without a fresh explicit ask.
+  // regardless of what it was before — a paid installment overrides any lock state; (4) the order
+  // reaching ยกเลิกสัญญา คืนเครื่อง means the device is gone from the customer entirely, so it should
+  // come out of the lock system altogether — see 'นำออกจากระบบแล้ว' below (added same day, oldStatus
+  // irrelevant for this one, unlike 1/2). Deliberately NOT extended to other status combinations
+  // (e.g. เปลี่ยนภาพพักหน้าจอ (ระบบ) as the FROM state) since the user only specified these; don't
+  // broaden without a fresh explicit ask.
   function autoLockModeFromStatusChange(oldEffectiveStatus, newStatus) {
     if (newStatus === 'ชำระแล้ว') return 'Normal';
+    if (newStatus === 'ยกเลิกสัญญา คืนเครื่อง') return 'นำออกจากระบบแล้ว';
     if (oldEffectiveStatus === 'ล็อคเครื่อง (ระบบ)' && newStatus === 'ล็อคเครื่อง') return 'Hard lock';
     if (oldEffectiveStatus === 'ล็อคเครื่อง (ระบบ)' && newStatus === 'เปลี่ยนภาพพักหน้าจอ') return 'Soft lock';
     return null;
@@ -3284,20 +3302,29 @@
   function updateInstallment(orderId, no, field, value, track) {
     var key = trackKey(track);
     var cascadeAll = field === 'status' && ACCOUNT_LEVEL_STATUSES.indexOf(value) !== -1;
+    // Set below (inside the .map()) when this edit cancels an order for a customer who was actively
+    // ติดตามเครื่องคืน — applied to the separate state.customerTrackingReturn slice AFTER the map,
+    // since that's keyed by customer, not by order (2026-08-06, per explicit user request: "อยากให้
+    // อัพเดทสถานะการติดตามเครื่อง เป็นได้รับเครื่องคืนแล้ว").
+    var markReturnReceivedKey = null;
     state.orders = state.orders.map(function (o) {
       if (o.orderId !== orderId) return o;
       var orderPatch = field === 'status' ? (stickyAccountStatusPatch(value) || {}) : {};
       // Only meaningful once a lock system is already on file (Soti/Marena) — nothing to update
-      // otherwise. Reads the งวด's status BEFORE this edit applies, so the transition (not just the
-      // destination) can be checked.
-      if (field === 'status' && !cascadeAll && o.lockSystem) {
-        var targetInst = (o[key] || []).find(function (i) { return i.no === no; });
-        if (targetInst) {
-          var newMode = autoLockModeFromStatusChange(effectiveStatusOf(targetInst), value);
-          if (newMode && newMode !== o.lockSystemMode) {
-            orderPatch = Object.assign({}, orderPatch, { lockSystemMode: newMode, lockSystemUpdatedAt: nowTimestamp() });
-          }
+      // otherwise. Reads the งวด's status BEFORE this edit applies (for the non-cascade rules, whose
+      // FROM state matters), so the transition (not just the destination) can be checked.
+      if (field === 'status' && o.lockSystem) {
+        var oldStatus = cascadeAll ? null : (function () {
+          var targetInst = (o[key] || []).find(function (i) { return i.no === no; });
+          return targetInst ? effectiveStatusOf(targetInst) : null;
+        })();
+        var newMode = autoLockModeFromStatusChange(oldStatus, value);
+        if (newMode && newMode !== o.lockSystemMode) {
+          orderPatch = Object.assign({}, orderPatch, { lockSystemMode: newMode, lockSystemUpdatedAt: nowTimestamp() });
         }
+      }
+      if (cascadeAll && value === 'ยกเลิกสัญญา คืนเครื่อง' && trackingReturnState(o) === 'tracking') {
+        markReturnReceivedKey = customerKey(o);
       }
       var patch2 = {};
       if (cascadeAll) {
@@ -3318,6 +3345,12 @@
       }
       return Object.assign({}, o, orderPatch, patch2);
     });
+    if (markReturnReceivedKey) {
+      var trPatch = {}; trPatch[markReturnReceivedKey] = 'received';
+      state.customerTrackingReturn = Object.assign({}, state.customerTrackingReturn, trPatch);
+      var trAtPatch = {}; trAtPatch[markReturnReceivedKey] = nowTimestamp();
+      state.customerTrackingReturnAt = Object.assign({}, state.customerTrackingReturnAt, trAtPatch);
+    }
     state.hasUnsavedChanges = true;
     render();
   }
@@ -3742,6 +3775,7 @@
   function accountStatusText(o) {
     if (o.isSold) return 'จำหน่ายชื่อให้บริษัทติดตามหนี้';
     if (o.isCancelled) return 'ยกเลิกสัญญา คืนเครื่อง';
+    if (isCustomerTrackingReceived(o)) return 'ได้รับเครื่องคืนแล้ว';
     if (isCustomerTrackingReturn(o)) return 'ติดตามเครื่องคืน';
     if (o.totalOutstandingRaw <= 0.005) return 'ปิดยอด';
     return 'ปกติ';
@@ -6139,6 +6173,12 @@
     // tag is, not just that it's flagged. Looked up live off state.customerTrackingReturn (see
     // isCustomerTrackingReturn) rather than a cached order field — see the long comment in
     // computeOrdersUncached for why.
+    if (isCustomerTrackingReceived(order)) {
+      var rk = customerKey(order);
+      var rAt = (state.customerTrackingReturnAt && state.customerTrackingReturnAt[rk]) || '';
+      var rStamp = rAt ? '<div style="font-size:9.5px; color:#8a86a3; margin-top:3px; white-space:nowrap;">อัปเดตล่าสุด ' + esc(rAt) + '</div>' : '';
+      return '<span style="background:' + hexToRgba('#12b886', 0.14) + '; color:#0b7a5b; padding:3px 8px; border-radius:20px; font-size:11px; font-weight:600; white-space:nowrap;">✅ ได้รับเครื่องคืนแล้ว</span>' + rStamp;
+    }
     if (isCustomerTrackingReturn(order)) {
       var ck = customerKey(order);
       var trAt = (state.customerTrackingReturnAt && state.customerTrackingReturnAt[ck]) || '';
@@ -6333,7 +6373,7 @@
             '</select></div>' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">🔓 โหมดการล็อค</div>' +
             '<select data-action="filter" data-key="filterLockMode" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13.5px; color:#2b2540;">' +
-              selOpt('all', 'ทุกสถานะ', state.filterLockMode === 'all') + selOpt('Normal', 'Normal', state.filterLockMode === 'Normal') + selOpt('Hard lock', 'Hard lock', state.filterLockMode === 'Hard lock') + selOpt('Soft lock', 'Soft lock', state.filterLockMode === 'Soft lock') +
+              selOpt('all', 'ทุกสถานะ', state.filterLockMode === 'all') + selOpt('Normal', 'Normal', state.filterLockMode === 'Normal') + selOpt('Hard lock', 'Hard lock', state.filterLockMode === 'Hard lock') + selOpt('Soft lock', 'Soft lock', state.filterLockMode === 'Soft lock') + selOpt('นำออกจากระบบแล้ว', 'นำออกจากระบบแล้ว', state.filterLockMode === 'นำออกจากระบบแล้ว') +
             '</select></div>' +
         '</div>' +
         '<label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; color:#2b2540; font-weight:600; margin-bottom:14px; user-select:none;">' +
@@ -6623,9 +6663,15 @@
     // ติดตามเครื่องคืน tag — customer-level (state.customerTrackingReturn), not part of CV/computeView,
     // so read directly off state here; safe since renderCustomerDetail only ever runs with a customer
     // selected.
-    var trActive = !!state.customerTrackingReturn[state.selectedCustomerId];
+    var trRaw = state.customerTrackingReturn[state.selectedCustomerId];
+    var trState = (trRaw === true || trRaw === 'tracking') ? 'tracking' : (trRaw === 'received' ? 'received' : '');
     var trAt = state.customerTrackingReturnAt[state.selectedCustomerId] || '';
-    var trackingReturnTagHtml = trActive
+    // 'received' (✅, auto-set — see updateInstallment) is its own visual state, distinct from
+    // 'tracking' (🔎, manually toggled) — both clickable to dismiss back to off (see
+    // toggleCustomerTrackingReturn), 2026-08-06.
+    var trackingReturnTagHtml = trState === 'received'
+      ? '<button data-action="toggleCustomerTrackingReturn" title="คลิกเพื่อล้างแท็กนี้" style="border:none; cursor:pointer; background:' + hexToRgba('#12b886', 0.14) + '; color:#0b7a5b; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">✅ ได้รับเครื่องคืนแล้ว' + (trAt ? ' · อัปเดตล่าสุด ' + esc(trAt) : '') + '</button>'
+      : trState === 'tracking'
       ? '<button data-action="toggleCustomerTrackingReturn" title="คลิกเพื่อยกเลิกแท็กนี้" style="border:none; cursor:pointer; background:' + hexToRgba('#0b7285', 0.14) + '; color:#0b7285; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">🔎 ติดตามเครื่องคืน' + (trAt ? ' · อัปเดตล่าสุด ' + esc(trAt) : '') + '</button>'
       : '<button data-action="toggleCustomerTrackingReturn" title="คลิกเพื่อติดแท็กติดตามเครื่องคืน" style="border:1px dashed rgba(11,114,133,0.45); cursor:pointer; background:transparent; color:#0b7285; padding:2px 11px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">+ ติดตามเครื่องคืน</button>';
     // Contact info from "ข้อมูลลูกค้าเพิ่มเติม" upload (เลขที่สัญญา/เบอร์ติดต่อลูกค้า/วันเวลาที่ส่ง
@@ -6720,7 +6766,11 @@
                 '<option value="Marena"' + (ord.lockSystem === 'Marena' ? ' selected' : '') + '>Marena</option>' +
               '</select>' +
               (ord.lockSystem ? '/<select data-order-field="lockSystemMode" data-order="' + esc(ord.orderId) + '" style="border:none; background:transparent; font-size:12px; font-weight:600; color:' + c.color + '; outline:none; cursor:pointer; -webkit-appearance:none; appearance:none; padding:2px 4px;">' +
-                ['Normal', 'Hard lock', 'Soft lock'].map(function (m) { return '<option value="' + m + '"' + (ord.lockSystemMode === m ? ' selected' : '') + '>' + m + '</option>'; }).join('') +
+                // 'นำออกจากระบบแล้ว' (2026-08-06) — auto-set when the order is cancelled/device
+                // returned (see autoLockModeFromStatusChange); listed here too so staff can also
+                // pick/correct it by hand, same as every other mode. Never offered on the Upload
+                // page's lockImportMode (a real file never contains this value).
+                ['Normal', 'Hard lock', 'Soft lock', 'นำออกจากระบบแล้ว'].map(function (m) { return '<option value="' + m + '"' + (ord.lockSystemMode === m ? ' selected' : '') + '>' + m + '</option>'; }).join('') +
               '</select>' : '') +
             '</div>';
           })() +
