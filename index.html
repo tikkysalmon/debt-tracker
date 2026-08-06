@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.24';
+  var APP_BUILD = '2026-08-05.25';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1572,11 +1572,24 @@
         totalContractRaw: Number(o.downPayment || 0) + totalDue,
         totalDueDisp: fmtMoney(totalDue),
         totalPaidDisp: fmtMoney(totalPaid),
+        // ยอดรับชำระ ("total received") shown on the order card must include ยอดวางดาวน์ — money
+        // actually collected at contract signing, same as how the Dashboard's own ยอดชำระแล้ว KPI
+        // already treats it (totalPaidFullRaw, used since it exists) — not just installment
+        // payments after that. totalPaidDisp/mainPaidDisp/accessoryPaidDisp above/below (installment-
+        // only) were what the order card actually rendered, silently under-stating how much this
+        // customer has really paid by exactly their ยอดวางดาวน์ (user report 2026-08-05: card showed
+        // ยอดรับชำระ ฿13,540 for a customer who'd also paid a ฿3,900 ดาวน์ — really ฿17,440 received).
+        // ยอดคงเหลือ itself needs no equivalent fix — totalContractRaw - totalPaidFullRaw always
+        // equals totalDue - totalPaid algebraically (ยอดวางดาวน์ cancels out on both sides), so it
+        // was already correct either way.
+        totalPaidFullDisp: fmtMoney(Number(o.downPayment || 0) + totalPaid),
         totalOutstandingDisp: fmtMoney(totalOutstanding),
         mainPaidDisp: fmtMoney(mainPaid),
+        mainPaidFullDisp: fmtMoney(Number(o.downPayment || 0) + mainPaid),
         mainOutstandingRaw: mainOutstanding,
         mainOutstandingDisp: fmtMoney(mainOutstanding),
         accessoryPaidDisp: fmtMoney(accPaid),
+        accessoryPaidFullDisp: fmtMoney(Number(o.accessoryDownPayment || 0) + accPaid),
         accessoryOutstandingRaw: accOutstanding,
         accessoryOutstandingDisp: fmtMoney(accOutstanding),
         firstInstallmentAmountDisp: fmtMoney(installments[0] ? installments[0].amountDue : 0),
@@ -6620,7 +6633,7 @@
             : '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดวางดาวน์</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.downPayment)) + '" data-order-field="downPayment" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>') +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดผ่อนต่องวด</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(firstUnpaidInstallmentAmount(ord.installments))) + '" data-action="setInstallmentAmount" data-order="' + esc(ord.orderId) + '" data-track="main" title="แก้ยอดนี้จะปรับยอดผ่อนของทุกงวดที่ยังไม่ชำระให้เท่ากันหมด" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ส่วนลด</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.discount)) + '" data-order-field="discount" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#2b2540; background:#fff; outline:none;" /></div>' +
-          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดรับชำระ' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:700; color:#12b886;">฿' + (ord.hasAccessory ? ord.mainPaidDisp : ord.totalPaidDisp) + '</div></div>' +
+          '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดรับชำระ' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:700; color:#12b886;">฿' + (ord.hasAccessory ? ord.mainPaidFullDisp : ord.totalPaidFullDisp) + '</div></div>' +
           '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดคงเหลือ' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><div style="font-size:15px; font-weight:700; color:#e03131;">฿' + (ord.hasAccessory ? ord.mainOutstandingDisp : ord.totalOutstandingDisp) + '</div></div>' +
         '</div>' +
         '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; margin-bottom:14px; padding:14px 16px; background:rgba(124,92,255,0.05); border-radius:14px;">' +
@@ -6654,7 +6667,7 @@
             '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:16px; margin-bottom:10px;">' +
               '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดวางดาวน์</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.accessoryDownPayment)) + '" data-order-field="accessoryDownPayment" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>' +
               '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดผ่อนต่องวด</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(firstUnpaidInstallmentAmount(ord.accessoryInstallments))) + '" data-action="setInstallmentAmount" data-order="' + esc(ord.orderId) + '" data-track="accessory" title="แก้ยอดนี้จะปรับยอดผ่อนของทุกงวดที่ยังไม่ชำระให้เท่ากันหมด" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#4f46e5; background:#fff; outline:none;" /></div>' +
-              '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดรับชำระ</div><div style="font-size:15px; font-weight:700; color:#12b886;">฿' + ord.accessoryPaidDisp + '</div></div>' +
+              '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดรับชำระ</div><div style="font-size:15px; font-weight:700; color:#12b886;">฿' + ord.accessoryPaidFullDisp + '</div></div>' +
               '<div><div style="font-size:11.5px; color:#6b6785; margin-bottom:4px;">ยอดคงเหลือ</div><div style="font-size:15px; font-weight:700; color:#e03131;">฿' + ord.accessoryOutstandingDisp + '</div></div>' +
             '</div>' +
             '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; margin-bottom:14px; padding:14px 16px; background:rgba(124,92,255,0.05); border-radius:14px;">' +
