@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-06.07';
+  var APP_BUILD = '2026-08-06.08';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -439,10 +439,18 @@
   // as the other repairXxx functions) so it also self-heals going forward if the same gap recurs.
   // Different shape from its neighbors — touches customerTrackingReturn (a separate top-level state
   // slice, not part of orders) too, so it takes/returns both instead of just an orders array.
+  // BUG (found 2026-08-06, shipped same day as the repair itself): checked o.isCancelled, but that
+  // field is a per-render DERIVED value computed fresh inside computeOrdersUncached (wasCancelled OR
+  // any installment's live effectiveStatus) — it never exists on a RAW order straight out of
+  // state.orders/persisted data, which is what this function actually receives. So the check was
+  // always false and the whole repair was a silent no-op for every order, on every load, since it
+  // shipped — confirmed live by the user re-testing on the same customer and seeing no change at
+  // all. o.wasCancelled (set by stickyAccountStatusPatch, a REAL persisted field on updateInstallment
+  // cascade) is the correct raw-data equivalent to check here.
   function repairCancelledOrderSync(orders, trackingReturn, trackingReturnAt) {
     var trPatch = {}, trAtPatch = {}, trChanged = false, ordersChanged = false;
     var fixedOrders = orders.map(function (o) {
-      if (!o.isCancelled) return o;
+      if (!o.wasCancelled) return o;
       var patch = {};
       if (o.lockSystem && o.lockSystemMode !== 'นำออกจากระบบแล้ว') {
         patch.lockSystemMode = 'นำออกจากระบบแล้ว';
