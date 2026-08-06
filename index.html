@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.19';
+  var APP_BUILD = '2026-08-05.20';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -5347,18 +5347,21 @@
       // request 2026-08-05 — shown as small pills under each month so it stays scannable even with
       // several systems. No max-height/scroll on the list itself (separate earlier request) — the
       // card just grows to fit every month.
+      // Per-month system breakdown redesigned 2026-08-05 (user: "เปลี่ยนจาก pill เป็นตารางย่อย") —
+      // was a row of pills that wrapped messily once a month had all 3 systems; now a small
+      // 3-column sub-table (ระบบ/จำนวน/มูลค่า) nested under each month's header line instead.
       var monthsHtml = seg.months.length
-        ? '<div style="display:flex; flex-direction:column; gap:8px; margin-top:10px;">' +
+        ? '<div style="display:flex; flex-direction:column; gap:10px; margin-top:10px;">' +
             seg.months.map(function (m) {
-              var sysBadges = m.systems.map(function (s) {
-                return '<span style="display:inline-flex; align-items:center; background:rgba(11,114,133,0.10); color:#0b7285; padding:3px 10px; border-radius:20px; font-size:11px; font-weight:600; white-space:nowrap;">' + esc(s.system) + ' · ' + s.count + ' ราย · ฿' + s.valueDisp + '</span>';
+              var sysRows = m.systems.map(function (s) {
+                return '<tr><td style="padding:4px 10px; color:#2b2540; font-weight:600;">' + esc(s.system) + '</td><td style="padding:4px 10px; color:#6b6785; text-align:right;">' + s.count + ' ราย</td><td style="padding:4px 10px; color:#0b7285; font-weight:700; text-align:right;">฿' + s.valueDisp + '</td></tr>';
               }).join('');
               return '<div style="background:rgba(124,92,255,0.045); border-radius:12px; padding:10px 14px;">' +
-                '<div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:' + (sysBadges ? '7px' : '0') + ';">' +
+                '<div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:' + (sysRows ? '6px' : '0') + ';">' +
                   '<span style="font-size:12.5px; font-weight:700; color:#2b2540;">🗓 ' + esc(m.month) + '</span>' +
                   '<span style="font-size:12px; color:#6b6785;">' + m.count + ' ราย · <span style="font-weight:700; color:#e03131;">฿' + m.valueDisp + '</span></span>' +
                 '</div>' +
-                (sysBadges ? '<div style="display:flex; gap:6px; flex-wrap:wrap;">' + sysBadges + '</div>' : '') +
+                (sysRows ? '<table style="width:100%; border-collapse:collapse; font-size:11.5px; background:#fff; border-radius:8px; overflow:hidden;"><thead><tr style="background:rgba(124,92,255,0.06); color:#6b6785;"><th style="padding:4px 10px; text-align:left; font-weight:600;">ระบบ</th><th style="padding:4px 10px; text-align:right; font-weight:600;">จำนวน</th><th style="padding:4px 10px; text-align:right; font-weight:600;">มูลค่า</th></tr></thead><tbody>' + sysRows + '</tbody></table>' : '') +
               '</div>';
             }).join('') +
           '</div>'
