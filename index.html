@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.21';
+  var APP_BUILD = '2026-08-05.22';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1339,6 +1339,7 @@
     reportDateFrom: '',
     reportDateTo: '',
     reportDrilldownSeg: null, reportDrilldownGroup: null,
+    customerDetailReturnView: null,
     lockImportSystem: 'Soti',
     lockImportMode: 'Normal',
     view: 'dashboard',
@@ -2381,6 +2382,10 @@
   }
   function selectCustomer(cid) {
     if (!confirmDiscardIfDirty()) return;
+    // Remembered so closeDetail can restore it — a no-op when already on 'tracking' (the original
+    // call site), but lets closeDetail send an admin who opened this from the Report page's drill-
+    // down modal back to Report instead of stranding them on ติดตามหนี้ (user report 2026-08-05).
+    state.customerDetailReturnView = state.view;
     // Switches to state.view='tracking' unconditionally — renderCustomerDetail() only ever renders
     // from within renderTracking(), so a click from anywhere else that can trigger this (e.g. the
     // Report page's drill-down modal, added 2026-08-05) needs this to actually land on the detail
@@ -7022,7 +7027,7 @@
         case 'toggleUnverifiedCRM': state.filterUnverifiedCRM = t.checked; render(); break;
         case 'commitChanges': commitChanges(); break;
         case 'selectCustomer': selectCustomer(t.getAttribute('data-cid')); break;
-        case 'closeDetail': if (confirmDiscardIfDirty()) { state.selectedCustomerId = null; render(); } break;
+        case 'closeDetail': if (confirmDiscardIfDirty()) { state.selectedCustomerId = null; state.view = state.customerDetailReturnView || 'tracking'; state.customerDetailReturnView = null; render(); } break;
         case 'saveNote': saveCustomerNote(); break;
         case 'toggleCustomerTrackingReturn': toggleCustomerTrackingReturn(); break;
         case 'startEditCustomerName': startEditCustomerName(); break;
