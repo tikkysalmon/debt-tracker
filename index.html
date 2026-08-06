@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-05.20';
+  var APP_BUILD = '2026-08-05.21';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1338,6 +1338,7 @@
     uploadMsgLockSystem: '',
     reportDateFrom: '',
     reportDateTo: '',
+    reportDrilldownSeg: null, reportDrilldownGroup: null,
     lockImportSystem: 'Soti',
     lockImportMode: 'Normal',
     view: 'dashboard',
@@ -1967,7 +1968,11 @@
     // system within each month, per explicit user request 2026-08-05), a per-lockSystem customer-
     // count breakdown for the segment as a whole, and how many have no lockSystem on file at all.
     function debtorSegment(matchFn) {
-      var custSet = {}, totalValue = 0, byMonth = {}, noLockCustSet = {}, bySystemCustSet = {};
+      var custSet = {}, totalValue = 0, byMonth = {}, noLockCustSet = {}, noLockValue = 0, bySystemCustSet = {}, bySystemValue = {};
+      // groups: "monthKey|sysKey" -> matching orders, so a click on a month+system row (see
+      // renderReportDrilldownModal) can look its exact order list straight up in O(1) — per
+      // explicit user request 2026-08-05 to drill into the actual customer list from this table.
+      var groups = {};
       active.forEach(function (o) {
         if (!matchFn(o)) return;
         var key = customerKey(o);
@@ -1980,16 +1985,25 @@
         mm.count++; mm.value += val;
         var ms = mm.bySystem[sysKey] = mm.bySystem[sysKey] || { count: 0, value: 0 };
         ms.count++; ms.value += val;
-        if (!o.lockSystem) noLockCustSet[key] = true;
-        else (bySystemCustSet[o.lockSystem] = bySystemCustSet[o.lockSystem] || {})[key] = true;
+        (groups[monthKey + '|' + sysKey] = groups[monthKey + '|' + sysKey] || []).push(o);
+        // มูลค่า (not just count) per system tile too, per explicit user request 2026-08-05 —
+        // summed per ORDER (not deduped by customer), same basis as totalValue/มูลค่าค้างชำระ above.
+        if (!o.lockSystem) { noLockCustSet[key] = true; noLockValue += val; }
+        else { (bySystemCustSet[o.lockSystem] = bySystemCustSet[o.lockSystem] || {})[key] = true; bySystemValue[o.lockSystem] = (bySystemValue[o.lockSystem] || 0) + val; }
       });
+      // Display as MM-YYYY per explicit user request 2026-08-05 — monthKey itself stays YYYY-MM
+      // internally (both for correct chronological sort above and as half of the groups lookup key).
+      function monthDisp(monthKey) {
+        var parts = monthKey.split('-');
+        return parts.length === 2 ? parts[1] + '-' + parts[0] : monthKey;
+      }
       var months = Object.keys(byMonth).sort().map(function (m) {
         var mm = byMonth[m];
-        var systems = Object.keys(mm.bySystem).sort().map(function (s) { return { system: s, count: mm.bySystem[s].count, valueDisp: fmtMoney(mm.bySystem[s].value) }; });
-        return { month: m, count: mm.count, valueDisp: fmtMoney(mm.value), systems: systems };
+        var systems = Object.keys(mm.bySystem).sort().map(function (s) { return { system: s, count: mm.bySystem[s].count, valueDisp: fmtMoney(mm.bySystem[s].value), groupKey: m + '|' + s }; });
+        return { month: m, monthDisp: monthDisp(m), count: mm.count, valueDisp: fmtMoney(mm.value), systems: systems };
       });
-      var bySystem = Object.keys(bySystemCustSet).sort().map(function (s) { return { system: s, count: Object.keys(bySystemCustSet[s]).length }; });
-      return { customerCount: Object.keys(custSet).length, totalValueDisp: fmtMoney(totalValue), months: months, noLockCount: Object.keys(noLockCustSet).length, bySystem: bySystem };
+      var bySystem = Object.keys(bySystemCustSet).sort().map(function (s) { return { system: s, count: Object.keys(bySystemCustSet[s]).length, valueDisp: fmtMoney(bySystemValue[s] || 0) }; });
+      return { customerCount: Object.keys(custSet).length, totalValueDisp: fmtMoney(totalValue), months: months, noLockCount: Object.keys(noLockCustSet).length, noLockValueDisp: fmtMoney(noLockValue), bySystem: bySystem, groups: groups };
     }
     var seg1 = debtorSegment(function (o) { return firstOverdueNo(o.installments) === 1; });
     var seg2 = debtorSegment(function (o) { return firstOverdueNo(o.installments) === 2; });
@@ -2367,6 +2381,16 @@
   }
   function selectCustomer(cid) {
     if (!confirmDiscardIfDirty()) return;
+    // Switches to state.view='tracking' unconditionally — renderCustomerDetail() only ever renders
+    // from within renderTracking(), so a click from anywhere else that can trigger this (e.g. the
+    // Report page's drill-down modal, added 2026-08-05) needs this to actually land on the detail
+    // view instead of silently setting selectedCustomerId with nothing on screen to show for it.
+    // A no-op for the original tracking-table click, which was already on this view.
+    state.view = 'tracking';
+    // Clears any open Report drill-down too (harmless no-op when called from the tracking table
+    // itself, where these are already null) — otherwise it would silently reopen the next time the
+    // admin navigates back to the Report page, since nothing else ever clears it.
+    state.reportDrilldownSeg = null; state.reportDrilldownGroup = null;
     state.selectedCustomerId = cid; state.customerNoteDraft = ''; state.editingCustomerName = false; state.editingCustomerId = false; state.editingOrderIdFor = null; state.callDraft = ''; state.trackingOrderId = ''; state.trackingTrack = ''; render();
   }
   function startEditCustomerName() {
@@ -5328,10 +5352,11 @@
         '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:15px; color:#2b2540;">' + icon + ' ' + esc(title) + '</div>' +
       '</div>';
     }
-    function statTile(label, value, color, bg) {
+    function statTile(label, value, color, bg, sub) {
       return '<div style="background:' + bg + '; border-radius:14px; padding:12px 14px;">' +
         '<div style="font-size:11px; color:#6b6785; margin-bottom:4px;">' + esc(label) + '</div>' +
         '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:' + color + ';">' + value + '</div>' +
+        (sub ? '<div style="font-size:11.5px; font-weight:600; color:' + color + '; opacity:0.8; margin-top:2px;">' + sub + '</div>' : '') +
       '</div>';
     }
     function segCard(num, title, seg) {
@@ -5341,8 +5366,8 @@
       // filled a row — now two clearly-labeled groups instead: primary stats on top, ระบบล็อคเครื่อง
       // (including ไม่มีในระบบ) grouped together underneath its own sub-header.
       var systemTiles = seg.bySystem.map(function (s) {
-        return statTile('ระบบ ' + s.system, s.count + ' ราย', '#0b7285', 'rgba(11,114,133,0.08)');
-      }).join('') + statTile('ไม่มีในระบบล็อคเครื่อง', seg.noLockCount + ' ราย', '#8a4b00', 'rgba(240,140,0,0.08)');
+        return statTile('ระบบ ' + s.system, s.count + ' ราย', '#0b7285', 'rgba(11,114,133,0.08)', '฿' + s.valueDisp);
+      }).join('') + statTile('ไม่มีในระบบล็อคเครื่อง', seg.noLockCount + ' ราย', '#8a4b00', 'rgba(240,140,0,0.08)', '฿' + seg.noLockValueDisp);
       // Per-month rows now also break down by lockSystem (count + มูลค่า each), per explicit user
       // request 2026-08-05 — shown as small pills under each month so it stays scannable even with
       // several systems. No max-height/scroll on the list itself (separate earlier request) — the
@@ -5350,15 +5375,21 @@
       // Per-month system breakdown redesigned 2026-08-05 (user: "เปลี่ยนจาก pill เป็นตารางย่อย") —
       // was a row of pills that wrapped messily once a month had all 3 systems; now a small
       // 3-column sub-table (ระบบ/จำนวน/มูลค่า) nested under each month's header line instead.
+      // Each system row is now clickable — opens renderReportDrilldownModal showing the exact
+      // matching customer list (same table as ติดตามหนี้), per explicit user request 2026-08-05.
       var monthsHtml = seg.months.length
         ? '<div style="display:flex; flex-direction:column; gap:10px; margin-top:10px;">' +
             seg.months.map(function (m) {
               var sysRows = m.systems.map(function (s) {
-                return '<tr><td style="padding:4px 10px; color:#2b2540; font-weight:600;">' + esc(s.system) + '</td><td style="padding:4px 10px; color:#6b6785; text-align:right;">' + s.count + ' ราย</td><td style="padding:4px 10px; color:#0b7285; font-weight:700; text-align:right;">฿' + s.valueDisp + '</td></tr>';
+                return '<tr data-action="showReportDrilldown" data-seg="' + num + '" data-group="' + esc(s.groupKey) + '" title="คลิกดูรายชื่อลูกค้า" style="cursor:pointer;">' +
+                  '<td style="padding:4px 10px; color:#2b2540; font-weight:600;">' + esc(s.system) + '</td>' +
+                  '<td style="padding:4px 10px; color:#6b6785; text-align:right;">' + s.count + ' ราย</td>' +
+                  '<td style="padding:4px 10px; color:#0b7285; font-weight:700; text-align:right;">฿' + s.valueDisp + '</td>' +
+                '</tr>';
               }).join('');
               return '<div style="background:rgba(124,92,255,0.045); border-radius:12px; padding:10px 14px;">' +
                 '<div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:' + (sysRows ? '6px' : '0') + ';">' +
-                  '<span style="font-size:12.5px; font-weight:700; color:#2b2540;">🗓 ' + esc(m.month) + '</span>' +
+                  '<span style="font-size:12.5px; font-weight:700; color:#2b2540;">🗓 ' + esc(m.monthDisp) + '</span>' +
                   '<span style="font-size:12px; color:#6b6785;">' + m.count + ' ราย · <span style="font-weight:700; color:#e03131;">฿' + m.valueDisp + '</span></span>' +
                 '</div>' +
                 (sysRows ? '<table style="width:100%; border-collapse:collapse; font-size:11.5px; background:#fff; border-radius:8px; overflow:hidden;"><thead><tr style="background:rgba(124,92,255,0.06); color:#6b6785;"><th style="padding:4px 10px; text-align:left; font-weight:600;">ระบบ</th><th style="padding:4px 10px; text-align:right; font-weight:600;">จำนวน</th><th style="padding:4px 10px; text-align:right; font-weight:600;">มูลค่า</th></tr></thead><tbody>' + sysRows + '</tbody></table>' : '') +
@@ -5431,6 +5462,35 @@
       '</div>' +
       '<div style="font-size:12.5px; color:#8a86a3; margin-bottom:22px; margin-left:50px;">อัปเดตสดทุกครั้งที่ข้อมูลในระบบเปลี่ยนแปลง — เฉพาะผู้ดูแลระบบ (Admin) เท่านั้น</div>' +
       section123 + section4 + section5 + section6 + section7 +
+      (state.reportDrilldownSeg ? renderReportDrilldownModal() : '') +
+    '</div>';
+  }
+  // Drill-down from a segCard month+system row into the exact matching customer list, using the
+  // SAME table as ติดตามหนี้ (orderTableHeaderRow/orderTableRow) per explicit user request
+  // 2026-08-05 ("แสดงหน้ารายการลูกค้าทั้งหมดขึ้นมา...เหมือนการแสดงข้อมูลในเมนูติดตามหนี้").
+  function renderReportDrilldownModal() {
+    var seg = CV.report && CV.report['seg' + state.reportDrilldownSeg];
+    var orders = seg && seg.groups[state.reportDrilldownGroup];
+    if (!orders) { return ''; }
+    var parts = String(state.reportDrilldownGroup).split('|');
+    var monthKey = parts[0], system = parts[1];
+    var monthParts = monthKey.split('-');
+    var monthDisp = monthParts.length === 2 ? monthParts[1] + '-' + monthParts[0] : monthKey;
+    return '<div style="position:fixed; inset:0; z-index:9999; background:rgba(43,37,64,0.35); display:flex; align-items:flex-start; justify-content:center; padding:30px 20px; overflow-y:auto;">' +
+      '<div style="max-width:1200px; width:100%; background:rgba(255,255,255,0.97); backdrop-filter:blur(24px); -webkit-backdrop-filter:blur(24px); border:1px solid rgba(255,255,255,0.85); border-radius:24px; padding:26px 28px; box-shadow:0 24px 60px rgba(43,37,64,0.3); margin-bottom:30px;">' +
+        '<div style="display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; margin-bottom:18px;">' +
+          '<div>' +
+            '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:17px; color:#2b2540;">👥 รายชื่อลูกหนี้ — ' + esc(monthDisp) + ' · ' + esc(system) + '</div>' +
+            '<div style="font-size:12.5px; color:#8a86a3; margin-top:2px;">พบ ' + orders.length + ' รายการ</div>' +
+          '</div>' +
+          '<div data-action="closeReportDrilldown" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; padding:8px 16px; border-radius:20px; font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap;">✕ ปิด</div>' +
+        '</div>' +
+        '<div style="overflow-x:auto;">' +
+          '<table style="width:100%; border-collapse:collapse; min-width:1100px;"><thead>' + orderTableHeaderRow() + '</thead><tbody>' +
+            orders.map(orderTableRow).join('') +
+          '</tbody></table>' +
+        '</div>' +
+      '</div>' +
     '</div>';
   }
   function renderUserManagement() {
@@ -6072,6 +6132,30 @@
       '</div>' +
     '</div>';
   }
+  // Shared with renderReportDrilldownModal (2026-08-05) — same exact table used in ติดตามหนี้'s
+  // results, so "เหมือนการแสดงข้อมูลในเมนูติดตามหนี้" (per explicit user request) is literally true,
+  // not just visually similar.
+  function orderTableHeaderRow() {
+    return '<tr style="text-align:left; font-size:10px; color:#7c5cff; text-transform:uppercase; letter-spacing:0.2px; border-bottom:2px solid rgba(124,92,255,0.14);">' +
+      ['รหัสลูกค้า', 'ชื่อลูกค้า', 'สถานะบัญชี', 'คำสั่งซื้อ', 'วันที่ทำสัญญา'].map(function (h) { return '<th style="padding:12px 8px; font-weight:700; white-space:nowrap;">' + h + '</th>'; }).join('') +
+      ['ยอดค้างชำระ', 'งวดค้าง', 'ตรวจสอบ CRM', 'สถานะการโทร', 'สถานะส่ง SMS', 'สถานะจดหมายทวงถาม'].map(function (h) { return '<th style="padding:12px 6px; font-weight:700; text-align:center; white-space:nowrap;">' + h + '</th>'; }).join('') +
+    '</tr>';
+  }
+  function orderTableRow(order) {
+    return '<tr data-action="selectCustomer" data-cid="' + esc(customerKey(order)) + '" style="cursor:pointer; font-size:12.5px; color:#2b2540; border-top:1px solid rgba(124,92,255,0.08);">' +
+      '<td style="padding:10px 8px; font-weight:700; color:#4f46e5; white-space:nowrap;">' + esc(order.customerId) + '</td>' +
+      '<td style="padding:10px 8px; font-weight:600; white-space:nowrap;">' + esc(order.customerName) + '</td>' +
+      '<td style="padding:10px 8px;">' + orderAccountStatusBadge(order) + '</td>' +
+      '<td style="padding:10px 8px; white-space:nowrap;">' + soDisplayLink(order) + '</td>' +
+      '<td style="padding:10px 8px; color:#8a86a3; white-space:nowrap;">🗓 ' + esc(order.contractDateDisp) + '</td>' +
+      '<td style="padding:10px 6px; text-align:center;"><span style="background:rgba(224,49,49,0.10); color:#e03131; padding:4px 8px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">฿' + order.trueOverdueDisp + '</span></td>' +
+      '<td style="padding:10px 6px; text-align:center;">' + (order.overdueCount ? '<span style="background:rgba(224,49,49,0.12); color:#e03131; padding:3px 8px; border-radius:20px; font-size:11px; font-weight:700; white-space:nowrap;">' + order.overdueCount + ' งวด</span>' : '<span style="color:#c3c0d6; font-size:11px;">—</span>') + '</td>' +
+      '<td style="padding:10px 6px; text-align:center;">' + crmStatusPill(order) + '</td>' +
+      '<td style="padding:10px 6px; text-align:center;">' + callStatusPill(order) + '</td>' +
+      '<td style="padding:10px 6px; text-align:center;">' + smsStatusPill(order) + '</td>' +
+      '<td style="padding:10px 6px; text-align:center; overflow:hidden;">' + letterStatusPill(order) + '</td>' +
+    '</tr>';
+  }
   function renderTracking() {
     // Same extra guard as renderUpload() — see comment there.
     if (!can('tracking_view')) return '<div style="padding:60px 20px; text-align:center; color:#8a86a3; font-size:14px;">🔒 คุณไม่มีสิทธิ์เข้าเมนูนี้</div>';
@@ -6162,25 +6246,8 @@
       var pageStart = (page - 1) * pageSize;
       var pageRows = CV.filteredOrders.slice(pageStart, pageStart + pageSize);
       html += '<div style="background:rgba(255,255,255,0.55); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.8); border-radius:20px; padding:6px; margin-bottom:28px; box-shadow:0 8px 30px rgba(124,92,255,0.08); overflow-x:auto;">' +
-        '<table style="width:100%; border-collapse:collapse; min-width:1100px;"><thead><tr style="text-align:left; font-size:10px; color:#7c5cff; text-transform:uppercase; letter-spacing:0.2px; border-bottom:2px solid rgba(124,92,255,0.14);">' +
-          ['รหัสลูกค้า','ชื่อลูกค้า','สถานะบัญชี','คำสั่งซื้อ','วันที่ทำสัญญา'].map(function (h) { return '<th style="padding:12px 8px; font-weight:700; white-space:nowrap;">' + h + '</th>'; }).join('') +
-          ['ยอดค้างชำระ','งวดค้าง','ตรวจสอบ CRM','สถานะการโทร','สถานะส่ง SMS','สถานะจดหมายทวงถาม'].map(function (h) { return '<th style="padding:12px 6px; font-weight:700; text-align:center; white-space:nowrap;">' + h + '</th>'; }).join('') +
-        '</tr></thead><tbody>' +
-          pageRows.map(function (order) {
-            return '<tr data-action="selectCustomer" data-cid="' + esc(customerKey(order)) + '" style="cursor:pointer; font-size:12.5px; color:#2b2540; border-top:1px solid rgba(124,92,255,0.08);">' +
-              '<td style="padding:10px 8px; font-weight:700; color:#4f46e5; white-space:nowrap;">' + esc(order.customerId) + '</td>' +
-              '<td style="padding:10px 8px; font-weight:600; white-space:nowrap;">' + esc(order.customerName) + '</td>' +
-              '<td style="padding:10px 8px;">' + orderAccountStatusBadge(order) + '</td>' +
-              '<td style="padding:10px 8px; white-space:nowrap;">' + soDisplayLink(order) + '</td>' +
-              '<td style="padding:10px 8px; color:#8a86a3; white-space:nowrap;">🗓 ' + esc(order.contractDateDisp) + '</td>' +
-              '<td style="padding:10px 6px; text-align:center;"><span style="background:rgba(224,49,49,0.10); color:#e03131; padding:4px 8px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">฿' + order.trueOverdueDisp + '</span></td>' +
-              '<td style="padding:10px 6px; text-align:center;">' + (order.overdueCount ? '<span style="background:rgba(224,49,49,0.12); color:#e03131; padding:3px 8px; border-radius:20px; font-size:11px; font-weight:700; white-space:nowrap;">' + order.overdueCount + ' งวด</span>' : '<span style="color:#c3c0d6; font-size:11px;">—</span>') + '</td>' +
-              '<td style="padding:10px 6px; text-align:center;">' + crmStatusPill(order) + '</td>' +
-              '<td style="padding:10px 6px; text-align:center;">' + callStatusPill(order) + '</td>' +
-              '<td style="padding:10px 6px; text-align:center;">' + smsStatusPill(order) + '</td>' +
-              '<td style="padding:10px 6px; text-align:center; overflow:hidden;">' + letterStatusPill(order) + '</td>' +
-            '</tr>';
-          }).join('') +
+        '<table style="width:100%; border-collapse:collapse; min-width:1100px;"><thead>' + orderTableHeaderRow() + '</thead><tbody>' +
+          pageRows.map(orderTableRow).join('') +
         '</tbody></table>' +
         (CV.noResults ? '<div style="padding:30px; text-align:center; color:#6b6785; font-size:14px;">ไม่พบข้อมูลที่ค้นหา</div>' : '') +
         (totalResults > 0
@@ -6927,6 +6994,8 @@
         case 'goTracking': if (!can('tracking_view')) { denyToast(); return; } if (state.view !== 'tracking' || confirmDiscardIfDirty()) { state.view = 'tracking'; render(); } break;
         case 'goUsers': if (!(state.currentUser && state.currentUser.isAdmin)) { denyToast(); return; } state.view = 'users'; render(); break;
         case 'goReport': if (!(state.currentUser && state.currentUser.isAdmin)) { denyToast(); return; } state.view = 'report'; render(); break;
+        case 'showReportDrilldown': state.reportDrilldownSeg = t.getAttribute('data-seg'); state.reportDrilldownGroup = t.getAttribute('data-group'); render(); break;
+        case 'closeReportDrilldown': state.reportDrilldownSeg = null; state.reportDrilldownGroup = null; render(); break;
         case 'logout': handleLogout(); break;
         case 'toggleSidebarCollapsed': toggleSidebarCollapsed(); break;
         // No confirmDiscardIfDirty() guard here (unlike goDashboard/goTracking): uploads always
