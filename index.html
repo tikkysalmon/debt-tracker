@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-06.08';
+  var APP_BUILD = '2026-08-07.01';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -217,7 +217,7 @@
     toggleVerifiedCRM: 'tracking_edit', saveCallLog: 'tracking_edit', commitChanges: 'tracking_edit',
     confirmSendSms: 'send_sms', addSmsTemplate: 'send_sms', deleteSmsTemplate: 'send_sms',
     confirmSendEmail: 'send_letter', issueLetter: 'send_letter',
-    onDebtFile: 'upload_files', onPaymentFile: 'upload_files', onCustomerInfo: 'upload_files', onLetterheadFile: 'upload_files', onEmailReportFile: 'upload_files', onLockSystemFile: 'upload_files',
+    onDebtFile: 'upload_files', onPaymentFile: 'upload_files', onCustomerInfo: 'upload_files', onLetterheadFile: 'upload_files', onEmailReportFile: 'upload_files', onSmsLogFile: 'upload_files', onLockSystemFile: 'upload_files',
     deleteInstallment: 'delete_data', cancelOrder: 'delete_data',
     // Full data wipe — too dangerous to leave as a togglable permission; admin-only no matter what.
     clearToEmpty: '__admin__', resetToSample: '__admin__',
@@ -1418,6 +1418,7 @@
     uploadMsgPayment: '',
     uploadMsgCustomerInfo: '',
     uploadMsgEmailReport: '',
+    uploadMsgSmsLog: '',
     uploadMsgLockSystem: '',
     reportDateFrom: '',
     reportDateTo: '',
@@ -4042,6 +4043,42 @@
     return '<div style="margin-top:4px; display:inline-block; background:' + bg + '; color:' + color + '; font-weight:700; font-size:10.5px; padding:2px 8px; border-radius:10px;">' + esc(label) + '</div>' +
       (h.statusReason ? '<div style="color:#8a86a3; font-size:10.5px; margin-top:2px;">เหตุผล: ' + esc(h.statusReason) + '</div>' : '');
   }
+  // Status comes from Thaibulk's SMS dashboard export ("sms-log"), matched in via
+  // onSmsLogFileChange (see there) — same reasoning as the email status importer: Thaibulk has no
+  // live status-check endpoint for SMS either, so this is stale/missing until someone uploads a
+  // fresh export. Raw StatusLabel spellings + meaning taken directly from the legend the user
+  // provided 2026-08-07 (a screenshot of Thaibulk's own dashboard tooltip).
+  var SMS_STATUS_META = {
+    sent: { label: 'ส่งถึงเครือข่ายเรียบร้อยแล้ว', color: '#0b7a5b', bg: 'rgba(18,184,134,0.10)' },
+    failed: { label: 'ไม่สามารถส่งไปยังเครือข่ายได้ (เครือข่ายขัดข้อง, ระบบ TBS ขัดข้อง, ผู้รับอยู่ใน Blocklist)', color: '#c92a2a', bg: 'rgba(224,49,49,0.10)' },
+    received: { label: 'ผู้รับได้รับข้อความเรียบร้อยแล้ว (แสดงเฉพาะ Corporate เท่านั้น)', color: '#1d4ed8', bg: 'rgba(29,78,216,0.10)' },
+    not_received_a: { label: 'ผู้รับไม่ได้รับข้อความ เนื่องจากผู้รับได้แจ้งเครือข่ายว่าไม่ต้องการรับ SMS โฆษณา (Anti-Spam)', color: '#7c5cff', bg: 'rgba(124,92,255,0.10)' },
+    not_received_m: { label: 'ผู้รับไม่ได้รับข้อความ เนื่องจากโทรศัพท์ผู้รับมีปัญหา (ไม่มีสัญญาณ, หน่วยความจำเต็ม) (แสดงเฉพาะ Corporate เท่านั้น)', color: '#6b6785', bg: 'rgba(107,103,133,0.10)' },
+    blacklist: { label: 'ผู้รับแจ้งเครือข่ายว่าไม่ต้องการรับ SMS', color: '#c2255c', bg: 'rgba(214,51,108,0.10)' },
+    reject: { label: 'ไม่สามารถส่งข้อความออกจากระบบได้ เนื่องจากข้อความมีเนื้อหาที่ผิดเงื่อนไขการใช้งาน', color: '#c92a2a', bg: 'rgba(224,49,49,0.10)' }
+  };
+  var SMS_STATUS_KEY_ALIASES = {
+    sent: 'sent', delivered: 'sent',
+    failed: 'failed', fail: 'failed',
+    received: 'received',
+    notreceiveda: 'not_received_a',
+    notreceivedm: 'not_received_m',
+    blacklist: 'blacklist',
+    reject: 'reject', rejected: 'reject'
+  };
+  function resolveSmsStatusKey(rawStatus) {
+    var norm = String(rawStatus || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+    return SMS_STATUS_KEY_ALIASES[norm] || null;
+  }
+  function smsStatusBadge(h) {
+    if (!h.status) return '';
+    var key = resolveSmsStatusKey(h.status);
+    var meta = key && SMS_STATUS_META[key];
+    var label = meta ? meta.label : h.status;
+    var color = meta ? meta.color : '#6b6785';
+    var bg = meta ? meta.bg : 'rgba(107,103,133,0.10)';
+    return '<div style="margin-top:4px; display:inline-block; background:' + bg + '; color:' + color + '; font-weight:700; font-size:10.5px; padding:2px 8px; border-radius:10px;">' + esc(label) + '</div>';
+  }
   function trackingCard(accentColor, icon, title, count, bodyHtml) {
     return '<div style="background:#fff; border:1px solid rgba(124,92,255,0.14); border-left:4px solid ' + accentColor + '; border-radius:16px; padding:14px 16px; box-shadow:0 4px 14px rgba(124,92,255,0.06); display:flex; flex-direction:column; gap:10px; min-width:0;">' +
       '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">' +
@@ -4106,6 +4143,7 @@
         return '<div style="background:rgba(124,92,255,0.05); border:1px solid rgba(124,92,255,0.12); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' +
           '<div style="font-weight:700; color:#7c5cff; margin-bottom:2px;">🕐 ' + esc(h.at) + (h.no != null ? ' · งวดที่ ' + h.no : '') + (h.by ? ' · โดย ' + esc(h.by) : '') + '</div>' +
           '<div style="color:#6b6785;">' + esc(h.template || 'ข้อความทวงถาม') + (h.phone ? ' · ' + esc(h.phone) : '') + '</div>' +
+          smsStatusBadge(h) +
         '</div>';
       });
     return trackingCard('#7c5cff', '📱', 'ส่ง SMS ทวงหนี้' + (track === 'accessory' ? ' (อุปกรณ์เสริม)' : ''), smsHistory.length, smsBody);
@@ -5132,7 +5170,7 @@
   // or recreated under the above proof, per explicit user request not to affect anything else in
   // the data. Every still-unmatched row's reason is kept (not just a count) so staff can check it.
   var EMAIL_SUBJECT_RE = /ครั้งที่\s*(\d+)\)\s*เลขที่คำสั่งซื้อ\s*(\S+)/;
-  function formatEmailReportTimestamp(raw) {
+  function formatReportTimestamp(raw) {
     var s = String(raw || '').trim();
     if (!s) return nowTimestamp();
     var d = new Date(s.replace(' ', 'T'));
@@ -5196,7 +5234,7 @@
           var field = o.orderId === orderIdFromSubject ? 'emailHistory' : (o.accessoryOrderId === orderIdFromSubject ? 'accessoryEmailHistory' : null);
           if (!field) continue;
           var entry = {
-            at: formatEmailReportTimestamp(sentAtRaw), by: 'กู้คืนจากประวัติ Thaibulk (ของเดิมสูญหายจากบัคซิงก์ข้อมูลก่อน 2026-08-05)',
+            at: formatReportTimestamp(sentAtRaw), by: 'กู้คืนจากประวัติ Thaibulk (ของเดิมสูญหายจากบัคซิงก์ข้อมูลก่อน 2026-08-05)',
             to: toRaw, letterNo: letterNo
           };
           o[field] = (o[field] || []).concat([entry]);
@@ -5268,6 +5306,185 @@
         + (unmatchedReasons.length ? ('\n⚠️ ไม่พบข้อมูลที่ตรงกัน ' + unmatchedReasons.length + ' แถว:\n' + unmatchedReasons.slice(0, 10).join('\n') + (unmatchedReasons.length > 10 ? '\n...' : '')) : '');
       render();
     }).catch(function (err) { state.uploadMsgEmailReport = 'เกิดข้อผิดพลาด: ' + err.message; render(); });
+  }
+
+  // Imports Thaibulk's SMS send-log export (their dashboard "sms-log" download) — same rationale
+  // as onEmailReportFileChange above: Thaibulk has no live status-check endpoint for SMS either
+  // (see [[project-debt-tracker-site]] memory, "likely applies to SMS too"), so this file is the
+  // only way to bring real delivery status (Sent/Failed/Received/Not-Received-A/Not-Received-M/
+  // Blacklist/Reject — labels/meanings per the user's 2026-08-07 screenshot of Thaibulk's own
+  // legend) into smsHistory/accessorySmsHistory/per-งวด smsHistory's "ประวัติส่ง SMS" list.
+  // Match tiers, in order (phone number alone is NOT trusted as sufficient on its own — a customer
+  // can have 2+ orders/SOs on file with the same phone, see tier 2's SO narrowing):
+  //   1) phone + exact message text — every local send stores the exact resolved template text in
+  //      entry.message (see confirmSendSms), and Thaibulk's log stores exactly what was submitted,
+  //      so this is effectively an exact-provenance match. If 2+ local sends share the identical
+  //      phone+text (a duplicate template resent with an unchanged amount/due-date), the one whose
+  //      timestamp is closest to the log's SendDate wins.
+  //   2) phone + SO number parsed out of the message body — every template includes
+  //      {เลขคำสั่งซื้อ} somewhere in its real (staff-edited) body, which resolves to the literal
+  //      order number, so "SO-XXXXXXXX" reliably appears in the sent text regardless of which
+  //      template/wording is in use. If exactly one local smsHistory entry (anywhere on that
+  //      SO — order-level or any งวด, either track) shares the phone, use it; 2+ candidates picks
+  //      the closest by timestamp. If the SO is a real order/accessory order in this dataset but
+  //      has NO smsHistory record for this phone at all, the send is RECREATED onto that order's
+  //      smsHistory (or accessorySmsHistory) — this is the "พบเบอร์ที่ส่ง แต่ไม่พบประวัติการส่ง"
+  //      recovery the user asked for 2026-08-07: the app's own webpage doesn't always persist every
+  //      send (e.g. the concurrent-save races documented elsewhere in this file), so Thaibulk's own
+  //      log is treated as ground truth proof the SMS really went out even when this app never
+  //      recorded it. Same safety reasoning as the email importer's tier-2 recreation: the SO number
+  //      embedded in real sent text is strong enough provenance to fabricate a history record from.
+  //   3) phone alone, no SO parseable — only auto-applied when exactly one smsHistory record on file
+  //      anywhere has ever gone to that phone number; 2+ is left unmatched rather than guessing.
+  // Never touches any field other than smsHistory/accessorySmsHistory/installment smsHistory entries
+  // it matched or recreated under the above proof. Every still-unmatched row's reason is kept (not
+  // just a count) so staff can check it, same pattern as the email importer.
+  var SMS_ORDER_ID_RE = /SO-\d+/;
+  function dmyHmToDate(s) {
+    var m = String(s || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})/);
+    if (!m) return null;
+    return new Date(+m[3], +m[2] - 1, +m[1], +m[4], +m[5]);
+  }
+  function onSmsLogFileChange(file) {
+    if (!file) return;
+    if (!window.XLSX) { state.uploadMsgSmsLog = 'ไม่พบไลบรารีอ่านไฟล์ กรุณาลองใหม่'; render(); return; }
+    var ALIASES = {
+      sendDate: ['senddate', 'วันที่ส่ง', 'วันเวลาที่ส่ง'],
+      phone: ['phonenumber', 'เบอร์โทร', 'เบอร์โทรศัพท์', 'phone'],
+      message: ['message', 'ข้อความ'],
+      status: ['statuslabel', 'สถานะการส่ง', 'สถานะ', 'status']
+    };
+    readRows(file).then(function (rows) {
+      if (!rows.length) { state.uploadMsgSmsLog = '⚠️ ไม่พบข้อมูลในไฟล์'; render(); return; }
+      var headers = Object.keys(rows[0]);
+      if (!headerKey(headers, ALIASES.phone) || !headerKey(headers, ALIASES.status)) {
+        state.uploadMsgSmsLog = '⚠️ จับคู่คอลัมน์ "PhoneNumber" / "StatusLabel" ไม่ได้เลย (ยังไม่นำเข้าข้อมูล) — ตรวจว่าเป็นไฟล์ sms-log export จาก Thaibulk ที่ถูกต้อง\nหัวคอลัมน์ในไฟล์นี้คือ: ' + headers.join(' | ');
+        render();
+        return;
+      }
+      var orders = state.orders.map(function (o) {
+        return Object.assign({}, o, {
+          smsHistory: (o.smsHistory || []).map(function (h) { return Object.assign({}, h); }),
+          accessorySmsHistory: (o.accessorySmsHistory || []).map(function (h) { return Object.assign({}, h); }),
+          installments: (o.installments || []).map(function (i) {
+            return Object.assign({}, i, { smsHistory: (i.smsHistory || []).map(function (h) { return Object.assign({}, h); }) });
+          }),
+          accessoryInstallments: (o.accessoryInstallments || []).map(function (i) {
+            return Object.assign({}, i, { smsHistory: (i.smsHistory || []).map(function (h) { return Object.assign({}, h); }) });
+          })
+        });
+      });
+      var byPhone = {}, byMessagePhone = {};
+      function indexList(list, soId) {
+        (list || []).forEach(function (h) {
+          var p = normalizeLockMatchPhone(h.phone);
+          if (!p) return;
+          var rec = { entry: h, soId: soId };
+          (byPhone[p] = byPhone[p] || []).push(rec);
+          if (h.message) {
+            var k = p + '|' + String(h.message).trim();
+            (byMessagePhone[k] = byMessagePhone[k] || []).push(rec);
+          }
+        });
+      }
+      orders.forEach(function (o) {
+        indexList(o.smsHistory, o.orderId);
+        indexList(o.accessorySmsHistory, o.accessoryOrderId || o.orderId);
+        (o.installments || []).forEach(function (i) { indexList(i.smsHistory, o.orderId); });
+        (o.accessoryInstallments || []).forEach(function (i) { indexList(i.smsHistory, o.accessoryOrderId || o.orderId); });
+      });
+      function findOrderBySoId(soId) {
+        for (var i = 0; i < orders.length; i++) {
+          var o = orders[i];
+          if (o.orderId === soId) return { order: o, field: 'smsHistory' };
+          if (o.accessoryOrderId === soId) return { order: o, field: 'accessorySmsHistory' };
+        }
+        return null;
+      }
+      // Only reachable once tier 2's phone+SO lookup found a real order but zero smsHistory record
+      // for this phone anywhere on it — see the big comment above for why recreating here is safe.
+      function recreateEntry(soId, phone, message, sentAtRaw) {
+        var found = findOrderBySoId(soId);
+        if (!found) return null;
+        var entry = {
+          at: formatReportTimestamp(sentAtRaw),
+          by: 'กู้คืนจากประวัติ Thaibulk (ของเดิมไม่มีบันทึกไว้ในระบบ)',
+          phone: phone, message: message
+        };
+        found.order[found.field] = (found.order[found.field] || []).concat([entry]);
+        var p = normalizeLockMatchPhone(phone);
+        var rec = { entry: entry, soId: soId };
+        if (p) {
+          (byPhone[p] = byPhone[p] || []).push(rec);
+          if (message) { var k = p + '|' + String(message).trim(); (byMessagePhone[k] = byMessagePhone[k] || []).push(rec); }
+        }
+        return entry;
+      }
+      function pickClosest(recs, sentAtDate) {
+        if (recs.length === 1) return recs[0];
+        if (!sentAtDate) return recs[0];
+        return recs.reduce(function (best, r) {
+          var d = dmyHmToDate(r.entry.at);
+          var diff = d ? Math.abs(d.getTime() - sentAtDate.getTime()) : Infinity;
+          var bestD = dmyHmToDate(best.entry.at);
+          var bestDiff = bestD ? Math.abs(bestD.getTime() - sentAtDate.getTime()) : Infinity;
+          return diff < bestDiff ? r : best;
+        }, recs[0]);
+      }
+      // Returns { entry, recreated } on a confident match, or { skipReason } explaining why not.
+      function findEntry(phone, message, soId, sentAtDate, sentAtRaw) {
+        if (message) {
+          var msgKey = phone + '|' + message;
+          var exact = byMessagePhone[msgKey] || [];
+          if (exact.length) return { entry: pickClosest(exact, sentAtDate).entry };
+        }
+        var candidates = byPhone[phone] || [];
+        if (soId) {
+          var narrowed = candidates.filter(function (r) { return r.soId === soId; });
+          if (narrowed.length) return { entry: pickClosest(narrowed, sentAtDate).entry };
+          var recreated = recreateEntry(soId, phone, message, sentAtRaw);
+          if (recreated) return { entry: recreated, recreated: true };
+          return { skipReason: 'เบอร์ ' + phone + ' (SO ' + soId + '): ไม่พบคำสั่งซื้อนี้ในระบบเลย และไม่พบประวัติการส่งถึงเบอร์นี้ในระบบด้วย' };
+        }
+        if (candidates.length === 1) return { entry: candidates[0].entry };
+        if (candidates.length > 1) return { skipReason: 'เบอร์ ' + phone + ': อ่านเลขคำสั่งซื้อจากข้อความไม่ได้ และพบประวัติการส่งถึงเบอร์นี้มากกว่า 1 รายการ ระบุแน่ชัดไม่ได้ว่าเป็นฉบับไหน' };
+        return { skipReason: 'เบอร์ ' + phone + ': อ่านเลขคำสั่งซื้อจากข้อความไม่ได้ และไม่พบประวัติการส่งถึงเบอร์นี้ในระบบเลย' };
+      }
+      var matched = 0, unchanged = 0, recreatedCount = 0, unmatchedReasons = [];
+      rows.forEach(function (r) {
+        var phoneRaw = String(resolveField(r, ALIASES.phone) || '').trim();
+        var phone = normalizeLockMatchPhone(phoneRaw);
+        var message = String(resolveField(r, ALIASES.message) || '').trim();
+        var status = String(resolveField(r, ALIASES.status) || '').trim();
+        var sendDateRaw = resolveField(r, ALIASES.sendDate);
+        if (!phone || !status) { unmatchedReasons.push('แถวไม่มีเบอร์โทร/สถานะการส่ง — ข้ามแถวนี้'); return; }
+        var sentAtDate = sendDateRaw ? new Date(String(sendDateRaw).replace(' ', 'T')) : null;
+        if (sentAtDate && isNaN(sentAtDate.getTime())) sentAtDate = null;
+        var soMatch = message.match(SMS_ORDER_ID_RE);
+        var soId = soMatch ? soMatch[0] : null;
+        var found = findEntry(phone, message, soId, sentAtDate, sendDateRaw);
+        if (!found.entry) { unmatchedReasons.push(found.skipReason); return; }
+        if (found.recreated) recreatedCount++;
+        var entry = found.entry;
+        if (!found.recreated && entry.status === status) { unchanged++; return; }
+        entry.status = status;
+        entry.statusUpdatedAt = nowTimestamp();
+        matched++;
+      });
+      if (matched === 0 && unchanged === 0) {
+        state.uploadMsgSmsLog = '⚠️ อ่านไฟล์ได้ ' + rows.length + ' แถว แต่จับคู่กับประวัติการส่ง SMS ในระบบไม่ได้เลย (ยังไม่บันทึก) — ตรวจว่าเป็นไฟล์ sms-log export จาก Thaibulk ที่ถูกต้อง และเคยส่ง SMS ทวงหนี้ของ SO เหล่านี้จากระบบนี้แล้ว\n' + unmatchedReasons.slice(0, 10).join('\n');
+        render();
+        return;
+      }
+      state.orders = orders;
+      state.hasUnsavedChanges = false;
+      savePersisted();
+      state.uploadMsgSmsLog = '✅ อัปเดตสถานะสำเร็จ ' + matched + ' ฉบับ'
+        + (recreatedCount ? (' (กู้คืนประวัติการส่งที่ไม่เคยบันทึกไว้ในระบบ ' + recreatedCount + ' ฉบับ)') : '')
+        + (unchanged ? (' · ไม่มีการเปลี่ยนแปลง ' + unchanged + ' ฉบับ') : '')
+        + (unmatchedReasons.length ? ('\n⚠️ ไม่พบข้อมูลที่ตรงกัน ' + unmatchedReasons.length + ' แถว:\n' + unmatchedReasons.slice(0, 10).join('\n') + (unmatchedReasons.length > 10 ? '\n...' : '')) : '');
+      render();
+    }).catch(function (err) { state.uploadMsgSmsLog = 'เกิดข้อผิดพลาด: ' + err.message; render(); });
   }
 
   // ---------- Lock-system (Soti/Marena) reference import (2026-08-05) ----------
@@ -5862,6 +6079,13 @@
         '<label for="emailReportFileInputTop" style="display:inline-flex; align-items:center; gap:8px; background:linear-gradient(135deg,#7c5cff,#6647e0); color:#fff; padding:10px 20px; border-radius:12px; font-size:14px; font-weight:600; cursor:pointer; box-shadow:0 6px 16px rgba(124,92,255,0.35);">⬆ อัพโหลดไฟล์ Excel/CSV</label>' +
         '<input id="emailReportFileInputTop" type="file" accept=".csv,.xlsx,.xls" data-action="onEmailReportFile" style="display:none;" />' +
         (state.uploadMsgEmailReport ? '<div style="margin-top:10px; font-size:13px; color:' + (state.uploadMsgEmailReport.indexOf('⚠️') >= 0 ? '#a5620d' : '#4b3fa0') + '; white-space:pre-line; line-height:1.65;">' + esc(state.uploadMsgEmailReport) + '</div>' : '') +
+      '</div>' +
+      '<div style="background:rgba(255,255,255,0.55); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.8); border-radius:20px; padding:22px 24px; box-shadow:0 8px 30px rgba(124,92,255,0.10);">' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:16px; color:#2b2540; margin-bottom:10px;">📱 สถานะการส่ง SMS ทวงหนี้</div>' +
+        '<div style="font-size:12.5px; color:#6b6785; margin-bottom:14px; line-height:1.6;">ไฟล์ "sms-log" export จากหน้า Dashboard ของ Thaibulk (คอลัมน์: SendDate, PhoneNumber, Message, StatusLabel)<br><span style="color:#0b7a5b;">อัปได้ซ้ำเรื่อยๆ — จับคู่กับ SMS ที่เคยส่งจากระบบนี้แล้วอัปเดตสถานะ (Sent/Failed/Received/ฯลฯ) ไว้ที่ "ประวัติส่ง SMS" · หากพบเบอร์ที่ส่งจริงแต่ระบบไม่มีประวัติ (เช่น หน้าเว็บบันทึกไม่ทัน) จะกู้คืนรายการนั้นให้อัตโนมัติ ไม่กระทบข้อมูลอื่น</span></div>' +
+        '<label for="smsLogFileInputTop" style="display:inline-flex; align-items:center; gap:8px; background:linear-gradient(135deg,#7c5cff,#6647e0); color:#fff; padding:10px 20px; border-radius:12px; font-size:14px; font-weight:600; cursor:pointer; box-shadow:0 6px 16px rgba(124,92,255,0.35);">⬆ อัพโหลดไฟล์ Excel/CSV</label>' +
+        '<input id="smsLogFileInputTop" type="file" accept=".csv,.xlsx,.xls" data-action="onSmsLogFile" style="display:none;" />' +
+        (state.uploadMsgSmsLog ? '<div style="margin-top:10px; font-size:13px; color:' + (state.uploadMsgSmsLog.indexOf('⚠️') >= 0 ? '#a5620d' : '#4b3fa0') + '; white-space:pre-line; line-height:1.65;">' + esc(state.uploadMsgSmsLog) + '</div>' : '') +
       '</div>' +
       '<div style="background:rgba(255,255,255,0.55); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.8); border-radius:20px; padding:22px 24px; box-shadow:0 8px 30px rgba(124,92,255,0.10);">' +
         '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:16px; color:#2b2540; margin-bottom:10px;">🔒 ระบบล็อคเครื่องระหว่างผ่อน (Soti/Marena)</div>' +
@@ -7445,6 +7669,7 @@
         case 'onCustomerInfo': onCustomerInfoFileChange(t.files[0]); t.value = ''; break;
         case 'onLetterheadFile': onLetterheadFileChange(t.files[0]); t.value = ''; break;
         case 'onEmailReportFile': onEmailReportFileChange(t.files[0]); t.value = ''; break;
+        case 'onSmsLogFile': onSmsLogFileChange(t.files[0]); t.value = ''; break;
         case 'lockImportSystem': state.lockImportSystem = t.value; break;
         case 'lockImportMode': state.lockImportMode = t.value; break;
         case 'onLockSystemFile': onLockSystemFileChange(t.files[0]); t.value = ''; break;
