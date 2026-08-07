@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-07.05';
+  var APP_BUILD = '2026-08-08.01';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -912,6 +912,7 @@
     state.orders = syncFix.orders;
     state.customerTrackingReturn = syncFix.trackingReturn;
     state.customerTrackingReturnAt = syncFix.trackingReturnAt;
+    state.orders = repairDuplicateRecoveredSmsEntries(state.orders);
     // Not merged (last-save-wins), same treatment as isSampleData below — templates are edited
     // rarely enough that this doesn't need the full 3-way merge machinery orders/notes get. Falls
     // back to whatever's already local (never blank) if the snapshot predates this field existing.
@@ -1526,6 +1527,7 @@
     state.orders = syncFix.orders;
     state.customerTrackingReturn = syncFix.trackingReturn;
     state.customerTrackingReturnAt = syncFix.trackingReturnAt;
+    state.orders = repairDuplicateRecoveredSmsEntries(state.orders);
   })();
 
   // ---------- Derivations ----------
@@ -5518,6 +5520,78 @@
     if (!m) return null;
     return new Date(+m[3], +m[2] - 1, +m[1], +m[4], +m[5]);
   }
+  // Some Thaibulk sms-log exports have their PhoneNumber column auto-typed as a number by Excel,
+  // which silently drops the leading zero (0812345678 → 812345678) — confirmed by the user
+  // 2026-08-08 after a suspiciously high "recovered" ratio (276 of 277 matched rows tagged as
+  // never-before-seen) turned out to be caused by exactly this: every genuinely-matching local phone
+  // (always stored WITH its leading 0 — see confirmSendSms/extractPhoneNumbers) failed to match the
+  // log's zero-stripped 9-digit version, so tier 1/2's phone comparison missed every real match and
+  // fell through to fabricating a duplicate "recovered" entry instead. Thai phone numbers (mobile AND
+  // Bangkok landline) always start with 0 and are never legitimately 9 digits without it, so
+  // restoring it here is a safe, unambiguous fix — not a guess like the QR-payment date-swap
+  // detector elsewhere in this file needed to be.
+  function restoreThaiLeadingZero(digits) {
+    return (digits.length === 9 && digits.charAt(0) !== '0') ? '0' + digits : digits;
+  }
+  // One-time repair (2026-08-08) for the bug above: undoes the false "recovered" duplicates it
+  // already created in production before this fix shipped. Any smsHistory/accessorySmsHistory/
+  // installment-level smsHistory entry tagged with the exact recovery `by` string is very likely a
+  // duplicate of a real, already-existing entry in the SAME list — matching just failed on the
+  // stripped phone. Finds a genuine (non-recovered) entry in the same list whose leading-zero-
+  // restored phone matches, merges the recovered entry's status fields onto it (no status data is
+  // lost), and drops the duplicate. Only merges when EXACTLY ONE genuine candidate matches per
+  // recovered entry — 0 or 2+ candidates is left untouched rather than guessing, so a genuinely-
+  // missing local record (a real recovery, not a bug artifact) is never wrongly deleted. Runs once on
+  // every load, same pattern as repairInvalidStatusOverrides/repairCancelledOrderSync etc.
+  var SMS_RECOVERED_BY = 'กู้คืนจากประวัติ Thaibulk (ของเดิมไม่มีบันทึกไว้ในระบบ)';
+  function dedupeRecoveredSmsList(list) {
+    if (!list || !list.length) return list;
+    var recovered = list.filter(function (h) { return h.by === SMS_RECOVERED_BY; });
+    if (!recovered.length) return list;
+    var genuine = list.filter(function (h) { return h.by !== SMS_RECOVERED_BY; });
+    var survivors = [];
+    var changed = false;
+    recovered.forEach(function (r) {
+      var rPhone = restoreThaiLeadingZero(normalizeLockMatchPhone(r.phone));
+      var candidates = genuine.filter(function (g) { return restoreThaiLeadingZero(normalizeLockMatchPhone(g.phone)) === rPhone; });
+      if (candidates.length !== 1) { survivors.push(r); return; }
+      var g = candidates[0];
+      if (r.status && !g.status) { g.status = r.status; g.statusReason = r.statusReason; g.statusUpdatedAt = r.statusUpdatedAt || nowTimestamp(); }
+      changed = true;
+    });
+    return changed ? genuine.concat(survivors) : list;
+  }
+  function repairDuplicateRecoveredSmsEntries(orders) {
+    var anyChanged = false;
+    var out = orders.map(function (o) {
+      var smsHistory = dedupeRecoveredSmsList(o.smsHistory);
+      var accessorySmsHistory = dedupeRecoveredSmsList(o.accessorySmsHistory);
+      var instsChanged = false;
+      var installments = (o.installments || []).map(function (i) {
+        var h = dedupeRecoveredSmsList(i.smsHistory);
+        if (h === i.smsHistory) return i;
+        instsChanged = true;
+        return Object.assign({}, i, { smsHistory: h });
+      });
+      var accInstsChanged = false;
+      var accessoryInstallments = (o.accessoryInstallments || []).map(function (i) {
+        var h = dedupeRecoveredSmsList(i.smsHistory);
+        if (h === i.smsHistory) return i;
+        accInstsChanged = true;
+        return Object.assign({}, i, { smsHistory: h });
+      });
+      var orderChanged = smsHistory !== o.smsHistory || accessorySmsHistory !== o.accessorySmsHistory || instsChanged || accInstsChanged;
+      if (!orderChanged) return o;
+      anyChanged = true;
+      return Object.assign({}, o, {
+        smsHistory: smsHistory, accessorySmsHistory: accessorySmsHistory,
+        installments: instsChanged ? installments : o.installments,
+        accessoryInstallments: accInstsChanged ? accessoryInstallments : o.accessoryInstallments
+      });
+    });
+    if (anyChanged) _lastRepairChanged = true;
+    return anyChanged ? out : orders;
+  }
   function onSmsLogFileChange(file) {
     if (!file) return;
     if (!window.XLSX) { state.uploadMsgSmsLog = 'ไม่พบไลบรารีอ่านไฟล์ กรุณาลองใหม่'; render(); return; }
@@ -5550,7 +5624,7 @@
       var byPhone = {}, byMessagePhone = {};
       function indexList(list, soId) {
         (list || []).forEach(function (h) {
-          var p = normalizeLockMatchPhone(h.phone);
+          var p = restoreThaiLeadingZero(normalizeLockMatchPhone(h.phone));
           if (!p) return;
           var rec = { entry: h, soId: soId };
           (byPhone[p] = byPhone[p] || []).push(rec);
@@ -5585,7 +5659,7 @@
           phone: phone, message: message
         };
         found.order[found.field] = (found.order[found.field] || []).concat([entry]);
-        var p = normalizeLockMatchPhone(phone);
+        var p = restoreThaiLeadingZero(normalizeLockMatchPhone(phone));
         var rec = { entry: entry, soId: soId };
         if (p) {
           (byPhone[p] = byPhone[p] || []).push(rec);
@@ -5626,7 +5700,7 @@
       var matched = 0, unchanged = 0, recreatedCount = 0, unmatchedReasons = [];
       rows.forEach(function (r) {
         var phoneRaw = String(resolveField(r, ALIASES.phone) || '').trim();
-        var phone = normalizeLockMatchPhone(phoneRaw);
+        var phone = restoreThaiLeadingZero(normalizeLockMatchPhone(phoneRaw));
         var message = String(resolveField(r, ALIASES.message) || '').trim();
         var status = String(resolveField(r, ALIASES.status) || '').trim();
         var sendDateRaw = resolveField(r, ALIASES.sendDate);
