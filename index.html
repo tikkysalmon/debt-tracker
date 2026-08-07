@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-07.01';
+  var APP_BUILD = '2026-08-07.02';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -240,6 +240,36 @@
       if (t && !seen[t]) { seen[t] = true; out.push(t); }
     });
     return out.sort();
+  }
+  // สถานะการส่ง SMS filter (2026-08-07, per explicit user request) filters by WHICH TEMPLATE was
+  // sent, not by Thaibulk delivery status — options come from actual sent history (h.template),
+  // not just the currently-configured state.smsTemplates, so a filter still works for a template
+  // that's since been renamed/deleted. "(ไม่ระบุ Template)" covers sends with no template on record
+  // (matches the label already used in computeReport's seg5 template breakdown).
+  function getSmsTemplateOptions() {
+    var seen = {}, out = [];
+    state.orders.forEach(function (o) {
+      var events = (o.smsHistory || []).concat(o.accessorySmsHistory || []).concat(
+        (o.installments || []).concat(o.accessoryInstallments || []).reduce(function (acc, i) { return acc.concat(i.smsHistory || []); }, [])
+      );
+      events.forEach(function (h) {
+        var t = h.template || '(ไม่ระบุ Template)';
+        if (!seen[t]) { seen[t] = true; out.push(t); }
+      });
+    });
+    return out.sort();
+  }
+  // สถานะจดหมายทวงถาม filter — filters by ครั้งที่ (issuance round), the letter-side equivalent of
+  // an SMS template (per explicit user request 2026-08-07, "เหมือนสถานะการส่ง SMS"), sourced from
+  // real letterHistory/accessoryLetterHistory ครั้งที่ values actually on file.
+  function getLetterRoundOptions() {
+    var seen = {}, out = [];
+    state.orders.forEach(function (o) {
+      (o.letterHistory || []).concat(o.accessoryLetterHistory || []).forEach(function (h) {
+        if (h.no != null && !seen[h.no]) { seen[h.no] = true; out.push(h.no); }
+      });
+    });
+    return out.sort(function (a, b) { return a - b; });
   }
 
   // ---------- Helpers ----------
@@ -1423,6 +1453,8 @@
     reportDateFrom: '',
     reportDateTo: '',
     reportDrilldownSeg: null, reportDrilldownGroup: null,
+    reportStatusDrilldownKind: null, reportStatusDrilldownKey: null, reportStatusDrilldownMonth: null,
+    reportCollapsed: {},
     customerDetailReturnView: null,
     lockImportSystem: 'Soti',
     lockImportMode: 'Normal',
@@ -1443,6 +1475,7 @@
     filterGrade: 'all',
     filterPurchaseTypes: [],
     filterLockSystem: 'all', filterLockMode: 'all',
+    filterSmsTemplate: 'all', filterLetterRound: 'all', filterCallStatus: 'all',
     dueFrom: '', dueTo: '', paidFrom: '', paidTo: '', contractFrom: '', contractTo: '',
     customerNotes: (persisted && persisted.customerNotes) || {},
     customerTrackingReturn: (persisted && persisted.customerTrackingReturn) || {},
@@ -1481,6 +1514,7 @@
     appliedGrade: 'all',
     appliedPurchaseTypes: [], // types EXCLUDED from results; empty = show every purchase type
     appliedLockSystem: 'all', appliedLockMode: 'all',
+    appliedSmsTemplate: 'all', appliedLetterRound: 'all', appliedCallStatus: 'all',
     appliedDueFrom: '', appliedDueTo: '', appliedPaidFrom: '', appliedPaidTo: '', appliedContractFrom: '', appliedContractTo: ''
   };
   // Same one-time catch-up as applySnapshot() runs on every cloud sync — needed here too so a fresh
@@ -2220,6 +2254,57 @@
       return { no: n, issuedCount: Object.keys(issuedByNo[n] || {}).length, sentCount: Object.keys(sentByNo[n] || {}).length };
     });
 
+    // Sections 8-9: สรุปสถานะการส่ง SMS/จดหมาย (2026-08-07) — groups by the REAL delivery outcome
+    // from the Thaibulk log imports (onSmsLogFileChange/onEmailReportFileChange write h.status onto
+    // smsHistory/emailHistory entries), each status further broken down by contract month with a
+    // drillable customer list — same "แยกตามเดือนที่ทำสัญญา" shape as sections 1-3 above, just
+    // grouped by status instead of by overdue-งวด criteria. Scoped to `active` orders, same as every
+    // other section here. An order counts once per DISTINCT status it has ever received (mirrors
+    // seg5's per-template counting) — an order with both a Sent and a later Failed send legitimately
+    // appears in both groups. Orders with no status at all (never run through a log import) are
+    // deliberately excluded — this report is specifically about known delivery outcomes, not send
+    // volume (seg5 already covers volume-by-template).
+    function statusSummarySegment(getEvents, resolveKey, statusMeta) {
+      var byStatus = {};
+      active.forEach(function (o) {
+        var seenForOrder = {};
+        getEvents(o).forEach(function (h) {
+          if (!h.status) return;
+          var key = resolveKey(h.status) || h.status;
+          if (seenForOrder[key]) return;
+          seenForOrder[key] = true;
+          var seg = byStatus[key] = byStatus[key] || { key: key, custSet: {}, totalValue: 0, byMonth: {}, groups: {} };
+          var ck = customerKey(o);
+          if (!seg.custSet[ck]) { seg.custSet[ck] = true; seg.totalValue += o.trueOverdueRaw; }
+          var monthKey = o.contractDate ? o.contractDate.slice(0, 7) : 'ไม่ทราบเดือน';
+          var mm = seg.byMonth[monthKey] = seg.byMonth[monthKey] || { count: 0, value: 0 };
+          mm.count++; mm.value += o.trueOverdueRaw;
+          (seg.groups[monthKey] = seg.groups[monthKey] || []).push(o);
+        });
+      });
+      return Object.keys(byStatus).map(function (k) {
+        var seg = byStatus[k];
+        var meta = statusMeta[k];
+        var months = Object.keys(seg.byMonth).sort().map(function (m) {
+          var mm = seg.byMonth[m];
+          var parts = m.split('-');
+          return { month: m, monthDisp: parts.length === 2 ? parts[1] + '-' + parts[0] : m, count: mm.count, valueDisp: fmtMoney(mm.value) };
+        });
+        return {
+          key: seg.key, label: meta ? meta.label : seg.key, color: meta ? meta.color : '#6b6785', bg: meta ? meta.bg : 'rgba(107,103,133,0.10)',
+          customerCount: Object.keys(seg.custSet).length, totalValueDisp: fmtMoney(seg.totalValue), months: months, groups: seg.groups
+        };
+      }).sort(function (a, b) { return b.customerCount - a.customerCount; });
+    }
+    var smsStatusSegs = statusSummarySegment(function (o) {
+      return (o.smsHistory || []).concat(o.accessorySmsHistory || []).concat(
+        o.installments.concat(o.accessoryInstallments || []).reduce(function (acc, i) { return acc.concat(i.smsHistory || []); }, [])
+      );
+    }, resolveSmsStatusKey, SMS_STATUS_META);
+    var letterStatusSegs = statusSummarySegment(function (o) {
+      return (o.emailHistory || []).concat(o.accessoryEmailHistory || []);
+    }, resolveEmailStatusKey, EMAIL_STATUS_META);
+
     // Section 7: กิจกรรมรายวัน (โทร/SMS/จดหมาย) — defaults to the last 7 days, overridable via the
     // date-range inputs (state.reportDateFrom/reportDateTo), per explicit user request. Zero-filled
     // (every day in range appears even with no activity) so a quiet day doesn't just look "missing".
@@ -2263,6 +2348,7 @@
       seg1: seg1, seg2: seg2, seg3: seg3,
       calledCount: calledCount,
       seg5: seg5, seg6: seg6,
+      smsStatusSegs: smsStatusSegs, letterStatusSegs: letterStatusSegs,
       dailyRows: dailyRows, rangeFrom: rangeFrom, rangeTo: rangeTo
     };
   }
@@ -2281,7 +2367,8 @@
       dueFrom: state.appliedDueFrom, dueTo: state.appliedDueTo,
       paidFrom: state.appliedPaidFrom, paidTo: state.appliedPaidTo,
       contractFrom: state.appliedContractFrom, contractTo: state.appliedContractTo,
-      lockSystem: state.appliedLockSystem, lockMode: state.appliedLockMode
+      lockSystem: state.appliedLockSystem, lockMode: state.appliedLockMode,
+      smsTemplate: state.appliedSmsTemplate, letterRound: state.appliedLetterRound, callStatus: state.appliedCallStatus
     };
     function inRange(dateStr, from, to) {
       if (!dateStr) return false;
@@ -2356,6 +2443,33 @@
     if (f.lockMode !== 'all') {
       filteredOrders = filteredOrders.filter(function (o) { return o.lockSystemMode === f.lockMode; });
     }
+    // สถานะการส่ง SMS/สถานะจดหมายทวงถาม/สถานะการโทร filters (2026-08-07, per explicit user request)
+    // — SMS filters by WHICH TEMPLATE was sent (not delivery status — that's what the Report page's
+    // new sms/letter status summary sections are for instead), letter filters by ครั้งที่ (the
+    // letter-side equivalent of a template, per user: "เหมือนสถานะการส่ง SMS"), call filters by
+    // simple โทรแล้ว/ยังไม่โทร since call notes are free text with no fixed status values.
+    if (f.smsTemplate !== 'all') {
+      filteredOrders = filteredOrders.filter(function (o) {
+        var events = (o.smsHistory || []).concat(o.accessorySmsHistory || []).concat(
+          allInstsOf(o).reduce(function (acc, i) { return acc.concat(i.smsHistory || []); }, [])
+        );
+        if (f.smsTemplate === 'none') return events.length === 0;
+        return events.some(function (h) { return (h.template || '(ไม่ระบุ Template)') === f.smsTemplate; });
+      });
+    }
+    if (f.letterRound !== 'all') {
+      filteredOrders = filteredOrders.filter(function (o) {
+        var events = (o.letterHistory || []).concat(o.accessoryLetterHistory || []);
+        if (f.letterRound === 'none') return events.length === 0;
+        return events.some(function (h) { return h.no === Number(f.letterRound); });
+      });
+    }
+    if (f.callStatus !== 'all') {
+      filteredOrders = filteredOrders.filter(function (o) {
+        var called = (o.callHistory || []).length > 0;
+        return f.callStatus === 'called' ? called : !called;
+      });
+    }
     // ยอดค้างชำระ/งวดค้าง in the results table normally show the order's WHOLE ค้างชำระ total
     // (trueOverdueRaw/overdueCount from computeOrdersUncached) — but once a per-งวด filter narrows
     // which งวด actually matched, staff expect the column to reflect just that filtered slice, not
@@ -2423,6 +2537,7 @@
       state.filterGrade !== state.appliedGrade ||
       state.filterPurchaseTypes.join(',') !== state.appliedPurchaseTypes.join(',') ||
       state.filterLockSystem !== state.appliedLockSystem || state.filterLockMode !== state.appliedLockMode ||
+      state.filterSmsTemplate !== state.appliedSmsTemplate || state.filterLetterRound !== state.appliedLetterRound || state.filterCallStatus !== state.appliedCallStatus ||
       state.dueFrom !== state.appliedDueFrom || state.dueTo !== state.appliedDueTo ||
       state.paidFrom !== state.appliedPaidFrom || state.paidTo !== state.appliedPaidTo ||
       state.contractFrom !== state.appliedContractFrom || state.contractTo !== state.appliedContractTo;
@@ -2485,6 +2600,9 @@
     state.appliedPurchaseTypes = state.filterPurchaseTypes.slice();
     state.appliedLockSystem = state.filterLockSystem;
     state.appliedLockMode = state.filterLockMode;
+    state.appliedSmsTemplate = state.filterSmsTemplate;
+    state.appliedLetterRound = state.filterLetterRound;
+    state.appliedCallStatus = state.filterCallStatus;
     state.appliedDueFrom = state.dueFrom; state.appliedDueTo = state.dueTo;
     state.appliedPaidFrom = state.paidFrom; state.appliedPaidTo = state.paidTo;
     state.appliedContractFrom = state.contractFrom; state.appliedContractTo = state.contractTo;
@@ -2514,9 +2632,9 @@
       page: 1,
       selectedCustomerId: null,
       query: '', filterAccountStatus: 'all', filterDueStatus: 'all', filterPaymentStatuses: [],
-      filterCrmStatus: 'all', filterUnverifiedCRM: false, filterGrade: 'all', filterPurchaseTypes: [], filterLockSystem: 'all', filterLockMode: 'all', dueFrom: '', dueTo: '', paidFrom: '', paidTo: '', contractFrom: '', contractTo: '',
+      filterCrmStatus: 'all', filterUnverifiedCRM: false, filterGrade: 'all', filterPurchaseTypes: [], filterLockSystem: 'all', filterLockMode: 'all', filterSmsTemplate: 'all', filterLetterRound: 'all', filterCallStatus: 'all', dueFrom: '', dueTo: '', paidFrom: '', paidTo: '', contractFrom: '', contractTo: '',
       appliedQuery: '', appliedAccountStatus: 'all', appliedDueStatus: 'all', appliedPaymentStatuses: [], appliedUnverifiedCRM: false,
-      appliedGrade: 'all', appliedPurchaseTypes: [], appliedLockSystem: 'all', appliedLockMode: 'all', appliedDueFrom: '', appliedDueTo: '', appliedPaidFrom: '', appliedPaidTo: '',
+      appliedGrade: 'all', appliedPurchaseTypes: [], appliedLockSystem: 'all', appliedLockMode: 'all', appliedSmsTemplate: 'all', appliedLetterRound: 'all', appliedCallStatus: 'all', appliedDueFrom: '', appliedDueTo: '', appliedPaidFrom: '', appliedPaidTo: '',
       appliedContractFrom: '', appliedContractTo: ''
     });
     render();
@@ -2537,6 +2655,7 @@
     // itself, where these are already null) — otherwise it would silently reopen the next time the
     // admin navigates back to the Report page, since nothing else ever clears it.
     state.reportDrilldownSeg = null; state.reportDrilldownGroup = null;
+    state.reportStatusDrilldownKind = null; state.reportStatusDrilldownKey = null; state.reportStatusDrilldownMonth = null;
     state.selectedCustomerId = cid; state.customerNoteDraft = ''; state.editingCustomerName = false; state.editingCustomerId = false; state.editingOrderIdFor = null; state.callDraft = ''; state.trackingOrderId = ''; state.trackingTrack = ''; render();
   }
   function startEditCustomerName() {
@@ -5799,6 +5918,15 @@
         (sub ? '<div style="font-size:11.5px; font-weight:600; color:' + color + '; opacity:0.8; margin-top:2px;">' + sub + '</div>' : '') +
       '</div>';
     }
+    // Collapse toggle (2026-08-07, per explicit user request) — collapses a section's BODY while
+    // its header/title stays visible, backed by state.reportCollapsed[cid] (a plain map so any
+    // number of independent collapsible blocks on this page can each remember their own state across
+    // re-renders without needing a dedicated state field per block).
+    function isCollapsed(cid) { return !!state.reportCollapsed[cid]; }
+    function collapseToggleBtn(cid) {
+      var collapsed = isCollapsed(cid);
+      return '<span data-action="toggleReportCollapse" data-collapseid="' + esc(cid) + '" title="' + (collapsed ? 'ขยาย' : 'ย่อ') + '" style="cursor:pointer; display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border-radius:6px; background:rgba(124,92,255,0.10); color:#7c5cff; font-size:11px; flex-shrink:0;">' + (collapsed ? '▸' : '▾') + '</span>';
+    }
     function segCard(num, title, seg) {
       // Reformatted 2026-08-05 (user: "จัดรูปแบบการ์ดใหม่") — primary stats (จำนวนลูกหนี้/มูลค่า
       // ค้างชำระ) and the lock-system breakdown used to sit in one flat auto-fit grid, where
@@ -5848,8 +5976,11 @@
           '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:10px;">' + systemTiles + '</div>' +
         '</div>' +
         '<div style="border-top:1px solid rgba(124,92,255,0.10); padding-top:12px; margin-top:14px;">' +
-          '<div style="font-size:11.5px; color:#6b6785; font-weight:700; margin-bottom:2px;">📅 แยกตามเดือนที่ทำสัญญา</div>' +
-          monthsHtml +
+          '<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:2px;">' +
+            '<div style="font-size:11.5px; color:#6b6785; font-weight:700;">📅 แยกตามเดือนที่ทำสัญญา</div>' +
+            collapseToggleBtn('seg' + num) +
+          '</div>' +
+          (isCollapsed('seg' + num) ? '' : monthsHtml) +
         '</div>'
       );
     }
@@ -5895,14 +6026,87 @@
           '</tbody></table></div>'
         : '<div style="font-size:13px; color:#b3b0c4;">เลือกช่วงวันที่ที่ถูกต้อง</div>')
     );
+    // Sections 8-9: สรุปสถานะการส่ง SMS/จดหมาย แยกตามเดือนที่ทำสัญญา (2026-08-07) — one collapsible
+    // sub-card per real delivery status (from the Thaibulk log imports), each further broken down by
+    // contract month with a drillable customer list — mirrors segCard's "แยกตามเดือนที่ทำสัญญา"
+    // shape but grouped by status instead of by overdue-งวด criteria, and has no lock-system tier
+    // (irrelevant here) — per explicit user request 2026-08-07 ("แยกกลุ่ม SMS และจดหมาย...แยกตาม
+    // เดือนที่ทำสัญญา...ทำปุ่มยุบข้อมูล แต่ยังให้แสดงหัวข้ออยู่").
+    function statusSummaryCard(seg, kindPrefix) {
+      var cid = kindPrefix + '_' + seg.key;
+      var collapsed = isCollapsed(cid);
+      var monthsHtml = seg.months.length
+        ? '<div style="display:flex; flex-direction:column; gap:6px; padding:10px 2px 2px;">' +
+            seg.months.map(function (m) {
+              return '<div data-action="showStatusDrilldown" data-kind="' + kindPrefix + '" data-status="' + esc(seg.key) + '" data-month="' + esc(m.month) + '" title="คลิกดูรายชื่อลูกค้า" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:10px; background:rgba(124,92,255,0.04); border-radius:8px; padding:7px 12px;">' +
+                '<span style="font-size:12px; font-weight:600; color:#2b2540;">🗓 ' + esc(m.monthDisp) + '</span>' +
+                '<span style="font-size:11.5px; color:#6b6785;">' + m.count + ' ราย · <span style="font-weight:700; color:#e03131;">฿' + m.valueDisp + '</span></span>' +
+              '</div>';
+            }).join('') +
+          '</div>'
+        : '<div style="font-size:12px; color:#b3b0c4; padding:8px 2px 2px;">ไม่มีข้อมูล</div>';
+      return '<div style="margin-bottom:8px; border-radius:12px; overflow:hidden; background:' + seg.bg + ';">' +
+        '<div data-action="toggleReportCollapse" data-collapseid="' + esc(cid) + '" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 14px;">' +
+          '<span style="font-size:13px; font-weight:700; color:' + seg.color + ';">' + esc(seg.label) + '</span>' +
+          '<span style="display:flex; align-items:center; gap:10px;">' +
+            '<span style="font-size:12px; color:#6b6785;">' + seg.customerCount + ' ราย · <span style="font-weight:700; color:' + seg.color + ';">฿' + seg.totalValueDisp + '</span></span>' +
+            '<span style="font-size:11px; color:' + seg.color + ';">' + (collapsed ? '▸' : '▾') + '</span>' +
+          '</span>' +
+        '</div>' +
+        (collapsed ? '' : monthsHtml) +
+      '</div>';
+    }
+    var section8 = cardWrap(
+      sectionHeader(8, '💬', 'สรุปสถานะการส่ง SMS (จาก Log Thaibulk) แยกตามเดือนที่ทำสัญญา') +
+      (r.smsStatusSegs.length
+        ? r.smsStatusSegs.map(function (s) { return statusSummaryCard(s, 'sms'); }).join('')
+        : '<div style="font-size:13px; color:#b3b0c4;">ยังไม่มีการนำเข้าไฟล์ sms-log จาก Thaibulk (ดูที่เมนูอัพโหลดไฟล์)</div>'),
+      ' margin-bottom:20px;'
+    );
+    var section9 = cardWrap(
+      sectionHeader(9, '✉️', 'สรุปสถานะการส่งจดหมาย (อีเมล จาก Log Thaibulk) แยกตามเดือนที่ทำสัญญา') +
+      (r.letterStatusSegs.length
+        ? r.letterStatusSegs.map(function (s) { return statusSummaryCard(s, 'letter'); }).join('')
+        : '<div style="font-size:13px; color:#b3b0c4;">ยังไม่มีการนำเข้าไฟล์ email-api-report จาก Thaibulk (ดูที่เมนูอัพโหลดไฟล์)</div>'),
+      ' margin-bottom:20px;'
+    );
     return '<div>' +
       '<div style="display:flex; align-items:center; gap:12px; margin-bottom:4px;">' +
         '<div style="width:38px; height:38px; border-radius:12px; background:linear-gradient(135deg,#7c5cff,#6647e0); display:flex; align-items:center; justify-content:center; box-shadow:0 6px 16px rgba(124,92,255,0.3); font-size:18px;">📊</div>' +
         '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:21px; color:#2b2540;">Report</div>' +
       '</div>' +
       '<div style="font-size:12.5px; color:#8a86a3; margin-bottom:22px; margin-left:50px;">อัปเดตสดทุกครั้งที่ข้อมูลในระบบเปลี่ยนแปลง — เฉพาะผู้ดูแลระบบ (Admin) เท่านั้น</div>' +
-      section123 + section4 + section5 + section6 + section7 +
+      section123 + section4 + section5 + section6 + section7 + section8 + section9 +
       (state.reportDrilldownSeg ? renderReportDrilldownModal() : '') +
+      (state.reportStatusDrilldownKind ? renderStatusDrilldownModal() : '') +
+    '</div>';
+  }
+  // Drill-down for sections 8-9 (status × month, no lock-system tier) — same table/pattern as
+  // renderReportDrilldownModal but keyed by kind+status+month instead of seg-number+groupKey, since
+  // these segments have no lock-system dimension to fold into the group key.
+  function renderStatusDrilldownModal() {
+    var kind = state.reportStatusDrilldownKind;
+    var segs = kind === 'sms' ? (CV.report && CV.report.smsStatusSegs) : (CV.report && CV.report.letterStatusSegs);
+    var seg = segs && segs.find(function (s) { return s.key === state.reportStatusDrilldownKey; });
+    var orders = seg && seg.groups[state.reportStatusDrilldownMonth];
+    if (!orders) return '';
+    var monthParts = String(state.reportStatusDrilldownMonth).split('-');
+    var monthDisp = monthParts.length === 2 ? monthParts[1] + '-' + monthParts[0] : state.reportStatusDrilldownMonth;
+    return '<div style="position:fixed; inset:0; z-index:9999; background:rgba(43,37,64,0.35); display:flex; align-items:flex-start; justify-content:center; padding:30px 20px; overflow-y:auto;">' +
+      '<div style="max-width:1200px; width:100%; background:rgba(255,255,255,0.97); backdrop-filter:blur(24px); -webkit-backdrop-filter:blur(24px); border:1px solid rgba(255,255,255,0.85); border-radius:24px; padding:26px 28px; box-shadow:0 24px 60px rgba(43,37,64,0.3); margin-bottom:30px;">' +
+        '<div style="display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; margin-bottom:18px;">' +
+          '<div>' +
+            '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:17px; color:#2b2540;">👥 รายชื่อลูกหนี้ — ' + esc(seg.label) + ' · ' + esc(monthDisp) + '</div>' +
+            '<div style="font-size:12.5px; color:#8a86a3; margin-top:2px;">พบ ' + orders.length + ' รายการ</div>' +
+          '</div>' +
+          '<div data-action="closeStatusDrilldown" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; padding:8px 16px; border-radius:20px; font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap;">✕ ปิด</div>' +
+        '</div>' +
+        '<div style="overflow-x:auto;">' +
+          '<table style="width:100%; border-collapse:collapse; min-width:1100px;"><thead>' + orderTableHeaderRow() + '</thead><tbody>' +
+            orders.map(orderTableRow).join('') +
+          '</tbody></table>' +
+        '</div>' +
+      '</div>' +
     '</div>';
   }
   // Drill-down from a segCard month+system row into the exact matching customer list, using the
@@ -6655,6 +6859,22 @@
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">🔓 โหมดการล็อค</div>' +
             '<select data-action="filter" data-key="filterLockMode" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13.5px; color:#2b2540;">' +
               selOpt('all', 'ทุกสถานะ', state.filterLockMode === 'all') + selOpt('Normal', 'Normal', state.filterLockMode === 'Normal') + selOpt('Hard lock', 'Hard lock', state.filterLockMode === 'Hard lock') + selOpt('Soft lock', 'Soft lock', state.filterLockMode === 'Soft lock') + selOpt('นำออกจากระบบแล้ว', 'นำออกจากระบบแล้ว', state.filterLockMode === 'นำออกจากระบบแล้ว') +
+            '</select></div>' +
+        '</div>' +
+        '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:14px; margin-bottom:14px;">' +
+          '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">💬 สถานะการส่ง SMS (Template)</div>' +
+            '<select data-action="filter" data-key="filterSmsTemplate" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13.5px; color:#2b2540;">' +
+              selOpt('all', 'ทุกสถานะ', state.filterSmsTemplate === 'all') + selOpt('none', 'ยังไม่เคยส่ง SMS', state.filterSmsTemplate === 'none') +
+              getSmsTemplateOptions().map(function (t) { return selOpt(t, t, state.filterSmsTemplate === t); }).join('') +
+            '</select></div>' +
+          '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">✉️ สถานะจดหมายทวงถาม (ครั้งที่)</div>' +
+            '<select data-action="filter" data-key="filterLetterRound" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13.5px; color:#2b2540;">' +
+              selOpt('all', 'ทุกสถานะ', state.filterLetterRound === 'all') + selOpt('none', 'ยังไม่เคยออกจดหมาย', state.filterLetterRound === 'none') +
+              getLetterRoundOptions().map(function (n) { return selOpt(String(n), 'ครั้งที่ ' + n, state.filterLetterRound === String(n)); }).join('') +
+            '</select></div>' +
+          '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">📞 สถานะการโทร</div>' +
+            '<select data-action="filter" data-key="filterCallStatus" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13.5px; color:#2b2540;">' +
+              selOpt('all', 'ทุกสถานะ', state.filterCallStatus === 'all') + selOpt('called', 'โทรแล้ว', state.filterCallStatus === 'called') + selOpt('notcalled', 'ยังไม่โทร', state.filterCallStatus === 'notcalled') +
             '</select></div>' +
         '</div>' +
         '<label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; color:#2b2540; font-weight:600; margin-bottom:14px; user-select:none;">' +
@@ -7477,6 +7697,19 @@
         case 'goReport': if (!(state.currentUser && state.currentUser.isAdmin)) { denyToast(); return; } state.view = 'report'; render(); break;
         case 'showReportDrilldown': state.reportDrilldownSeg = t.getAttribute('data-seg'); state.reportDrilldownGroup = t.getAttribute('data-group'); render(); break;
         case 'closeReportDrilldown': state.reportDrilldownSeg = null; state.reportDrilldownGroup = null; render(); break;
+        case 'showStatusDrilldown':
+          state.reportStatusDrilldownKind = t.getAttribute('data-kind');
+          state.reportStatusDrilldownKey = t.getAttribute('data-status');
+          state.reportStatusDrilldownMonth = t.getAttribute('data-month');
+          render();
+          break;
+        case 'closeStatusDrilldown': state.reportStatusDrilldownKind = null; state.reportStatusDrilldownKey = null; state.reportStatusDrilldownMonth = null; render(); break;
+        case 'toggleReportCollapse': {
+          var cid = t.getAttribute('data-collapseid');
+          state.reportCollapsed[cid] = !state.reportCollapsed[cid];
+          render();
+          break;
+        }
         case 'logout': handleLogout(); break;
         case 'toggleSidebarCollapsed': toggleSidebarCollapsed(); break;
         // No confirmDiscardIfDirty() guard here (unlike goDashboard/goTracking): uploads always
