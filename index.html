@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-08.02';
+  var APP_BUILD = '2026-08-08.03';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -2469,8 +2469,54 @@
       return true;
     }
     var hasPerInstFilter = f.filterDueStatus !== 'all' || f.paymentStatusesExcluded.length || f.dueFrom || f.dueTo || f.paidFrom || f.paidTo;
+    // ยอดค้างชำระ/งวดค้าง/สถานะตรวจสอบ CRM in the results table normally show the order's WHOLE
+    // picture (trueOverdueRaw/overdueCount/crmStatus/crmVerifiedCount from computeOrdersUncached) —
+    // but once a per-งวด filter narrows which งวด actually matched, staff expect these to reflect
+    // just that filtered slice, not the customer's full history (per user request 2026-07-30 for the
+    // amount/count, extended to crmStatus 2026-08-08 after a report that the "สถานะตรวจสอบ CRM" badge
+    // still showed "บางส่วน" for a customer whose SELECTED due-date's งวด was already fully verified
+    // — the whole-order value was dragged down by a DIFFERENT, unrelated due-date's still-unverified
+    // งวด, contradicting what was on screen for the filtered date). Moved to run HERE (immediately
+    // after the per-งวด inclusion filter, before the "แสดงเฉพาะที่ยังตรวจสอบ CRM ไม่ครบ" checkbox
+    // filter below) so that checkbox also decides inclusion using the SAME scoped crmStatus the badge
+    // ends up showing — otherwise a customer could display "✓ ตรวจครบ" yet still appear in a list
+    // literally titled "ยังตรวจสอบไม่ครบ", another form of the same on-screen contradiction. Recomputed
+    // only on this locally-scoped copy of filteredOrders — never mutates the cached computeOrders()
+    // result other views rely on — and only when a per-งวด filter is actually active; otherwise every
+    // one of these fields (and every other filter below) behaves exactly as before this change.
+    // สถานะตรวจสอบ CRM specifically stays scoped to the ค้างชำระ-group-with-a-real-balance subset of
+    // the matched งวด (same definition computeOrdersUncached's trueOverdueInsts uses) — matching, say,
+    // ยังไม่ถึงกำหนดชำระ งวด shouldn't ever need a CRM cross-check, so those correctly show crmStatus
+    // 'none' rather than inheriting an unrelated overdue งวด's tally.
+    //
+    // ยอดค้างชำระ/งวดค้าง used to ALSO restrict to just the STATUS_TO_GROUP==='ค้างชำระ' subset of the
+    // matched งวด, so it stayed "the overdue total" even when the filter also matched e.g. ชำระแล้ว
+    // งวด in the same due-date range — but that meant filtering to a non-overdue status entirely (e.g.
+    // "สถานะการชำระ" = ยังไม่ถึงกำหนดชำระ) always summed an empty set and showed ฿0.00, which read as
+    // broken rather than "correctly zero overdue" (user report 2026-08-05). Dropped that extra
+    // restriction — the column/count now just reflect whatever the per-งวด filters actually matched,
+    // same universe filteredInstallments below (and the "โหลดข้อมูลเป็น CSV" export) already use, so
+    // the on-screen total and the CSV export always agree and any filter selection shows a real amount.
     if (hasPerInstFilter) {
-      filteredOrders = filteredOrders.filter(function (o) { return allInstsOf(o).some(instMatchesPerInstFilters); });
+      filteredOrders = filteredOrders.filter(function (o) { return allInstsOf(o).some(instMatchesPerInstFilters); })
+        .map(function (o) {
+          var filteredInstallments = o.installments.filter(instMatchesPerInstFilters);
+          var filteredAccessoryInstallments = (o.accessoryInstallments || []).filter(instMatchesPerInstFilters);
+          var matches = filteredInstallments.concat(filteredAccessoryInstallments);
+          var raw = matches.reduce(function (s, i) { return s + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0);
+          var overdueMatches = matches.filter(function (i) {
+            if (STATUS_TO_GROUP[i.effectiveStatus] !== 'ค้างชำระ') return false;
+            return Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)) > 0.005;
+          });
+          var crmVerifiedCount = overdueMatches.filter(function (i) { return i.verifiedCRM; }).length;
+          var crmStatus = overdueMatches.length === 0 ? 'none' : crmVerifiedCount === 0 ? 'pending' : crmVerifiedCount === overdueMatches.length ? 'verified' : 'partial';
+          return Object.assign({}, o, {
+            filteredInstallments: filteredInstallments,
+            filteredAccessoryInstallments: filteredAccessoryInstallments,
+            trueOverdueRaw: raw, trueOverdueDisp: fmtMoney(raw), overdueCount: matches.length,
+            crmVerifiedCount: crmVerifiedCount, crmStatus: crmStatus
+          });
+        });
     }
     if (f.filterGrade !== 'all') {
       filteredOrders = filteredOrders.filter(function (o) {
@@ -2524,47 +2570,6 @@
       filteredOrders = filteredOrders.filter(function (o) {
         var called = (o.callHistory || []).length > 0;
         return f.callStatus === 'called' ? called : !called;
-      });
-    }
-    // ยอดค้างชำระ/งวดค้าง in the results table normally show the order's WHOLE ค้างชำระ total
-    // (trueOverdueRaw/overdueCount from computeOrdersUncached) — but once a per-งวด filter narrows
-    // which งวด actually matched, staff expect the column to reflect just that filtered slice, not
-    // every ค้างชำระ งวด the order has regardless of the filter (per user request 2026-07-30 — e.g.
-    // filtering "ล็อคเครื่อง" + "ครบกำหนด เม.ย. 2026" should show only the April ล็อคเครื่อง amount,
-    // not the customer's total ค้างชำระ across all months). Recomputed only on this locally-scoped
-    // copy of the filtered rows — never mutates the cached computeOrders() result other views rely
-    // on — and only when a per-งวด filter is actually active; otherwise the unfiltered totals stand.
-    // Once a per-งวด filter narrows which งวด actually matched, staff expect both the ยอดค้างชำระ/
-    // งวดค้าง columns AND the "โหลดข้อมูลเป็น CSV" export to reflect just that filtered slice — not
-    // the order's whole ค้างชำระ total, and not every งวด of every matched order (per user request
-    // 2026-07-30: filtering "ล็อคเครื่อง" + "ครบกำหนด เม.ย. 2026" should show/export only the
-    // matching April ล็อคเครื่อง งวด, not the customer's full history). filteredInstallments/
-    // filteredAccessoryInstallments (used by exportFilteredCsv) have no STATUS_TO_GROUP restriction
-    // — they reflect whatever the filters actually selected (e.g. ชำระแล้ว or a paid-date range
-    // still needs to export correctly).
-    // Recomputed only on this locally-scoped copy of the filtered rows — never mutates the cached
-    // computeOrders() result other views rely on — and only when a per-งวด filter is active;
-    // otherwise the unfiltered totals/full installment lists stand.
-    //
-    // ยอดค้างชำระ/งวดค้าง used to ALSO restrict to just the STATUS_TO_GROUP==='ค้างชำระ' subset of
-    // the matched งวด, so it stayed "the overdue total" even when the filter also matched e.g.
-    // ชำระแล้ว งวด in the same due-date range — but that meant filtering to a non-overdue status
-    // entirely (e.g. "สถานะการชำระ" = ยังไม่ถึงกำหนดชำระ) always summed an empty set and showed
-    // ฿0.00, which read as broken rather than "correctly zero overdue" (user report 2026-08-05).
-    // Dropped that extra restriction — the column/count now just reflect whatever the per-งวด
-    // filters actually matched, same universe as filteredInstallments below, so the on-screen total
-    // and the CSV export always agree and any filter selection shows a real amount.
-    if (hasPerInstFilter) {
-      filteredOrders = filteredOrders.map(function (o) {
-        var filteredInstallments = o.installments.filter(instMatchesPerInstFilters);
-        var filteredAccessoryInstallments = (o.accessoryInstallments || []).filter(instMatchesPerInstFilters);
-        var matches = filteredInstallments.concat(filteredAccessoryInstallments);
-        var raw = matches.reduce(function (s, i) { return s + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0);
-        return Object.assign({}, o, {
-          filteredInstallments: filteredInstallments,
-          filteredAccessoryInstallments: filteredAccessoryInstallments,
-          trueOverdueRaw: raw, trueOverdueDisp: fmtMoney(raw), overdueCount: matches.length
-        });
       });
     }
     // Group a customer's multiple matching บิล together instead of leaving them scattered wherever
