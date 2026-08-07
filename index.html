@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-08.01';
+  var APP_BUILD = '2026-08-08.02';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -5533,6 +5533,13 @@
   function restoreThaiLeadingZero(digits) {
     return (digits.length === 9 && digits.charAt(0) !== '0') ? '0' + digits : digits;
   }
+  // Collapses runs of whitespace to a single space before an exact-message-text comparison — a
+  // real production template body was seen with a double space ("กับ Salmonphone  เลขคำสั่งซื้อ"),
+  // and a CSV re-export can introduce its own trivial whitespace drift, either of which would
+  // otherwise break an exact string match that's semantically identical.
+  function normalizeMessageText(s) {
+    return String(s || '').replace(/\s+/g, ' ').trim();
+  }
   // One-time repair (2026-08-08) for the bug above: undoes the false "recovered" duplicates it
   // already created in production before this fix shipped. Any smsHistory/accessorySmsHistory/
   // installment-level smsHistory entry tagged with the exact recovery `by` string is very likely a
@@ -5629,11 +5636,28 @@
           var rec = { entry: h, soId: soId };
           (byPhone[p] = byPhone[p] || []).push(rec);
           if (h.message) {
-            var k = p + '|' + String(h.message).trim();
+            var k = p + '|' + normalizeMessageText(h.message);
             (byMessagePhone[k] = byMessagePhone[k] || []).push(rec);
           }
         });
       }
+      // Some templates (e.g. "ติดตามหนี้ 3"/"ติดตามหนี้ 4" — confirmed by the user 2026-08-08) have
+      // NO placeholders at all, so every send of that template is byte-identical text regardless of
+      // customer — and critically, carries no SO number either. When a log row's SO can't be parsed
+      // AND its phone has 2+ local candidates (so tier 1's exact phone+message index missed, e.g.
+      // because the SAME phone got this exact static text more than once, or the live template body
+      // has since been re-saved with different whitespace), matching which template this row actually
+      // is can still narrow the field: map each CURRENTLY-configured template with zero unresolved
+      // {...} placeholders to its own name, look up which one the row's message equals, then narrow
+      // that phone's candidates to just the local entries whose OWN h.template matches. A template
+      // that still has placeholders (ติดตามหนี้ 1/2, resolved per-customer at send time) can never
+      // equal this map's key here, so this only ever activates for genuinely static wording.
+      var staticTemplateNameByBody = {};
+      (state.smsTemplates || []).forEach(function (t) {
+        var body = normalizeMessageText(t.body);
+        if (body && !/\{[^}]+\}/.test(body)) staticTemplateNameByBody[body] = t.name;
+      });
+      function templateNameForMessage(msg) { return staticTemplateNameByBody[msg] || null; }
       orders.forEach(function (o) {
         indexList(o.smsHistory, o.orderId);
         indexList(o.accessorySmsHistory, o.accessoryOrderId || o.orderId);
@@ -5663,7 +5687,7 @@
         var rec = { entry: entry, soId: soId };
         if (p) {
           (byPhone[p] = byPhone[p] || []).push(rec);
-          if (message) { var k = p + '|' + String(message).trim(); (byMessagePhone[k] = byMessagePhone[k] || []).push(rec); }
+          if (message) { var k = p + '|' + normalizeMessageText(message); (byMessagePhone[k] = byMessagePhone[k] || []).push(rec); }
         }
         return entry;
       }
@@ -5681,7 +5705,7 @@
       // Returns { entry, recreated } on a confident match, or { skipReason } explaining why not.
       function findEntry(phone, message, soId, sentAtDate, sentAtRaw) {
         if (message) {
-          var msgKey = phone + '|' + message;
+          var msgKey = phone + '|' + normalizeMessageText(message);
           var exact = byMessagePhone[msgKey] || [];
           if (exact.length) return { entry: pickClosest(exact, sentAtDate).entry };
         }
@@ -5692,6 +5716,14 @@
           var recreated = recreateEntry(soId, phone, message, sentAtRaw);
           if (recreated) return { entry: recreated, recreated: true };
           return { skipReason: 'เบอร์ ' + phone + ' (SO ' + soId + '): ไม่พบคำสั่งซื้อนี้ในระบบเลย และไม่พบประวัติการส่งถึงเบอร์นี้ในระบบด้วย' };
+        }
+        // No SO parseable and either 0 or 2+ phone-only candidates — before giving up, see if this
+        // row's text identifies a known static (placeholder-free) template; if so, narrow to just
+        // this phone's sends of that same template (see templateNameForMessage above).
+        var tplName = templateNameForMessage(normalizeMessageText(message));
+        if (tplName) {
+          var byTemplate = candidates.filter(function (r) { return r.entry.template === tplName; });
+          if (byTemplate.length) return { entry: pickClosest(byTemplate, sentAtDate).entry };
         }
         if (candidates.length === 1) return { entry: candidates[0].entry };
         if (candidates.length > 1) return { skipReason: 'เบอร์ ' + phone + ': อ่านเลขคำสั่งซื้อจากข้อความไม่ได้ และพบประวัติการส่งถึงเบอร์นี้มากกว่า 1 รายการ ระบุแน่ชัดไม่ได้ว่าเป็นฉบับไหน' };
