@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-08.04';
+  var APP_BUILD = '2026-08-08.05';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -277,6 +277,15 @@
     return String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  // Hoisted to module scope 2026-08-08 (was a nested function inside computeView only) so
+  // computeReport's new "ข้อมูลลูกค้า" date-range filter can reuse the exact same date-range check
+  // instead of duplicating it.
+  function inRange(dateStr, from, to) {
+    if (!dateStr) return false;
+    if (from && dateStr < from) return false;
+    if (to && dateStr > to) return false;
+    return true;
   }
   function hexToRgba(hex, alpha) {
     var h = hex.replace('#', '');
@@ -1455,6 +1464,7 @@
     reportDateTo: '',
     dashboardPtDateFrom: '', dashboardPtDateTo: '',
     dashboardDueDateFrom: '', dashboardDueDateTo: '',
+    reportCustFrom: '', reportCustTo: '', reportCustLockSystem: 'all', reportCustLockMode: 'all',
     reportDrilldownSeg: null, reportDrilldownGroup: null,
     reportStatusDrilldownKind: null, reportStatusDrilldownKey: null, reportStatusDrilldownMonth: null,
     reportCollapsed: {},
@@ -2400,12 +2410,61 @@
       dailyRows.reverse(); // most recent day first
     }
 
+    // Section 10: ข้อมูลลูกค้า (2026-08-08, per explicit user request) — a general order/customer data
+    // export, filterable by วันที่ทำสัญญา + ระบบล็อคเครื่อง + โหมดการล็อค. Confirmed via
+    // AskUserQuestion 2026-08-08: (1) scope = every order EXCEPT ยกเลิกบิล (a mistakenly-opened bill
+    // was never real business — excluded the same way it's excluded from totalContract elsewhere —
+    // but unlike sections 1-6/8-9's `active` scoping, ยกเลิกสัญญา/จำหน่ายชื่อ orders ARE included
+    // here since the user wants this export comprehensive, not just currently-active accounts);
+    // (2) เครื่องหลัก/อุปกรณ์เสริม get SEPARATE rows, each with its own SO/schedule/counts, rather
+    // than combined into one — matches how the rest of the app already treats an accessory bundle as
+    // its own separately-billed track (accessoryOrderId/accessoryFirstDueDate/accessoryInstallments).
+    // "ยอดคงเหลือก่อนผ่อนงวดที่ 1" = the track's total financed amount (sum of every งวด's
+    // ยอดผ่อนต่องวด before any payment) — not scoped to LATE_STATUSES/STATUS_GROUP_META, just a flat
+    // sum of amountDue across every installment on that track, since it means "what has to be paid
+    // off in total," not "what's currently owed." ชำระแล้ว/ค้างชำระ/ยังไม่ถึงกำหนด below use the SAME
+    // canonical status groupings the rest of the app already uses (STATUS_TO_GROUP/NOTDUE_STATUSES),
+    // for consistency with every other ยอดค้างชำระ/ชำระแล้ว figure in this file.
+    function customerDataTrackRow(orderIdForRow, firstDueDate, insts) {
+      var beforeFirstDueRaw = insts.reduce(function (s, i) { return s + Number(i.amountDue || 0); }, 0);
+      var paidInsts = insts.filter(function (i) { return STATUS_TO_GROUP[i.effectiveStatus] === 'ชำระแล้ว'; });
+      var paidRaw = paidInsts.reduce(function (s, i) { return s + Number(i.amountPaid || 0); }, 0);
+      var overdueInsts = insts.filter(function (i) { return STATUS_TO_GROUP[i.effectiveStatus] === 'ค้างชำระ'; });
+      var overdueRaw = overdueInsts.reduce(function (s, i) { return s + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0);
+      var notDueInsts = insts.filter(function (i) { return NOTDUE_STATUSES.indexOf(i.effectiveStatus) !== -1; });
+      var notDueRaw = notDueInsts.reduce(function (s, i) { return s + Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)); }, 0);
+      return {
+        orderId: orderIdForRow,
+        beforeFirstDueDisp: fmtMoney(beforeFirstDueRaw),
+        firstDueDateDisp: firstDueDate ? fmtDate(firstDueDate) : '',
+        instCount: insts.length,
+        paidCount: paidInsts.length, paidDisp: fmtMoney(paidRaw),
+        overdueCount: overdueInsts.length, overdueDisp: fmtMoney(overdueRaw),
+        notDueCount: notDueInsts.length, notDueDisp: fmtMoney(notDueRaw)
+      };
+    }
+    var custFrom = state.reportCustFrom, custTo = state.reportCustTo;
+    var custLockSystem = state.reportCustLockSystem || 'all', custLockMode = state.reportCustLockMode || 'all';
+    var customerDataRows = [];
+    orders.filter(function (o) { return !o.isBillCancelled; })
+      .filter(function (o) { return (!custFrom && !custTo) || inRange(o.contractDate, custFrom, custTo); })
+      .filter(function (o) { return custLockSystem === 'all' || (custLockSystem === 'none' ? !o.lockSystem : o.lockSystem === custLockSystem); })
+      .filter(function (o) { return custLockMode === 'all' || o.lockSystemMode === custLockMode; })
+      .forEach(function (o) {
+        var base = { customerId: o.customerId, customerName: o.customerName, contractDateDisp: o.contractDateDisp };
+        customerDataRows.push(Object.assign({}, base, customerDataTrackRow(o.orderId, o.firstDueDate, o.installments)));
+        if (o.hasAccessory && (o.accessoryInstallments || []).length) {
+          customerDataRows.push(Object.assign({}, base, customerDataTrackRow(o.accessoryOrderId || (o.orderId + ' (อุปกรณ์เสริม)'), o.accessoryFirstDueDate, o.accessoryInstallments)));
+        }
+      });
+
     return {
       seg1: seg1, seg2: seg2, seg3: seg3,
       calledCount: calledCount,
       seg5: seg5, seg6: seg6,
       smsStatusSegs: smsStatusSegs, letterStatusSegs: letterStatusSegs,
-      dailyRows: dailyRows, rangeFrom: rangeFrom, rangeTo: rangeTo
+      dailyRows: dailyRows, rangeFrom: rangeFrom, rangeTo: rangeTo,
+      customerDataRows: customerDataRows
     };
   }
 
@@ -2426,12 +2485,6 @@
       lockSystem: state.appliedLockSystem, lockMode: state.appliedLockMode,
       smsTemplate: state.appliedSmsTemplate, letterRound: state.appliedLetterRound, callStatus: state.appliedCallStatus
     };
-    function inRange(dateStr, from, to) {
-      if (!dateStr) return false;
-      if (from && dateStr < from) return false;
-      if (to && dateStr > to) return false;
-      return true;
-    }
     var filteredOrders = q ? computedOrders.filter(function (o) {
       return o.customerId.toLowerCase().indexOf(q) !== -1 ||
         o.customerName.toLowerCase().indexOf(q) !== -1 ||
@@ -4086,6 +4139,38 @@
     var content = type === 'debt' ? debtContent : type === 'customerinfo' ? customerInfoContent : paymentContent;
     var name = type === 'debt' ? 'template_ลูกหนี้.csv' : type === 'customerinfo' ? 'template_ข้อมูลลูกค้าเพิ่มเติม.csv' : 'template_ยอดชำระ.csv';
     downloadBlob(content, name);
+  }
+  // Report page's "ข้อมูลลูกค้า" section (2026-08-08) — a genuine .xlsx (not CSV like every other
+  // export in this file, per explicit user request "export ออกมาเป็นไฟล์ excel") via SheetJS, already
+  // loaded for file imports (window.XLSX). Always exports the FULL filtered set from
+  // CV.report.customerDataRows, regardless of the on-screen preview cap (see renderReport).
+  function exportCustomerDataExcel() {
+    var rows = CV.report && CV.report.customerDataRows;
+    if (!rows || !rows.length) { window.alert('ไม่มีข้อมูลให้ export ตามตัวกรองที่เลือก'); return; }
+    if (!window.XLSX) { window.alert('ไม่พบไลบรารีสร้างไฟล์ Excel กรุณาลองใหม่'); return; }
+    var data = rows.map(function (r) {
+      return {
+        'เลขคำสั่งซื้อ': r.orderId,
+        'ชื่อลูกค้า': r.customerName,
+        'รหัสลูกค้า': r.customerId,
+        'วันที่ทำสัญญา': r.contractDateDisp,
+        'ยอดคงเหลือก่อนผ่อนงวดที่ 1': r.beforeFirstDueDisp,
+        'วันที่เริ่มผ่อนงวดแรก': r.firstDueDateDisp,
+        'จำนวนงวดที่ต้องผ่อนทั้งหมด': r.instCount,
+        'จำนวนงวดที่ชำระแล้ว': r.paidCount,
+        'จำนวนเงินที่ชำระแล้ว': r.paidDisp,
+        'จำนวนงวดที่ค้างชำระ': r.overdueCount,
+        'จำนวนเงินที่ค้างชำระ': r.overdueDisp,
+        'จำนวนงวดที่ยังไม่ถึงกำหนดชำระ': r.notDueCount,
+        'จำนวนเงินที่ยังไม่ถึงกำหนดชำระ': r.notDueDisp
+      };
+    });
+    var ws = window.XLSX.utils.json_to_sheet(data);
+    var wb = window.XLSX.utils.book_new();
+    window.XLSX.utils.book_append_sheet(wb, ws, 'ข้อมูลลูกค้า');
+    var d = new Date();
+    var stamp = d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0');
+    window.XLSX.writeFile(wb, 'ข้อมูลลูกค้า_' + stamp + '.xlsx');
   }
 
   // ---------- File import ----------
@@ -6270,13 +6355,56 @@
         : '<div style="font-size:13px; color:#b3b0c4;">ยังไม่มีการนำเข้าไฟล์ email-api-report จาก Thaibulk (ดูที่เมนูอัพโหลดไฟล์)</div>'),
       ' margin-bottom:20px;'
     );
+    // Section 10: ข้อมูลลูกค้า (2026-08-08) — filters + a capped on-screen preview (this dataset can
+    // run into the thousands, per [[project-debt-tracker-site]] memory — rendering every row as raw
+    // HTML would be a real perf hit, unlike the Excel export itself which just needs the data, not
+    // DOM nodes) + the actual Excel export, which always covers the FULL filtered set regardless of
+    // the preview cap.
+    var CUST_PREVIEW_CAP = 100;
+    var custRows = r.customerDataRows;
+    var custCols = [
+      ['เลขคำสั่งซื้อ', 'orderId'], ['ชื่อลูกค้า', 'customerName'], ['รหัสลูกค้า', 'customerId'], ['วันที่ทำสัญญา', 'contractDateDisp'],
+      ['ยอดคงเหลือก่อนผ่อนงวดที่ 1', 'beforeFirstDueDisp'], ['วันที่เริ่มผ่อนงวดแรก', 'firstDueDateDisp'], ['จำนวนงวดทั้งหมด', 'instCount'],
+      ['งวดชำระแล้ว', 'paidCount'], ['เงินชำระแล้ว', 'paidDisp'], ['งวดค้างชำระ', 'overdueCount'], ['เงินค้างชำระ', 'overdueDisp'],
+      ['งวดยังไม่ถึงกำหนด', 'notDueCount'], ['เงินยังไม่ถึงกำหนด', 'notDueDisp']
+    ];
+    var section10 = cardWrap(
+      sectionHeader(10, '👥', 'ข้อมูลลูกค้า') +
+      '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; margin-bottom:16px;">' +
+        dateRangeFilter('📄', 'วันที่ทำสัญญาตั้งแต่ – ถึง', 'reportCustFrom', state.reportCustFrom, 'reportCustTo', state.reportCustTo) +
+        '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">🔒 ระบบล็อคเครื่อง</div>' +
+          '<select data-action="filter" data-key="reportCustLockSystem" style="width:100%; box-sizing:border-box; padding:9px 10px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13px; color:#2b2540;">' +
+            selOpt('all', 'ทุกสถานะ', state.reportCustLockSystem === 'all') + selOpt('Soti', 'Soti', state.reportCustLockSystem === 'Soti') + selOpt('Marena', 'Marena', state.reportCustLockSystem === 'Marena') + selOpt('none', 'ไม่มีในระบบล็อคเครื่อง', state.reportCustLockSystem === 'none') +
+          '</select></div>' +
+        '<div><div style="font-size:12px; color:#6b6785; margin-bottom:6px;">🔓 โหมดการล็อค</div>' +
+          '<select data-action="filter" data-key="reportCustLockMode" style="width:100%; box-sizing:border-box; padding:9px 10px; border-radius:10px; border:1px solid rgba(124,92,255,0.2); background:#fff; font-size:13px; color:#2b2540;">' +
+            selOpt('all', 'ทุกสถานะ', state.reportCustLockMode === 'all') + selOpt('Normal', 'Normal', state.reportCustLockMode === 'Normal') + selOpt('Hard lock', 'Hard lock', state.reportCustLockMode === 'Hard lock') + selOpt('Soft lock', 'Soft lock', state.reportCustLockMode === 'Soft lock') + selOpt('นำออกจากระบบแล้ว', 'นำออกจากระบบแล้ว', state.reportCustLockMode === 'นำออกจากระบบแล้ว') +
+          '</select></div>' +
+      '</div>' +
+      '<div style="display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; margin-bottom:14px;">' +
+        '<div style="font-size:12.5px; color:#6b6785;">พบ <b style="color:#2b2540;">' + custRows.length + '</b> รายการตามตัวกรอง' + (custRows.length > CUST_PREVIEW_CAP ? ' (แสดงตัวอย่าง ' + CUST_PREVIEW_CAP + ' รายการแรก — ดาวน์โหลดไฟล์เพื่อดูข้อมูลทั้งหมด)' : '') + '</div>' +
+        '<div data-action="exportCustomerDataExcel" style="background:linear-gradient(135deg,#12b886,#0b9268); color:#fff; padding:9px 18px; border-radius:12px; font-size:13.5px; font-weight:600; cursor:pointer; display:flex; align-items:center; gap:6px; white-space:nowrap;">⬇ Export เป็น Excel</div>' +
+      '</div>' +
+      (custRows.length
+        ? '<div style="overflow-x:auto; border-radius:12px; border:1px solid rgba(124,92,255,0.10);"><table style="width:100%; border-collapse:collapse; font-size:12.5px; min-width:1200px;"><thead><tr style="text-align:left; color:#6b6785; background:rgba(124,92,255,0.06);">' +
+            custCols.map(function (c) { return '<th style="padding:9px 12px; white-space:nowrap;">' + esc(c[0]) + '</th>'; }).join('') +
+          '</tr></thead><tbody>' +
+            custRows.slice(0, CUST_PREVIEW_CAP).map(function (row, idx) {
+              return '<tr style="background:' + (idx % 2 ? 'rgba(124,92,255,0.02)' : 'transparent') + ';">' +
+                custCols.map(function (c) { return '<td style="padding:8px 12px; color:#2b2540; white-space:nowrap;">' + esc(row[c[1]]) + '</td>'; }).join('') +
+              '</tr>';
+            }).join('') +
+          '</tbody></table></div>'
+        : '<div style="font-size:13px; color:#b3b0c4;">ไม่มีข้อมูลตามตัวกรองที่เลือก</div>'),
+      ' margin-bottom:20px;'
+    );
     return '<div>' +
       '<div style="display:flex; align-items:center; gap:12px; margin-bottom:4px;">' +
         '<div style="width:38px; height:38px; border-radius:12px; background:linear-gradient(135deg,#7c5cff,#6647e0); display:flex; align-items:center; justify-content:center; box-shadow:0 6px 16px rgba(124,92,255,0.3); font-size:18px;">📊</div>' +
         '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:21px; color:#2b2540;">Report</div>' +
       '</div>' +
       '<div style="font-size:12.5px; color:#8a86a3; margin-bottom:22px; margin-left:50px;">อัปเดตสดทุกครั้งที่ข้อมูลในระบบเปลี่ยนแปลง — เฉพาะผู้ดูแลระบบ (Admin) เท่านั้น</div>' +
-      section123 + section4 + section5 + section6 + section7 + section8 + section9 +
+      section123 + section4 + section5 + section6 + section7 + section8 + section9 + section10 +
       (state.reportDrilldownSeg ? renderReportDrilldownModal() : '') +
       (state.reportStatusDrilldownKind ? renderStatusDrilldownModal() : '') +
     '</div>';
@@ -7942,6 +8070,7 @@
         case 'reloadPage': window.location.reload(); break;
         case 'clearQuery': state.query = ''; render(); break;
         case 'exportCsv': exportFilteredCsv(CV.filteredOrders); break;
+        case 'exportCustomerDataExcel': exportCustomerDataExcel(); break;
         case 'downloadTemplate': downloadTemplate(t.getAttribute('data-type')); break;
         case 'clearToEmpty': if (window.confirm('ล้างข้อมูลทั้งหมดเพื่อเริ่มจากว่างเปล่า (พร้อมอัปโหลดข้อมูลจริง)?\n(ยกเลิกไม่ได้)')) resetAllData(false); break;
         case 'resetToSample': if (window.confirm('ล้างข้อมูลทั้งหมด และกลับไปเป็นข้อมูลตัวอย่าง?\n(ยกเลิกไม่ได้)')) resetAllData(true); break;
