@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-08.03';
+  var APP_BUILD = '2026-08-08.04';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -218,7 +218,7 @@
     confirmSendSms: 'send_sms', addSmsTemplate: 'send_sms', deleteSmsTemplate: 'send_sms',
     confirmSendEmail: 'send_letter', issueLetter: 'send_letter',
     onDebtFile: 'upload_files', onPaymentFile: 'upload_files', onCustomerInfo: 'upload_files', onLetterheadFile: 'upload_files', onEmailReportFile: 'upload_files', onSmsLogFile: 'upload_files', onLockSystemFile: 'upload_files',
-    deleteInstallment: 'delete_data', cancelOrder: 'delete_data',
+    deleteInstallment: 'delete_data', cancelOrder: 'delete_data', undoAccountLevelStatus: 'delete_data',
     // Full data wipe — too dangerous to leave as a togglable permission; admin-only no matter what.
     clearToEmpty: '__admin__', resetToSample: '__admin__',
     newStaffUser: '__admin__', editStaffUser: '__admin__', saveStaffUser: '__admin__',
@@ -3613,6 +3613,41 @@
     if (!window.confirm('ยืนยันยกเลิกบิล SO ' + (order.soDisplay || order.orderId) + ' ของลูกค้า ' + order.customerName + ' ?\n\nทุกงวดในบิลนี้ (ทั้งเครื่องหลักและอุปกรณ์เสริมถ้ามี) จะถูกตั้งสถานะเป็น "ยกเลิกบิล" ทันที (คนละสถานะกับ "ยกเลิกสัญญา คืนเครื่อง") และจะไม่นับเป็นยอดค้างชำระของบริษัทฯ อีกต่อไป')) return;
     var track = order.installments && order.installments.length ? 'main' : 'accessory';
     updateInstallment(orderId, anchor.no, 'status', 'ยกเลิกบิล', track);
+  }
+  // Undo a mistakenly-set account-level status (2026-08-08, per explicit user request: a customer's
+  // order was showing "ยกเลิกสัญญา คืนเครื่อง" when no cancellation/return ever actually happened).
+  // Deliberately DISTINCT from the normal lifecycle — stickyAccountStatusPatch's wasCancelled/
+  // wasSold/wasBillCancelled flags are intentionally permanent once a REAL cancellation/sale/mis-
+  // opened-bill happens (see that function's own comment: preserves the history even if a later
+  // payment makes a งวด look "current" again) — this is the one and only place in the app allowed to
+  // clear one of those flags, and only for genuinely correcting a data-entry mistake, never for
+  // "the customer paid something since being cancelled" (that's what the sticky flag is FOR). Resets
+  // every งวด (both tracks) still frozen on the given ACCOUNT_LEVEL_STATUSES value back to
+  // statusOverride:false so it recomputes live from real payment/due-date data again — same
+  // {status:'', statusOverride:false} pattern repairInvalidStatusOverrides already uses elsewhere in
+  // this file. Does NOT touch lockSystemMode or customerTrackingReturn (both were possibly auto-set
+  // by the mistaken cascade too, but there's no reliable way to know their pre-cascade value — left
+  // for staff to correct by hand via the order card's own dropdowns if needed, rather than guessing).
+  function undoAccountLevelStatus(orderId, status) {
+    var order = state.orders.find(function (o) { return o.orderId === orderId; });
+    if (!order || ACCOUNT_LEVEL_STATUSES.indexOf(status) === -1) return;
+    if (!window.confirm('ยืนยันแก้ไขสถานะบัญชี SO ' + (order.soDisplay || order.orderId) + ' ของลูกค้า ' + order.customerName + ' ?\n\nใช้เฉพาะกรณีสถานะ "' + status + '" นี้เกิดจากการตั้งค่าผิดพลาดเท่านั้น (ลูกค้าไม่ได้อยู่ในสถานะนี้จริง) — งวดทุกงวดที่ถูกตั้งสถานะนี้ไว้ (ทั้งเครื่องหลักและอุปกรณ์เสริม) จะถูกรีเซ็ตกลับไปคำนวณสถานะตามข้อมูลจริงแทน')) return;
+    state.orders = state.orders.map(function (o) {
+      if (o.orderId !== orderId) return o;
+      function resetList(list) {
+        return (list || []).map(function (i) {
+          if (i.status !== status) return i;
+          return Object.assign({}, i, { status: '', statusOverride: false });
+        });
+      }
+      var patch = { installments: resetList(o.installments), accessoryInstallments: resetList(o.accessoryInstallments) };
+      if (status === 'ยกเลิกสัญญา คืนเครื่อง') patch.wasCancelled = false;
+      else if (status === 'จำหน่ายชื่อให้บริษัทติดตามหนี้') patch.wasSold = false;
+      else if (status === 'ยกเลิกบิล') patch.wasBillCancelled = false;
+      return Object.assign({}, o, patch);
+    });
+    state.hasUnsavedChanges = true;
+    render();
   }
   // Splits totalDue evenly across n งวด, rounded to the nearest satang — the raw quotient (e.g.
   // 15,295 / 6 = 2549.1666...) used to be stored as-is, so every individual งวด LOOKED like a clean
@@ -7446,9 +7481,19 @@
               '</select>' : '') +
             '</div>';
           })() +
-          (ord.isSold ? '<div style="background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">📤 จำหน่ายชื่อให้บริษัทติดตามหนี้</div>' : '') +
-          (ord.isCancelled ? '<div style="background:' + hexToRgba('#4b5563', 0.14) + '; color:#4b5563; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">↩️ ยกเลิกสัญญา คืนเครื่อง</div>' : '') +
-          (ord.isBillCancelled ? '<div style="background:' + hexToRgba('#0c8599', 0.14) + '; color:#0c8599; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600;">🗑 ยกเลิกบิล</div>'
+          // แก้ไข (✏️) on each of these 3 pills undoes a MISTAKENLY-set account-level status (2026-08-08,
+          // per explicit user request: a customer's order showed ยกเลิกสัญญา คืนเครื่อง when nothing was
+          // ever actually cancelled/returned) — see undoAccountLevelStatus. Distinct from cancelOrder's
+          // 🗑 ยกเลิกบิล button below, which is the opposite direction (marking a REAL mistake bill).
+          (ord.isSold ? '<div style="display:inline-flex; align-items:center; gap:3px; background:' + hexToRgba('#7c5cff', 0.14) + '; color:#7c5cff; padding:3px 5px 3px 12px; border-radius:20px; font-size:12px; font-weight:600;">📤 จำหน่ายชื่อให้บริษัทติดตามหนี้' +
+            '<button data-action="undoAccountLevelStatus" data-order="' + esc(ord.orderId) + '" data-status="จำหน่ายชื่อให้บริษัทติดตามหนี้" title="แก้ไข — ใช้เมื่อสถานะนี้เกิดจากการตั้งค่าผิดพลาด ลูกค้าไม่ได้ถูกจำหน่ายชื่อจริง" style="border:none; background:rgba(255,255,255,0.55); color:#7c5cff; width:18px; height:18px; border-radius:50%; font-size:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">✏️</button>' +
+          '</div>' : '') +
+          (ord.isCancelled ? '<div style="display:inline-flex; align-items:center; gap:3px; background:' + hexToRgba('#4b5563', 0.14) + '; color:#4b5563; padding:3px 5px 3px 12px; border-radius:20px; font-size:12px; font-weight:600;">↩️ ยกเลิกสัญญา คืนเครื่อง' +
+            '<button data-action="undoAccountLevelStatus" data-order="' + esc(ord.orderId) + '" data-status="ยกเลิกสัญญา คืนเครื่อง" title="แก้ไข — ใช้เมื่อสถานะนี้เกิดจากการตั้งค่าผิดพลาด ลูกค้าไม่ได้ยกเลิกสัญญา/คืนเครื่องจริง" style="border:none; background:rgba(255,255,255,0.55); color:#4b5563; width:18px; height:18px; border-radius:50%; font-size:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">✏️</button>' +
+          '</div>' : '') +
+          (ord.isBillCancelled ? '<div style="display:inline-flex; align-items:center; gap:3px; background:' + hexToRgba('#0c8599', 0.14) + '; color:#0c8599; padding:3px 5px 3px 12px; border-radius:20px; font-size:12px; font-weight:600;">🗑 ยกเลิกบิล' +
+              '<button data-action="undoAccountLevelStatus" data-order="' + esc(ord.orderId) + '" data-status="ยกเลิกบิล" title="แก้ไข — ใช้เมื่อสถานะนี้เกิดจากการตั้งค่าผิดพลาด" style="border:none; background:rgba(255,255,255,0.55); color:#0c8599; width:18px; height:18px; border-radius:50%; font-size:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">✏️</button>' +
+            '</div>'
             : (ord.isCancelled ? '' : '<button data-action="cancelOrder" data-order="' + esc(ord.orderId) + '" title="ตั้งทุกงวดในบิลนี้เป็น \'ยกเลิกบิล\' — บิลที่เปิดผิด/มีบิลใหม่แทนแล้ว ไม่นับเป็นหนี้ของบริษัทฯ อีกต่อไป (คนละสถานะกับยกเลิกสัญญา คืนเครื่อง)" style="border:1px solid rgba(12,133,153,0.35); background:#fff; color:#0c8599; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;">🗑 ยกเลิกบิล</button>')) +
         '</div>' +
         '<div style="display:grid; grid-template-columns:2fr 1fr; gap:16px; margin-bottom:16px;">' +
@@ -7958,6 +8003,7 @@
           break;
         }
         case 'cancelOrder': cancelOrder(t.getAttribute('data-order')); break;
+        case 'undoAccountLevelStatus': undoAccountLevelStatus(t.getAttribute('data-order'), t.getAttribute('data-status')); break;
         case 'openSendEmail': openSendEmailModal(t.getAttribute('data-order'), t.getAttribute('data-track')); break;
         case 'closeSendEmailModal': closeSendEmailModal(); break;
         case 'confirmSendEmail': confirmSendEmail(); break;
