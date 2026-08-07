@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-08.06';
+  var APP_BUILD = '2026-08-08.07';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -926,6 +926,9 @@
     // rarely enough that this doesn't need the full 3-way merge machinery orders/notes get. Falls
     // back to whatever's already local (never blank) if the snapshot predates this field existing.
     if (Array.isArray(data.smsTemplates) && data.smsTemplates.length) state.smsTemplates = data.smsTemplates;
+    // Must run AFTER state.smsTemplates is updated above — it reads state.smsTemplates internally
+    // (see guessSmsTemplateName) to identify which template an untagged entry's message came from.
+    state.orders = repairMissingSmsTemplateNames(state.orders);
     if (data.letterheadImageUrl && data.letterheadImageUrl !== state.letterheadImageUrl) {
       state.letterheadImageUrl = data.letterheadImageUrl;
       state.letterheadResolvedUrl = null; // another client changed it — stale cached blob: URL, re-resolve on next preview
@@ -1539,6 +1542,7 @@
     state.customerTrackingReturn = syncFix.trackingReturn;
     state.customerTrackingReturnAt = syncFix.trackingReturnAt;
     state.orders = repairDuplicateRecoveredSmsEntries(state.orders);
+    state.orders = repairMissingSmsTemplateNames(state.orders);
   })();
 
   // ---------- Derivations ----------
@@ -5666,6 +5670,109 @@
   function normalizeMessageText(s) {
     return String(s || '').replace(/\s+/g, ' ').trim();
   }
+  // Turns a template body (possibly containing {ชื่อ}/{ยอดค้าง}/etc placeholders) into a regex that
+  // matches any RESOLVED text that template could have produced — each {...} token becomes a
+  // non-greedy wildcard, everything else is matched literally (whitespace-normalized first, same as
+  // normalizeMessageText, so the double-space-style drift seen in real template bodies doesn't break
+  // this either). Used by guessSmsTemplateName below to identify which template produced a given
+  // sent message even when the message itself has no template name recorded — see there for why that
+  // gap exists. Splits on a plain alphanumeric sentinel (untouched by regex-escaping, so safe to
+  // split on after escaping) rather than trying to regex-match the escaped placeholder syntax
+  // in-place, which gets fiddly once the braces themselves are escaped too. The sentinel replaces
+  // {...} with NO added surrounding whitespace — real templates sometimes butt a placeholder right up
+  // against the preceding word (e.g. "คุณ{ชื่อ}", no space), and padding it here would force a space
+  // that never existed in the real resolved text, silently breaking the match (caught via a real
+  // template body + message pair from the user, 2026-08-08 — "คุณ{ชื่อ}" needed zero space before
+  // the wildcard, not one).
+  function templateToRegex(body) {
+    var SENTINEL = 'SMSTPLPLACEHOLDERTOKEN';
+    var withSentinels = String(body || '').replace(/\{[^}]*\}/g, SENTINEL);
+    var normalized = normalizeMessageText(withSentinels);
+    if (!normalized) return null;
+    var escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    var pattern = escaped.split(SENTINEL).join('[\\s\\S]*?');
+    try { return new RegExp('^\\s*' + pattern + '\\s*$'); } catch (e) { return null; }
+  }
+  // Identifies which CURRENTLY-configured SMS template produced a given resolved message — used both
+  // to backfill h.template on a recovered/recreated smsHistory entry (see recreateEntry in
+  // onSmsLogFileChange) and by repairMissingSmsTemplateNames below (retroactive backfill for entries
+  // already missing it). Two tiers: (1) exact match against a template with NO placeholders at all
+  // (ติดตามหนี้ 3/4 confirmed by the user 2026-08-08 — every send is byte-identical text); (2)
+  // structural regex match for templates WITH placeholders (ติดตามหนี้ 1/2 — confirmed by the user
+  // 2026-08-08 via real screenshots of the live template bodies), matched against the placeholder
+  // skeleton rather than exact text since the resolved values differ per customer/send. Only returns
+  // a name when EXACTLY ONE template's pattern matches — 0 or 2+ matches returns null rather than
+  // guessing, same conservative rule every other matching tier in this file follows.
+  function guessSmsTemplateName(message, smsTemplates) {
+    var msg = normalizeMessageText(message);
+    if (!msg) return null;
+    var staticMatch = null, staticAmbiguous = false;
+    var structuralMatches = [];
+    (smsTemplates || []).forEach(function (t) {
+      var body = normalizeMessageText(t.body);
+      if (!body) return;
+      if (!/\{[^}]+\}/.test(body)) {
+        if (body === msg) { if (staticMatch && staticMatch !== t.name) staticAmbiguous = true; staticMatch = t.name; }
+        return;
+      }
+      var re = templateToRegex(t.body);
+      if (re && re.test(msg)) structuralMatches.push(t.name);
+    });
+    if (staticMatch && !staticAmbiguous) return staticMatch;
+    if (structuralMatches.length === 1) return structuralMatches[0];
+    return null;
+  }
+  // One-time repair (2026-08-08) — backfills h.template on smsHistory/accessorySmsHistory/
+  // installment-level smsHistory entries that have a real message but no template recorded (either
+  // sent without picking one, or created by the recovery mechanism below before this fix, which never
+  // set it — see recreateEntry). Uses guessSmsTemplateName against whatever templates are CURRENTLY
+  // configured, so a template edited/renamed since the entry was sent won't be recognized — that's an
+  // accepted limitation (there's no way to recover historical template wording), same caveat
+  // guessSmsTemplateName's own callers already carry.
+  function repairMissingSmsTemplateNames(orders) {
+    var smsTemplates = state.smsTemplates;
+    var anyChanged = false;
+    function fixList(list) {
+      if (!list || !list.length) return list;
+      var changed = false;
+      var fixed = list.map(function (h) {
+        if (h.template || !h.message) return h;
+        var guessed = guessSmsTemplateName(h.message, smsTemplates);
+        if (!guessed) return h;
+        changed = true;
+        return Object.assign({}, h, { template: guessed });
+      });
+      return changed ? fixed : list;
+    }
+    var out = orders.map(function (o) {
+      var smsHistory = fixList(o.smsHistory);
+      var accessorySmsHistory = fixList(o.accessorySmsHistory);
+      var instsChanged = false;
+      var installments = (o.installments || []).map(function (i) {
+        var h = fixList(i.smsHistory);
+        if (h === i.smsHistory) return i;
+        instsChanged = true;
+        return Object.assign({}, i, { smsHistory: h });
+      });
+      var accInstsChanged = false;
+      var accessoryInstallments = (o.accessoryInstallments || []).map(function (i) {
+        var h = fixList(i.smsHistory);
+        if (h === i.smsHistory) return i;
+        accInstsChanged = true;
+        return Object.assign({}, i, { smsHistory: h });
+      });
+      var orderChanged = smsHistory !== o.smsHistory || accessorySmsHistory !== o.accessorySmsHistory || instsChanged || accInstsChanged;
+      if (!orderChanged) return o;
+      anyChanged = true;
+      return Object.assign({}, o, {
+        smsHistory: smsHistory, accessorySmsHistory: accessorySmsHistory,
+        installments: instsChanged ? installments : o.installments,
+        accessoryInstallments: accInstsChanged ? accessoryInstallments : o.accessoryInstallments
+      });
+    });
+    if (anyChanged) _lastRepairChanged = true;
+    return anyChanged ? out : orders;
+  }
   // One-time repair (2026-08-08) for the bug above: undoes the false "recovered" duplicates it
   // already created in production before this fix shipped. Any smsHistory/accessorySmsHistory/
   // installment-level smsHistory entry tagged with the exact recovery `by` string is very likely a
@@ -5767,23 +5874,11 @@
           }
         });
       }
-      // Some templates (e.g. "ติดตามหนี้ 3"/"ติดตามหนี้ 4" — confirmed by the user 2026-08-08) have
-      // NO placeholders at all, so every send of that template is byte-identical text regardless of
-      // customer — and critically, carries no SO number either. When a log row's SO can't be parsed
-      // AND its phone has 2+ local candidates (so tier 1's exact phone+message index missed, e.g.
-      // because the SAME phone got this exact static text more than once, or the live template body
-      // has since been re-saved with different whitespace), matching which template this row actually
-      // is can still narrow the field: map each CURRENTLY-configured template with zero unresolved
-      // {...} placeholders to its own name, look up which one the row's message equals, then narrow
-      // that phone's candidates to just the local entries whose OWN h.template matches. A template
-      // that still has placeholders (ติดตามหนี้ 1/2, resolved per-customer at send time) can never
-      // equal this map's key here, so this only ever activates for genuinely static wording.
-      var staticTemplateNameByBody = {};
-      (state.smsTemplates || []).forEach(function (t) {
-        var body = normalizeMessageText(t.body);
-        if (body && !/\{[^}]+\}/.test(body)) staticTemplateNameByBody[body] = t.name;
-      });
-      function templateNameForMessage(msg) { return staticTemplateNameByBody[msg] || null; }
+      // When a log row's SO can't be parsed AND its phone has 0/2+ local candidates, identifying
+      // which template this row actually is (via the shared guessSmsTemplateName — covers both
+      // static templates like ติดตามหนี้ 3/4 and placeholder ones like ติดตามหนี้ 1/2) can still
+      // narrow the field, same as the big comment on guessSmsTemplateName explains.
+      function templateNameForMessage(msg) { return guessSmsTemplateName(msg, state.smsTemplates); }
       orders.forEach(function (o) {
         indexList(o.smsHistory, o.orderId);
         indexList(o.accessorySmsHistory, o.accessoryOrderId || o.orderId);
@@ -5800,13 +5895,17 @@
       }
       // Only reachable once tier 2's phone+SO lookup found a real order but zero smsHistory record
       // for this phone anywhere on it — see the big comment above for why recreating here is safe.
+      // template is best-effort backfilled via guessSmsTemplateName (2026-08-08, per user report that
+      // recreated entries were showing "(ไม่ระบุ Template)" in the Report page's per-template
+      // breakdown even when the message content clearly came from a real, identifiable template) —
+      // '' when no confident guess, same as a genuinely-untemplated manual send would show.
       function recreateEntry(soId, phone, message, sentAtRaw) {
         var found = findOrderBySoId(soId);
         if (!found) return null;
         var entry = {
           at: formatReportTimestamp(sentAtRaw),
           by: 'กู้คืนจากประวัติ Thaibulk (ของเดิมไม่มีบันทึกไว้ในระบบ)',
-          phone: phone, message: message
+          phone: phone, message: message, template: guessSmsTemplateName(message, state.smsTemplates) || ''
         };
         found.order[found.field] = (found.order[found.field] || []).concat([entry]);
         var p = restoreThaiLeadingZero(normalizeLockMatchPhone(phone));
