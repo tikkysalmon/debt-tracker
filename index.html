@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-07.02';
+  var APP_BUILD = '2026-08-07.03';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1452,6 +1452,8 @@
     uploadMsgLockSystem: '',
     reportDateFrom: '',
     reportDateTo: '',
+    dashboardPtDateFrom: '', dashboardPtDateTo: '',
+    dashboardDueDateFrom: '', dashboardDueDateTo: '',
     reportDrilldownSeg: null, reportDrilldownGroup: null,
     reportStatusDrilldownKind: null, reportStatusDrilldownKey: null, reportStatusDrilldownMonth: null,
     reportCollapsed: {},
@@ -1862,12 +1864,24 @@
     // order can land in more than one bucket) — but "ชำระแล้ว" only counts orders that are
     // ENTIRELY in the paid group, since a couple of paid installments on an otherwise-open order
     // isn't really "paid" from a collections standpoint.
+    // "แยกสถานะการชำระ" date-range filter (2026-08-07, per explicit user request) — same
+    // วันที่ทำสัญญา (contractDate) convention as the ประเภทการซื้อ filter above, independent state
+    // fields since the two sections may need different ranges. Blank on both sides (the default)
+    // is unfiltered, identical to before this change.
+    var dueFrom = state.dashboardDueDateFrom, dueTo = state.dashboardDueDateTo;
+    var dueDateFilterActive = !!(dueFrom || dueTo);
+    var dueOrders = dueDateFilterActive ? orders.filter(function (o) {
+      if (!o.contractDate) return false;
+      if (dueFrom && o.contractDate < dueFrom) return false;
+      if (dueTo && o.contractDate > dueTo) return false;
+      return true;
+    }) : orders;
     var dueGroups = {};
     function ensureDueGroup(g) {
       if (!dueGroups[g]) dueGroups[g] = { orderSet: {}, amount: 0, subOrderSets: {}, subAmounts: {} };
       return dueGroups[g];
     }
-    orders.forEach(function (o) {
+    dueOrders.forEach(function (o) {
       // Combine main + accessory (ดาวน์+อุปกรณ์เสริม) installments — a fully-paid device with an
       // overdue accessory bill must NOT show up as "ชำระแล้ว", it's still a real open balance.
       var allInsts = o.installments.concat(o.accessoryInstallments || []);
@@ -1914,7 +1928,15 @@
     // children (ชำระแล้ว/ชำระบางส่วน sub-rows) are left as real, unscaled per-installment figures —
     // they intentionally will NOT sum to this total; they're "how much came in through fully-vs-
     // partially-paid installments," a different, narrower question than "total money collected."
-    if (dueGroups['ชำระแล้ว']) dueGroups['ชำระแล้ว'].amount = paidSum;
+    // Once the date filter above is active, this widget is no longer the same population as the top
+    // KPI (that one stays unfiltered, per the user's ask to scope this filter to just this section)
+    // — so ชำระแล้ว is re-derived from just dueOrders' active subset instead of pinned to the global
+    // paidSum in that case. Unfiltered (the default) behaves byte-identical to before this change.
+    if (dueGroups['ชำระแล้ว']) {
+      dueGroups['ชำระแล้ว'].amount = dueDateFilterActive
+        ? dueOrders.filter(function (o) { return !o.isCancelled && !o.isSold && !o.isBillCancelled; }).reduce(function (s, o) { return s + o.totalPaidFullRaw; }, 0)
+        : paidSum;
+    }
     var dueDateBreakdown = STATUS_GROUP_META
       .filter(function (g) { return dueGroups[g.label]; })
       .map(function (g) {
@@ -1978,8 +2000,22 @@
     var ageOverdueSummary = { total: activeOrders.filter(function (o) { return o.lateCount >= 1; }).length, buckets: buildAgeSummary(1) };
     var ageBadDebtSummary = { total: activeOrders.filter(function (o) { return o.lateCount >= 2; }).length, buckets: buildAgeSummary(2) };
 
+    // สรุปข้อมูลแยกตามประเภทการซื้อ — date-range filter (2026-08-07, per explicit user request),
+    // scoped to just this section (not the rest of the dashboard) since it's the one the user
+    // pointed at. Filters by วันที่ทำสัญญา (contractDate), same field the Tracking page's own
+    // contractFrom/contractTo filter and the Report page's "แยกตามเดือนที่ทำสัญญา" breakdowns use —
+    // consistent with every other "by contract date" grouping already in this app. Both ends
+    // optional/independently usable, same "blank = no bound" convention as every other date-range
+    // filter here; blank on both sides (the default) means unfiltered, identical to before this change.
+    var ptFrom = state.dashboardPtDateFrom, ptTo = state.dashboardPtDateTo;
+    var ptOrders = (ptFrom || ptTo) ? orders.filter(function (o) {
+      if (!o.contractDate) return false;
+      if (ptFrom && o.contractDate < ptFrom) return false;
+      if (ptTo && o.contractDate > ptTo) return false;
+      return true;
+    }) : orders;
     var ptMap = {};
-    orders.forEach(function (o) {
+    ptOrders.forEach(function (o) {
       if (!ptMap[o.purchaseType]) ptMap[o.purchaseType] = { orders: [] };
       ptMap[o.purchaseType].orders.push(o);
     });
@@ -6375,7 +6411,10 @@
 
     // Payment-status breakdown (all installments of all customers combined)
     html += '<div style="background:rgba(255,255,255,0.6); backdrop-filter:blur(18px); border:1px solid rgba(255,255,255,0.85); border-radius:20px; padding:22px 24px; margin-bottom:24px; box-shadow:0 8px 26px rgba(124,92,255,0.08);">' +
-      '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540; margin-bottom:16px;">แยกสถานะการชำระ</div>';
+      '<div style="display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; margin-bottom:16px;">' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540;">แยกสถานะการชำระ</div>' +
+        '<div style="max-width:340px; width:100%;">' + dateRangeFilter('📄', 'วันที่ทำสัญญาตั้งแต่ – ถึง', 'dashboardDueDateFrom', state.dashboardDueDateFrom, 'dashboardDueDateTo', state.dashboardDueDateTo) + '</div>' +
+      '</div>';
     if (d.dueDateHasData) {
       html += '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:16px;">' +
         d.dueDateBreakdown.map(function (g) {
@@ -6457,8 +6496,11 @@
 
     // Purchase type groups
     html += '<div style="margin-bottom:24px;">' +
-      '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540; display:flex; align-items:center; gap:8px; margin-bottom:14px;">✅ สรุปข้อมูลแยกตามประเภทการซื้อ</div>' +
-      '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:18px;">' +
+      '<div style="display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; margin-bottom:14px;">' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540; display:flex; align-items:center; gap:8px;">✅ สรุปข้อมูลแยกตามประเภทการซื้อ</div>' +
+        '<div style="max-width:340px; width:100%;">' + dateRangeFilter('📄', 'วันที่ทำสัญญาตั้งแต่ – ถึง', 'dashboardPtDateFrom', state.dashboardPtDateFrom, 'dashboardPtDateTo', state.dashboardPtDateTo) + '</div>' +
+      '</div>' +
+      (d.purchaseTypeGroups.length ? '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:18px;">' +
         d.purchaseTypeGroups.map(function (pt) {
           return '<div style="background:rgba(255,255,255,0.6); backdrop-filter:blur(18px); border:1.5px solid rgba(124,92,255,0.25); border-radius:20px; padding:20px 22px; box-shadow:0 8px 24px rgba(124,92,255,0.08);">' +
             '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;"><div style="font-weight:600; font-size:14.5px; color:#2b2540;">✅ ' + esc(pt.type || '(ไม่ระบุ)') + '</div><div style="background:rgba(124,92,255,0.1); color:#7c5cff; padding:4px 12px; border-radius:20px; font-size:12px; font-weight:600;">' + pt.count + ' ราย</div></div>' +
@@ -6484,7 +6526,7 @@
             '</div>' +
           '</div>';
         }).join('') +
-      '</div>' +
+      '</div>' : '<div style="font-size:13px; color:#b3b0c4;">ไม่มีข้อมูลในช่วงวันที่ที่เลือก</div>') +
     '</div>';
 
     // Lifecycle summaries (cancelled + sold)
