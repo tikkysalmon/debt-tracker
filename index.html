@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-07.04';
+  var APP_BUILD = '2026-08-07.05';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1864,13 +1864,27 @@
     // order can land in more than one bucket) — but "ชำระแล้ว" only counts orders that are
     // ENTIRELY in the paid group, since a couple of paid installments on an otherwise-open order
     // isn't really "paid" from a collections standpoint.
-    // "แยกสถานะการชำระ" date-range filter (2026-08-07, per explicit user request; field switched
-    // from วันที่ทำสัญญา to วันที่ครบกำหนดชำระ same day per follow-up request) — an order matches when
-    // AT LEAST ONE of its installments (main or accessory) has a dueDate in range, same "any งวด
-    // matches" convention the Tracking page's own ครบกำหนดตั้งแต่-ถึง filter already uses
-    // (instMatchesPerInstFilters/allInstsOf). Independent state fields from the ประเภทการซื้อ filter
-    // below since the two sections may need different ranges. Blank on both sides (the default) is
-    // unfiltered, identical to before this change.
+    // Date-range-by-due-date filter helpers, shared by "แยกสถานะการชำระ" and "สรุปข้อมูลแยกตามประเภท
+    // การซื้อ" below (2026-08-07, per explicit user request; field switched from วันที่ทำสัญญา to
+    // วันที่ครบกำหนดชำระ same day, then fixed same day again after a user report that the shown
+    // AMOUNTS weren't actually changing with the date range — the first version only used the date
+    // range to decide which ORDERS to include, then still summed each included order's FULL,
+    // unscoped installment list, so an order with even one matching งวด dragged its entire history
+    // into the totals. `instsInDueRange` now does the real filtering — every amount/count below is
+    // computed from just the installments whose dueDate actually falls in range, not "installments
+    // of any order that happens to have one such งวด." `orderHasInstDueInRange` is a cheaper `.some()`
+    // boolean check, used only where an ORDER-level inclusion decision is genuinely what's needed
+    // (see the ประเภทการซื้อ section below — contractRaw/paidRaw/count there are whole-order figures
+    // with no due-date dimension of their own).
+    function instsInDueRange(insts, from, to) {
+      if (!from && !to) return insts;
+      return insts.filter(function (i) {
+        if (!i.dueDate) return false;
+        if (from && i.dueDate < from) return false;
+        if (to && i.dueDate > to) return false;
+        return true;
+      });
+    }
     function orderHasInstDueInRange(o, from, to) {
       return o.installments.concat(o.accessoryInstallments || []).some(function (i) {
         if (!i.dueDate) return false;
@@ -1881,16 +1895,17 @@
     }
     var dueFrom = state.dashboardDueDateFrom, dueTo = state.dashboardDueDateTo;
     var dueDateFilterActive = !!(dueFrom || dueTo);
-    var dueOrders = dueDateFilterActive ? orders.filter(function (o) { return orderHasInstDueInRange(o, dueFrom, dueTo); }) : orders;
     var dueGroups = {};
     function ensureDueGroup(g) {
       if (!dueGroups[g]) dueGroups[g] = { orderSet: {}, amount: 0, subOrderSets: {}, subAmounts: {} };
       return dueGroups[g];
     }
-    dueOrders.forEach(function (o) {
+    orders.forEach(function (o) {
       // Combine main + accessory (ดาวน์+อุปกรณ์เสริม) installments — a fully-paid device with an
       // overdue accessory bill must NOT show up as "ชำระแล้ว", it's still a real open balance.
-      var allInsts = o.installments.concat(o.accessoryInstallments || []);
+      // Scoped to just the in-range งวด when the date filter is active — see the big comment above.
+      var allInsts = instsInDueRange(o.installments.concat(o.accessoryInstallments || []), dueFrom, dueTo);
+      if (!allInsts.length) return;
       var groupsPerInst = allInsts.map(function (i) { return STATUS_TO_GROUP[i.effectiveStatus] || i.effectiveStatus; });
       var allPaid = groupsPerInst.length > 0 && groupsPerInst.every(function (g) { return g === 'ชำระแล้ว'; });
       // Which installments actually count toward a bucket for this order — same exclusion as
@@ -1935,14 +1950,12 @@
     // they intentionally will NOT sum to this total; they're "how much came in through fully-vs-
     // partially-paid installments," a different, narrower question than "total money collected."
     // Once the date filter above is active, this widget is no longer the same population as the top
-    // KPI (that one stays unfiltered, per the user's ask to scope this filter to just this section)
-    // — so ชำระแล้ว is re-derived from just dueOrders' active subset instead of pinned to the global
-    // paidSum in that case. Unfiltered (the default) behaves byte-identical to before this change.
-    if (dueGroups['ชำระแล้ว']) {
-      dueGroups['ชำระแล้ว'].amount = dueDateFilterActive
-        ? dueOrders.filter(function (o) { return !o.isCancelled && !o.isSold && !o.isBillCancelled; }).reduce(function (s, o) { return s + o.totalPaidFullRaw; }, 0)
-        : paidSum;
-    }
+    // KPI (that one stays unfiltered, per the user's ask to scope this filter to just this section),
+    // AND เงินดาวน์ (paidSum's other component) has no due date of its own to be "in range" of — so
+    // the pin is skipped entirely when filtered, leaving the naturally-computed, already-due-date-
+    // scoped per-installment sum from the loop above to stand (a purer "paid on งวด due in this
+    // range" figure). Unfiltered (the default) behaves byte-identical to before this change.
+    if (!dueDateFilterActive && dueGroups['ชำระแล้ว']) dueGroups['ชำระแล้ว'].amount = paidSum;
     var dueDateBreakdown = STATUS_GROUP_META
       .filter(function (g) { return dueGroups[g.label]; })
       .map(function (g) {
@@ -2009,9 +2022,14 @@
     // สรุปข้อมูลแยกตามประเภทการซื้อ — date-range filter (2026-08-07, per explicit user request),
     // scoped to just this section (not the rest of the dashboard) since it's the one the user
     // pointed at. Field switched from วันที่ทำสัญญา to วันที่ครบกำหนดชำระ same day per follow-up
-    // request — an order matches when at least one installment (main or accessory) has a dueDate in
-    // range, same convention as the "แยกสถานะการชำระ" filter above (orderHasInstDueInRange). Blank on
-    // both sides (the default) means unfiltered, identical to before this change.
+    // request. WHICH ORDERS count toward this purchase type (and their whole-order figures —
+    // ยอดรวมสัญญา/ชำระแล้ว/count/ยกเลิก.../จำหน่ายชื่อฯ/ยกเลิกบิล, none of which have a due-date
+    // dimension of their own) still uses order-level inclusion (orderHasInstDueInRange: at least one
+    // installment due in range) — but ค้างชำระ/หนี้สงสัยจะสูญ/ยังไม่ถึงกำหนด below are genuinely
+    // per-installment, due-date-relevant figures, and are scoped to just the in-range งวด
+    // (instsInDueRange) rather than every installment of an included order — fixed same day after a
+    // user report that these amounts weren't changing with the date range (the first cut only used
+    // the range to decide inclusion, then still summed each included order's FULL installment list).
     var ptFrom = state.dashboardPtDateFrom, ptTo = state.dashboardPtDateTo;
     var ptOrders = (ptFrom || ptTo) ? orders.filter(function (o) { return orderHasInstDueInRange(o, ptFrom, ptTo); }) : orders;
     var ptMap = {};
@@ -2037,7 +2055,7 @@
       // number on the dashboard.
       var overdueRaw = 0, badDebtRaw = 0, notDueRaw = 0;
       activeList.forEach(function (o) {
-        o.installments.concat(o.accessoryInstallments || []).forEach(function (i) {
+        instsInDueRange(o.installments.concat(o.accessoryInstallments || []), ptFrom, ptTo).forEach(function (i) {
           var outstanding = Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0));
           var grp = STATUS_TO_GROUP[i.effectiveStatus];
           if (grp === 'ค้างชำระ') overdueRaw += outstanding;
