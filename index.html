@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-07.03';
+  var APP_BUILD = '2026-08-07.04';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1864,18 +1864,24 @@
     // order can land in more than one bucket) — but "ชำระแล้ว" only counts orders that are
     // ENTIRELY in the paid group, since a couple of paid installments on an otherwise-open order
     // isn't really "paid" from a collections standpoint.
-    // "แยกสถานะการชำระ" date-range filter (2026-08-07, per explicit user request) — same
-    // วันที่ทำสัญญา (contractDate) convention as the ประเภทการซื้อ filter above, independent state
-    // fields since the two sections may need different ranges. Blank on both sides (the default)
-    // is unfiltered, identical to before this change.
+    // "แยกสถานะการชำระ" date-range filter (2026-08-07, per explicit user request; field switched
+    // from วันที่ทำสัญญา to วันที่ครบกำหนดชำระ same day per follow-up request) — an order matches when
+    // AT LEAST ONE of its installments (main or accessory) has a dueDate in range, same "any งวด
+    // matches" convention the Tracking page's own ครบกำหนดตั้งแต่-ถึง filter already uses
+    // (instMatchesPerInstFilters/allInstsOf). Independent state fields from the ประเภทการซื้อ filter
+    // below since the two sections may need different ranges. Blank on both sides (the default) is
+    // unfiltered, identical to before this change.
+    function orderHasInstDueInRange(o, from, to) {
+      return o.installments.concat(o.accessoryInstallments || []).some(function (i) {
+        if (!i.dueDate) return false;
+        if (from && i.dueDate < from) return false;
+        if (to && i.dueDate > to) return false;
+        return true;
+      });
+    }
     var dueFrom = state.dashboardDueDateFrom, dueTo = state.dashboardDueDateTo;
     var dueDateFilterActive = !!(dueFrom || dueTo);
-    var dueOrders = dueDateFilterActive ? orders.filter(function (o) {
-      if (!o.contractDate) return false;
-      if (dueFrom && o.contractDate < dueFrom) return false;
-      if (dueTo && o.contractDate > dueTo) return false;
-      return true;
-    }) : orders;
+    var dueOrders = dueDateFilterActive ? orders.filter(function (o) { return orderHasInstDueInRange(o, dueFrom, dueTo); }) : orders;
     var dueGroups = {};
     function ensureDueGroup(g) {
       if (!dueGroups[g]) dueGroups[g] = { orderSet: {}, amount: 0, subOrderSets: {}, subAmounts: {} };
@@ -2002,18 +2008,12 @@
 
     // สรุปข้อมูลแยกตามประเภทการซื้อ — date-range filter (2026-08-07, per explicit user request),
     // scoped to just this section (not the rest of the dashboard) since it's the one the user
-    // pointed at. Filters by วันที่ทำสัญญา (contractDate), same field the Tracking page's own
-    // contractFrom/contractTo filter and the Report page's "แยกตามเดือนที่ทำสัญญา" breakdowns use —
-    // consistent with every other "by contract date" grouping already in this app. Both ends
-    // optional/independently usable, same "blank = no bound" convention as every other date-range
-    // filter here; blank on both sides (the default) means unfiltered, identical to before this change.
+    // pointed at. Field switched from วันที่ทำสัญญา to วันที่ครบกำหนดชำระ same day per follow-up
+    // request — an order matches when at least one installment (main or accessory) has a dueDate in
+    // range, same convention as the "แยกสถานะการชำระ" filter above (orderHasInstDueInRange). Blank on
+    // both sides (the default) means unfiltered, identical to before this change.
     var ptFrom = state.dashboardPtDateFrom, ptTo = state.dashboardPtDateTo;
-    var ptOrders = (ptFrom || ptTo) ? orders.filter(function (o) {
-      if (!o.contractDate) return false;
-      if (ptFrom && o.contractDate < ptFrom) return false;
-      if (ptTo && o.contractDate > ptTo) return false;
-      return true;
-    }) : orders;
+    var ptOrders = (ptFrom || ptTo) ? orders.filter(function (o) { return orderHasInstDueInRange(o, ptFrom, ptTo); }) : orders;
     var ptMap = {};
     ptOrders.forEach(function (o) {
       if (!ptMap[o.purchaseType]) ptMap[o.purchaseType] = { orders: [] };
@@ -6413,7 +6413,7 @@
     html += '<div style="background:rgba(255,255,255,0.6); backdrop-filter:blur(18px); border:1px solid rgba(255,255,255,0.85); border-radius:20px; padding:22px 24px; margin-bottom:24px; box-shadow:0 8px 26px rgba(124,92,255,0.08);">' +
       '<div style="display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; margin-bottom:16px;">' +
         '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540;">แยกสถานะการชำระ</div>' +
-        '<div style="max-width:340px; width:100%;">' + dateRangeFilter('📄', 'วันที่ทำสัญญาตั้งแต่ – ถึง', 'dashboardDueDateFrom', state.dashboardDueDateFrom, 'dashboardDueDateTo', state.dashboardDueDateTo) + '</div>' +
+        '<div style="max-width:340px; width:100%;">' + dateRangeFilter('🗓', 'วันที่ครบกำหนดชำระตั้งแต่ – ถึง', 'dashboardDueDateFrom', state.dashboardDueDateFrom, 'dashboardDueDateTo', state.dashboardDueDateTo) + '</div>' +
       '</div>';
     if (d.dueDateHasData) {
       html += '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:16px;">' +
@@ -6498,7 +6498,7 @@
     html += '<div style="margin-bottom:24px;">' +
       '<div style="display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; margin-bottom:14px;">' +
         '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540; display:flex; align-items:center; gap:8px;">✅ สรุปข้อมูลแยกตามประเภทการซื้อ</div>' +
-        '<div style="max-width:340px; width:100%;">' + dateRangeFilter('📄', 'วันที่ทำสัญญาตั้งแต่ – ถึง', 'dashboardPtDateFrom', state.dashboardPtDateFrom, 'dashboardPtDateTo', state.dashboardPtDateTo) + '</div>' +
+        '<div style="max-width:340px; width:100%;">' + dateRangeFilter('🗓', 'วันที่ครบกำหนดชำระตั้งแต่ – ถึง', 'dashboardPtDateFrom', state.dashboardPtDateFrom, 'dashboardPtDateTo', state.dashboardPtDateTo) + '</div>' +
       '</div>' +
       (d.purchaseTypeGroups.length ? '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:18px;">' +
         d.purchaseTypeGroups.map(function (pt) {
