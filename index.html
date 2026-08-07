@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-08.05';
+  var APP_BUILD = '2026-08-08.06';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1465,6 +1465,7 @@
     dashboardPtDateFrom: '', dashboardPtDateTo: '',
     dashboardDueDateFrom: '', dashboardDueDateTo: '',
     reportCustFrom: '', reportCustTo: '', reportCustLockSystem: 'all', reportCustLockMode: 'all',
+    reportCustPage: 1, reportCustPageSize: 20,
     reportDrilldownSeg: null, reportDrilldownGroup: null,
     reportStatusDrilldownKind: null, reportStatusDrilldownKey: null, reportStatusDrilldownMonth: null,
     reportCollapsed: {},
@@ -6358,9 +6359,11 @@
     // Section 10: ข้อมูลลูกค้า (2026-08-08) — filters + a capped on-screen preview (this dataset can
     // run into the thousands, per [[project-debt-tracker-site]] memory — rendering every row as raw
     // HTML would be a real perf hit, unlike the Excel export itself which just needs the data, not
-    // DOM nodes) + the actual Excel export, which always covers the FULL filtered set regardless of
-    // the preview cap.
-    var CUST_PREVIEW_CAP = 100;
+    // DOM nodes) so the on-screen preview is REAL pagination (2026-08-08, per explicit user request
+    // — replaced an earlier flat 100-row cap), same prevPage/nextPage/setPageSize pattern the
+    // Tracking page's own results table already uses, just with its own state fields/dispatch cases
+    // (reportCustPage/reportCustPageSize) so paging this table never disturbs Tracking's. The Excel
+    // export always covers the FULL filtered set regardless of which page is showing.
     var custRows = r.customerDataRows;
     var custCols = [
       ['เลขคำสั่งซื้อ', 'orderId'], ['ชื่อลูกค้า', 'customerName'], ['รหัสลูกค้า', 'customerId'], ['วันที่ทำสัญญา', 'contractDateDisp'],
@@ -6368,6 +6371,12 @@
       ['งวดชำระแล้ว', 'paidCount'], ['เงินชำระแล้ว', 'paidDisp'], ['งวดค้างชำระ', 'overdueCount'], ['เงินค้างชำระ', 'overdueDisp'],
       ['งวดยังไม่ถึงกำหนด', 'notDueCount'], ['เงินยังไม่ถึงกำหนด', 'notDueDisp']
     ];
+    var custPageSize = state.reportCustPageSize || 20;
+    var custTotalPages = Math.max(1, Math.ceil(custRows.length / custPageSize));
+    var custPage = Math.min(Math.max(1, state.reportCustPage || 1), custTotalPages);
+    state.reportCustPage = custPage;
+    var custPageStart = (custPage - 1) * custPageSize;
+    var custPageRows = custRows.slice(custPageStart, custPageStart + custPageSize);
     var section10 = cardWrap(
       sectionHeader(10, '👥', 'ข้อมูลลูกค้า') +
       '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; margin-bottom:16px;">' +
@@ -6381,20 +6390,32 @@
             selOpt('all', 'ทุกสถานะ', state.reportCustLockMode === 'all') + selOpt('Normal', 'Normal', state.reportCustLockMode === 'Normal') + selOpt('Hard lock', 'Hard lock', state.reportCustLockMode === 'Hard lock') + selOpt('Soft lock', 'Soft lock', state.reportCustLockMode === 'Soft lock') + selOpt('นำออกจากระบบแล้ว', 'นำออกจากระบบแล้ว', state.reportCustLockMode === 'นำออกจากระบบแล้ว') +
           '</select></div>' +
       '</div>' +
-      '<div style="display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; margin-bottom:14px;">' +
-        '<div style="font-size:12.5px; color:#6b6785;">พบ <b style="color:#2b2540;">' + custRows.length + '</b> รายการตามตัวกรอง' + (custRows.length > CUST_PREVIEW_CAP ? ' (แสดงตัวอย่าง ' + CUST_PREVIEW_CAP + ' รายการแรก — ดาวน์โหลดไฟล์เพื่อดูข้อมูลทั้งหมด)' : '') + '</div>' +
+      '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px;">' +
+        '<div data-action="clearCustomerDataFilters" style="background:#fff; border:1px solid rgba(124,92,255,0.25); color:#6b6785; padding:9px 16px; border-radius:12px; font-size:13px; font-weight:600; cursor:pointer; display:flex; align-items:center; gap:6px; white-space:nowrap;">✕ เคลียร์ตัวกรอง</div>' +
         '<div data-action="exportCustomerDataExcel" style="background:linear-gradient(135deg,#12b886,#0b9268); color:#fff; padding:9px 18px; border-radius:12px; font-size:13.5px; font-weight:600; cursor:pointer; display:flex; align-items:center; gap:6px; white-space:nowrap;">⬇ Export เป็น Excel</div>' +
+        '<div style="margin-left:auto; display:flex; align-items:center; gap:14px; font-size:12.5px; color:#6b6785;">' +
+          '<span>พบ <b style="color:#2b2540;">' + custRows.length + '</b> รายการ</span>' +
+          '<span style="display:flex; align-items:center; gap:6px;">แสดง <select data-action="setCustPageSize" style="padding:6px 10px; border-radius:8px; border:1px solid rgba(124,92,255,0.25); background:#fff; font-size:13px; color:#2b2540;">' +
+            [20, 50, 100].map(function (n) { return '<option value="' + n + '"' + (custPageSize === n ? ' selected' : '') + '>' + n + '</option>'; }).join('') +
+          '</select> รายการ/หน้า</span>' +
+        '</div>' +
       '</div>' +
       (custRows.length
         ? '<div style="overflow-x:auto; border-radius:12px; border:1px solid rgba(124,92,255,0.10);"><table style="width:100%; border-collapse:collapse; font-size:12.5px; min-width:1200px;"><thead><tr style="text-align:left; color:#6b6785; background:rgba(124,92,255,0.06);">' +
             custCols.map(function (c) { return '<th style="padding:9px 12px; white-space:nowrap;">' + esc(c[0]) + '</th>'; }).join('') +
           '</tr></thead><tbody>' +
-            custRows.slice(0, CUST_PREVIEW_CAP).map(function (row, idx) {
+            custPageRows.map(function (row, idx) {
               return '<tr style="background:' + (idx % 2 ? 'rgba(124,92,255,0.02)' : 'transparent') + ';">' +
                 custCols.map(function (c) { return '<td style="padding:8px 12px; color:#2b2540; white-space:nowrap;">' + esc(row[c[1]]) + '</td>'; }).join('') +
               '</tr>';
             }).join('') +
-          '</tbody></table></div>'
+          '</tbody></table>' +
+          '<div style="display:flex; align-items:center; justify-content:center; gap:16px; padding:16px 18px;">' +
+            '<button data-action="prevCustPage"' + (custPage <= 1 ? ' disabled' : '') + ' style="padding:8px 16px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fff; color:' + (custPage <= 1 ? '#c3c0d6' : '#7c5cff') + '; font-size:13px; font-weight:600; cursor:' + (custPage <= 1 ? 'default' : 'pointer') + ';">‹ ก่อนหน้า</button>' +
+            '<span style="font-size:13px; color:#6b6785;">หน้า ' + custPage + ' / ' + custTotalPages + ' (แสดง ' + (custPageStart + 1) + '–' + Math.min(custPageStart + custPageSize, custRows.length) + ' จาก ' + custRows.length + ' รายการ)</span>' +
+            '<button data-action="nextCustPage"' + (custPage >= custTotalPages ? ' disabled' : '') + ' style="padding:8px 16px; border-radius:10px; border:1px solid rgba(124,92,255,0.25); background:#fff; color:' + (custPage >= custTotalPages ? '#c3c0d6' : '#7c5cff') + '; font-size:13px; font-weight:600; cursor:' + (custPage >= custTotalPages ? 'default' : 'pointer') + ';">ถัดไป ›</button>' +
+          '</div>' +
+        '</div>'
         : '<div style="font-size:13px; color:#b3b0c4;">ไม่มีข้อมูลตามตัวกรองที่เลือก</div>'),
       ' margin-bottom:20px;'
     );
@@ -8071,6 +8092,13 @@
         case 'clearQuery': state.query = ''; render(); break;
         case 'exportCsv': exportFilteredCsv(CV.filteredOrders); break;
         case 'exportCustomerDataExcel': exportCustomerDataExcel(); break;
+        case 'prevCustPage': state.reportCustPage = Math.max(1, (state.reportCustPage || 1) - 1); render(); break;
+        case 'nextCustPage': state.reportCustPage = (state.reportCustPage || 1) + 1; render(); break;
+        case 'clearCustomerDataFilters':
+          state.reportCustFrom = ''; state.reportCustTo = ''; state.reportCustLockSystem = 'all'; state.reportCustLockMode = 'all';
+          state.reportCustPage = 1;
+          render();
+          break;
         case 'downloadTemplate': downloadTemplate(t.getAttribute('data-type')); break;
         case 'clearToEmpty': if (window.confirm('ล้างข้อมูลทั้งหมดเพื่อเริ่มจากว่างเปล่า (พร้อมอัปโหลดข้อมูลจริง)?\n(ยกเลิกไม่ได้)')) resetAllData(false); break;
         case 'resetToSample': if (window.confirm('ล้างข้อมูลทั้งหมด และกลับไปเป็นข้อมูลตัวอย่าง?\n(ยกเลิกไม่ได้)')) resetAllData(true); break;
@@ -8243,6 +8271,7 @@
           break;
         }
         case 'setPageSize': state.pageSize = Number(t.value) || 50; state.page = 1; render(); break;
+        case 'setCustPageSize': state.reportCustPageSize = Number(t.value) || 20; state.reportCustPage = 1; render(); break;
         case 'onDebtFile': onDebtFileChange(t.files[0]); t.value = ''; break;
         case 'onPaymentFile': onPaymentFileChange(t.files[0]); t.value = ''; break;
         case 'onCustomerInfo': onCustomerInfoFileChange(t.files[0]); t.value = ''; break;
