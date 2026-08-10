@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-10.09';
+  var APP_BUILD = '2026-08-10.10';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -2675,8 +2675,13 @@
     var selectedCustomerOrders = state.selectedCustomerId ? computedOrders.filter(function (o) { return customerKey(o) === state.selectedCustomerId; }) : [];
     var hasSelectedCustomer = selectedCustomerOrders.length > 0;
     var selectedCustomerGrade = 'A';
-    // ปิดยอด — ยอดคงเหลือรวมทุกบิลของลูกค้าคนนี้เป็น 0 แล้ว (จ่ายครบ/ปิดยอดแล้วทุกสัญญา)
-    var selectedCustomerFullySettled = hasSelectedCustomer && selectedCustomerOrders.reduce(function (s, o) { return s + o.totalOutstandingRaw; }, 0) <= 0.005;
+    // Per-bill settled count (2026-08-10, per explicit user request, replacing an all-or-nothing
+    // "every bill settled" boolean) — a customer with 2+ SO used to show NO ปิดยอด badge at all
+    // unless EVERY single bill was settled, even when one specific bill genuinely was — each order's
+    // OWN badge (orderAccountStatusBadge/accountStatusText) already reflects this correctly per-SO;
+    // this count feeds the customer-header badge so it also surfaces a partial closure ("ปิดยอด N
+    // บิล") instead of staying silent until 100%.
+    var selectedCustomerSettledCount = selectedCustomerOrders.filter(function (o) { return o.totalOutstandingRaw <= 0.005; }).length;
     if (hasSelectedCustomer) {
       var activeSel = selectedCustomerOrders.filter(function (o) { return !o.isCancelled && !o.isSold && !o.isBillCancelled; });
       if (activeSel.some(function (o) { return o.lateCount >= 2; })) selectedCustomerGrade = 'หนี้สงสัยจะสูญ';
@@ -2704,7 +2709,7 @@
       selectedCustomerIdDisp: hasSelectedCustomer ? selectedCustomerOrders[0].customerId : '',
       selectedCustomerGradeLabel: GRADE_LABELS[selectedCustomerGrade],
       selectedCustomerGradeColor: GRADE_COLORS[selectedCustomerGrade],
-      selectedCustomerFullySettled: selectedCustomerFullySettled,
+      selectedCustomerSettledCount: selectedCustomerSettledCount,
       billCount: selectedCustomerOrders.length,
       customerNoteSaved: hasSelectedCustomer ? (state.customerNotes[state.selectedCustomerId] || '') : '',
       // Scans ALL orders (computedOrders), not filteredOrders — must surface regardless of the
@@ -8016,7 +8021,12 @@
             : '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:19px; color:#2b2540;">' + esc(CV.selectedCustomerName) + '</div>' +
               '<button data-action="startEditCustomerName" title="แก้ไขชื่อลูกค้า" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; width:26px; height:26px; border-radius:8px; font-size:12px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">✏️</button>' +
               '<button data-action="copyField" data-value="' + esc(CV.selectedCustomerName) + '" title="คัดลอกชื่อลูกค้า" style="border:none; background:rgba(124,92,255,0.10); color:#7c5cff; width:26px; height:26px; border-radius:8px; font-size:12px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">📋</button>') +
-          '<div style="background:' + CV.selectedCustomerGradeColor + '1a; color:' + CV.selectedCustomerGradeColor + '; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700;">' + esc(CV.selectedCustomerGradeLabel) + '</div>' + (CV.selectedCustomerFullySettled ? '<div style="background:rgba(18,184,134,0.14); color:#12b886; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700;">✅ ปิดยอด</div>' : '') + trackingReturnTagHtml + '</div>' +
+          // ปิดยอด badge now surfaces a PARTIAL closure too (2026-08-10, per explicit user request) —
+          // was gated on "every bill settled" alone, so a customer with 2+ SO where only one had
+          // actually closed showed nothing here at all. Always includes
+          // the count ("ปิดยอด N บิล") once at least 1 bill is settled, rather than a bare "ปิดยอด"
+          // that doesn't say how many of the customer's bills that covers.
+          '<div style="background:' + CV.selectedCustomerGradeColor + '1a; color:' + CV.selectedCustomerGradeColor + '; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700;">' + esc(CV.selectedCustomerGradeLabel) + '</div>' + (CV.selectedCustomerSettledCount > 0 ? '<div style="background:rgba(18,184,134,0.14); color:#12b886; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700;">✅ ปิดยอด ' + CV.selectedCustomerSettledCount + ' บิล</div>' : '') + trackingReturnTagHtml + '</div>' +
           '<div style="font-size:13px; color:#6b6785; margin-top:4px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">รหัสลูกค้า: ' +
           (state.editingCustomerId
             ? '<input type="text" value="' + esc(state.customerIdDraft) + '" data-action="customerIdDraft" style="font-size:13px; color:#2b2540; border:1px solid rgba(124,92,255,0.35); border-radius:6px; padding:2px 8px; outline:none; min-width:120px;" />' +
