@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-08.07';
+  var APP_BUILD = '2026-08-10.01';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -217,6 +217,7 @@
     toggleVerifiedCRM: 'tracking_edit', saveCallLog: 'tracking_edit', commitChanges: 'tracking_edit',
     confirmSendSms: 'send_sms', addSmsTemplate: 'send_sms', deleteSmsTemplate: 'send_sms',
     confirmSendEmail: 'send_letter', issueLetter: 'send_letter',
+    confirmIssueCancelLetter: 'send_letter',
     onDebtFile: 'upload_files', onPaymentFile: 'upload_files', onCustomerInfo: 'upload_files', onLetterheadFile: 'upload_files', onEmailReportFile: 'upload_files', onSmsLogFile: 'upload_files', onLockSystemFile: 'upload_files',
     deleteInstallment: 'delete_data', cancelOrder: 'delete_data', undoAccountLevelStatus: 'delete_data',
     // Full data wipe — too dangerous to leave as a togglable permission; admin-only no matter what.
@@ -1523,6 +1524,11 @@
     letterIssuing: null, // "orderId|main" or "orderId|accessory" currently being generated, or null — disables the button mid-generate
     uploadMsgLetterhead: '',
     emailModalTarget: null, emailModalTrack: '', emailModalTo: '', emailModalLetterNo: null, emailModalSending: false,
+    // หนังสือบอกเลิกสัญญาเช่าซื้อ (2026-08-10) — same PDF-issuance/ครั้งที่-versioning pattern as
+    // จดหมายทวงถามหนี้ above, but whole-order (not track-split) and with a fill-in form first, since
+    // this document's per-case terms (เหตุผล/ทรัพย์สินคืน/คืนเงินหรือไม่/ยกเลิกเรียกเก็บหรือไม่ ฯลฯ)
+    // can't be computed automatically the way ยอดค้างชำระ can — see openCancelLetterModal.
+    cancelLetterModalTarget: null, cancelLetterDraft: null, cancelLetterIssuing: null,
     appliedQuery: '',
     appliedAccountStatus: 'all',
     appliedDueStatus: 'all',
@@ -3437,6 +3443,203 @@
         state.letterIssuing = null;
         // container may still be undefined if getLetterheadBlobUrl's own .then() never ran (it
         // always resolves rather than rejects, but a defensive check costs nothing here).
+        if (container && container.parentNode) document.body.removeChild(container);
+        window.alert('เกิดข้อผิดพลาดขณะออกเอกสาร: ' + (err && err.message ? err.message : String(err)));
+        render();
+      });
+  }
+  // ---------- หนังสือบอกเลิกสัญญาเช่าซื้อ (PDF) ----------
+  // Whole-order document (not track-split like จดหมายทวงถามหนี้ above) — a contract termination ends
+  // the WHOLE customer relationship, accessory sub-bill included, not just one SO. Per explicit user
+  // decision 2026-08-10: the button stays enabled regardless of payment/overdue status (no LETTER_
+  // MIN_OVERDUE_INSTALLMENTS-style gate) — only the send_letter permission gates it, same as the debt
+  // letter. Terms that vary per real case (เหตุผล/ทรัพย์สินคืน/วิธีคืน/คืนเงินหรือไม่/ยกเลิกเรียกเก็บ
+  // หรือไม่ ฯลฯ) can't be computed automatically the way ยอดค้างชำระ can, so a form modal collects
+  // them before each issuance — see openCancelLetterModal/renderCancelLetterModal. Confirming the
+  // form also cascades every not-yet-fully-paid งวด (both tracks) to "ยกเลิกสัญญา คืนเครื่อง" and
+  // flips the account status, per explicit user request — a งวด already ชำระแล้ว is left untouched.
+  function cancelLetterDefaultDraft(cvOrder) {
+    var today = new Date();
+    var todayIso = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+    return {
+      place: 'บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด',
+      reason: '',
+      assetName: cvOrder.productList + (cvOrder.hasAccessory && cvOrder.accessoryProductList ? ' + ' + cvOrder.accessoryProductList : ''),
+      assetQty: 1,
+      serialNumber: '',
+      accessoriesList: '',
+      returnDate: todayIso,
+      returnMethod: '',
+      refund: 'no', refundAmount: 0,
+      waiveOutstanding: 'waive', waiveAmount: cvOrder.totalOutstandingRaw
+    };
+  }
+  function openCancelLetterModal(orderId) {
+    var cvOrder = (CV.computedOrders || []).find(function (o) { return o.orderId === orderId; });
+    if (!cvOrder) return;
+    state.cancelLetterModalTarget = orderId;
+    state.cancelLetterDraft = cancelLetterDefaultDraft(cvOrder);
+    render();
+  }
+  function closeCancelLetterModal() {
+    state.cancelLetterModalTarget = null;
+    state.cancelLetterDraft = null;
+    render();
+  }
+  // Container/font sizing follows buildLetterHtml's convention (794px == A4 width @96dpi), but unlike
+  // the demand letter there's no single-page requirement — issueLetter's own multi-page addImage loop
+  // (reused verbatim in confirmIssueCancelLetter below) already handles spillover onto a 2nd PDF page.
+  // `snapshot` (totalContractDisp/totalPaidDisp/totalOutstandingDisp, already fmtMoney-formatted
+  // strings — same "frozen at issuance" convention buildLetterHtml's ยอดค้างชำระ snapshot uses) is
+  // passed in rather than read live off cvOrder for the same reason: re-viewing an old ครั้งที่'s PDF
+  // (via downloadLetterPdf) must always show the figures as they stood the day that ครั้งที่ was
+  // issued, not today's possibly-different totals — though in practice a cancelled order's totals
+  // stop moving anyway once every งวด is frozen at ยกเลิกสัญญา คืนเครื่อง.
+  function buildCancelLetterHtml(order, letterNo, snapshot, draft, letterheadSrc) {
+    var now = new Date();
+    var todayIso = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+    var headerHtml = letterheadSrc
+      ? '<img src="' + letterheadSrc + '" style="width:100%; display:block; margin-bottom:18px;" />'
+      : '<div style="font-weight:700; font-size:17px; margin-bottom:6px;">บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด</div><div style="height:2px; background:#1f3a5f; margin-bottom:18px;"></div>';
+    var refundLine = draft.refund === 'yes'
+      ? 'บริษัทตกลง <b>คืนเงิน</b> จำนวน ฿' + esc(fmtMoney(draft.refundAmount)) + ' ให้แก่ท่าน'
+      : 'บริษัทตกลง <b>ไม่คืนเงิน</b> ให้แก่ท่าน';
+    var waiveLine = draft.waiveOutstanding === 'waive'
+      ? 'และ <b>ยกเลิกการเรียกเก็บ</b>ยอดค้างชำระคงเหลือ'
+      : 'และ <b>ยังคงเรียกเก็บ</b>ยอดค้างชำระจำนวน ฿' + esc(fmtMoney(draft.waiveAmount)) + ' จากท่าน';
+    return '<div style="width:794px; box-sizing:border-box; padding:42px 55px; background:#ffffff; font-family:\'Sarabun\',\'Noto Sans Thai\',\'Leelawadee UI\',sans-serif; color:#1c1b19; font-size:14px; line-height:1.6;">' +
+      headerHtml +
+      '<div style="display:flex; justify-content:space-between; font-size:12.5px; color:#5b5750; margin-bottom:18px;">' +
+        '<div>เลขที่หนังสือ: CL-' + esc(order.orderId) + '-' + letterNo + '</div>' +
+        '<div>ทำที่ ' + esc(draft.place) + ' · วันที่ ' + esc(fmtDate(todayIso)) + '</div>' +
+      '</div>' +
+      '<div style="text-align:center; font-size:16px; font-weight:700; margin-bottom:3px;">หนังสือบอกเลิกสัญญาเช่าซื้อ</div>' +
+      '<div style="text-align:center; font-size:12.5px; color:#5b5750; margin-bottom:18px;">(ครั้งที่ ' + letterNo + ')</div>' +
+      '<div style="margin-bottom:6px;">เรื่อง การบอกเลิกสัญญาเช่าซื้อ</div>' +
+      '<div style="margin-bottom:14px;">เรียน คุณ' + esc(order.customerName) + '</div>' +
+      '<p style="margin:0 0 12px; text-align:justify; text-indent:2em;">ตามที่ท่านได้ทำสัญญาเช่าซื้อสินค้ากับบริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด ตามหนังสือสัญญาเช่าซื้อเลขที่ ' + esc(order.orderId) + (order.contractNo ? ' / ' + esc(order.contractNo) : '') + ' ฉบับลงวันที่ ' + esc(order.contractDateDisp) + ' สินค้าที่เช่าซื้อคือ ' + esc(draft.assetName) + ' จำนวน ' + esc(draft.assetQty) + ' เครื่อง ราคาเช่าซื้อสุทธิรวมทั้งสิ้น ฿' + esc(snapshot.totalContractDisp) + ' บาท โดยนับแต่วันทำสัญญา ท่านได้ชำระค่าเช่าซื้อให้แก่บริษัทมาแล้วเป็นเงิน ฿' + esc(snapshot.totalPaidDisp) + ' บาท และคงเหลือยอดค้างชำระตามสัญญาอีกจำนวน ฿' + esc(snapshot.totalOutstandingDisp) + ' บาท</p>' +
+      '<p style="margin:0 0 12px; text-align:justify; text-indent:2em;">เนื่องจากท่านมีความประสงค์ขอยกเลิกการเช่าซื้อและหยุดผ่อนชำระค่าเช่าซื้อสินค้าดังกล่าวก่อนครบกำหนดตามสัญญา โดยแจ้งเหตุผลว่า ' + esc(draft.reason || '-') + '</p>' +
+      '<p style="margin:0 0 12px; text-align:justify; text-indent:2em;">ทั้งนี้ ตามข้อ 6.2 และข้อ 8 แห่งสัญญาเช่าซื้อฉบับดังกล่าว กำหนดให้เมื่อสัญญาเช่าซื้อสิ้นสุดลงไม่ว่าด้วยเหตุใด ผู้เช่าซื้อมีหน้าที่ต้องส่งมอบทรัพย์สินที่เช่าซื้อพร้อมอุปกรณ์และส่วนควบทั้งหมดคืนแก่บริษัทในสภาพเรียบร้อย บริษัทจึงกำหนดเงื่อนไขการยกเลิกสัญญาว่า การบอกเลิกสัญญาเช่าซื้อฉบับนี้จะมีผลสมบูรณ์ต่อเมื่อ (1) ผู้เช่าซื้อได้ลงลายมือชื่อในหนังสือบอกเลิกสัญญาฉบับนี้ และ (2) ผู้เช่าซื้อได้ส่งมอบทรัพย์สินที่เช่าซื้อพร้อมอุปกรณ์เสริมและอุปกรณ์ประกอบทั้งหมดคืนให้แก่บริษัทครบถ้วนแล้วเท่านั้น เมื่อบริษัทได้รับหนังสือฉบับนี้และตรวจรับทรัพย์สินคืนครบถ้วนถูกต้องแล้ว จึงขอแจ้งบอกเลิกสัญญาเช่าซื้อฉบับดังกล่าว และให้ถือว่าสัญญาเป็นอันสิ้นสุดลงนับแต่วันที่บริษัทได้รับทรัพย์สินและอุปกรณ์คืนครบถ้วน</p>' +
+      '<p style="margin:0 0 12px; text-align:justify; text-indent:2em;">ในส่วนของยอดเงินที่ผู้เช่าซื้อได้ชำระมาแล้วและยอดค้างชำระคงเหลือ ให้เป็นไปตามข้อ 6.5 แห่งสัญญาเช่าซื้อ ซึ่งผู้เช่าซื้อยินยอมให้บริษัทหักเงินที่ชำระมาแล้วทั้งหมดเป็นค่าตอบแทนการใช้ทรัพย์สินและค่าเสียหาย โดยไม่มีการคืนเงิน เว้นแต่บริษัทจะใช้ดุลพินิจผ่อนปรนเป็นกรณีไป ในการนี้' + refundLine + ' ' + waiveLine + '</p>' +
+      '<div style="background:rgba(31,58,95,0.04); border:1px solid rgba(31,58,95,0.15); border-radius:8px; padding:10px 14px; margin:0 0 14px; font-size:13px; line-height:1.5;">' +
+        '<div style="font-weight:700; color:#1f3a5f; margin-bottom:5px;">บริษัทขอรับมอบทรัพย์สินที่เช่าซื้อและอุปกรณ์ทั้งหมดคืนจากท่านไว้ในสภาพเรียบร้อย ดังนี้</div>' +
+        '<div>ทรัพย์สิน ' + esc(draft.assetName) + ' จำนวน ' + esc(draft.assetQty) + ' เครื่อง</div>' +
+        '<div>หมายเลขเครื่อง (IMEI/Serial Number) ' + esc(draft.serialNumber || '-') + '</div>' +
+        '<div>อุปกรณ์และส่วนควบที่ต้องคืนทั้งหมด ' + esc(draft.accessoriesList || '-') + '</div>' +
+        '<div>วันที่คืนเครื่อง ' + esc(fmtDate(draft.returnDate) || '-') + '</div>' +
+        '<div>วิธีการคืน ' + esc(draft.returnMethod || '-') + '</div>' +
+      '</div>' +
+      '<p style="margin:0 0 20px; text-align:justify;">ค่าใช้จ่ายและค่าเสื่อมสภาพอันเกิดจากการเปิดใช้งานเครื่อง (ถ้ามี) ให้เป็นไปตามที่คู่สัญญาตกลงกันตามข้อ 8.2 แห่งสัญญาเช่าซื้อ บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด และ ' + esc(order.customerName) + ' (ผู้เช่าซื้อ) ตกลงร่วมกันให้บรรดาข้อพิพาทและข้อเรียกร้องทั้งปวงที่เกี่ยวข้องกับสัญญาเช่าซื้อฉบับนี้เป็นอันระงับสิ้นสุดลง และทั้งสองฝ่ายไม่ติดใจที่จะเรียกร้องค่าเสียหายเพิ่มเติม หรือดำเนินคดีใด ๆ ต่อกันอีก ทั้งทางแพ่งและทางอาญา ทั้งนี้ ภายใต้เงื่อนไขที่คู่สัญญาทั้งสองฝ่ายได้ปฏิบัติตามที่ตกลงกันไว้ในหนังสือฉบับนี้ครบถ้วนแล้ว</p>' +
+      '<p style="margin:0 0 24px;">จึงเรียนมาเพื่อทราบ<br/>ขอแสดงความนับถือ</p>' +
+      '<div style="display:flex; justify-content:space-between; margin-top:30px;">' +
+        '<div style="text-align:center; font-size:13px; width:45%;">' +
+          '<div style="border-top:1px solid #5b5750; margin-bottom:6px; padding-top:6px;">ลงชื่อ ........................................... ผู้แทนผู้ให้เช่า</div>' +
+          '<div style="color:#5b5750; font-size:12px;">( ' + esc(currentActorName() || 'พนักงานฝ่ายบัญชีหนี้สิน บจก.แซลม่อน เอ็นเตอร์ไพรส์') + ' )</div>' +
+          '<div style="color:#5b5750; font-size:12px; margin-top:4px;">วันที่ ...................................</div>' +
+        '</div>' +
+        '<div style="text-align:center; font-size:13px; width:45%;">' +
+          '<div style="border-top:1px solid #5b5750; margin-bottom:6px; padding-top:6px;">ลงชื่อ ........................................... ผู้เช่าซื้อ</div>' +
+          '<div style="color:#5b5750; font-size:12px;">( ' + esc(order.customerName) + ' )</div>' +
+          '<div style="color:#5b5750; font-size:12px; margin-top:4px;">วันที่ ...................................</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
+  // Always issues the NEXT ครั้งที่ — no "reuse an old ครั้งที่" picker like issueLetter has, because
+  // a contract termination is a forward-only event: correcting a mistake means editing the form and
+  // issuing a fresh ครั้งที่, never silently rewriting an already-issued legal notice's history.
+  function confirmIssueCancelLetter() {
+    if (state.cancelLetterIssuing) return;
+    var orderId = state.cancelLetterModalTarget;
+    var draft = state.cancelLetterDraft;
+    if (!orderId || !draft) return;
+    var order = state.orders.find(function (o) { return o.orderId === orderId; });
+    var cvOrder = (CV.computedOrders || []).find(function (o) { return o.orderId === orderId; });
+    if (!order || !cvOrder) return;
+    if (!String(draft.reason || '').trim()) { window.alert('กรุณากรอกเหตุผลที่ขอยกเลิกสัญญา'); return; }
+    if (!db) { window.alert('ยังไม่ได้เชื่อมต่อฐานข้อมูลกลาง (Supabase) — ไม่สามารถบันทึกไฟล์ PDF ได้'); return; }
+    if (!window.html2canvas || !(window.jspdf && window.jspdf.jsPDF)) { window.alert('ไม่พบไลบรารีสร้าง PDF กรุณาลองรีเฟรชหน้าเว็บ'); return; }
+    var history = order.cancelLetterHistory || [];
+    var letterNo = history.reduce(function (m, h) { return Math.max(m, h.no); }, 0) + 1;
+    var snapshot = {
+      totalContractDisp: fmtMoney(cvOrder.totalContractRaw),
+      totalPaidDisp: fmtMoney(cvOrder.totalPaidFullRaw),
+      totalOutstandingDisp: fmtMoney(cvOrder.totalOutstandingRaw)
+    };
+    if (!window.confirm('ยืนยันออกหนังสือบอกเลิกสัญญาเช่าซื้อ (ครั้งที่ ' + letterNo + ') ให้ลูกค้า ' + cvOrder.customerName + ' ?\n\nการยืนยันนี้จะตั้งสถานะทุกงวดที่ยังไม่ชำระของบิลนี้ (ทั้งเครื่องหลักและอุปกรณ์เสริม) เป็น "ยกเลิกสัญญา คืนเครื่อง" ทันที (งวดที่ชำระแล้วจะไม่ถูกแตะต้อง) และปรับสถานะบัญชีลูกค้าเป็นยกเลิกสัญญา')) return;
+    state.cancelLetterIssuing = orderId;
+    render();
+    var container;
+    getLetterheadBlobUrl()
+      .then(function (letterheadSrc) {
+        container = document.createElement('div');
+        container.style.cssText = 'position:fixed; left:-99999px; top:0; z-index:-1;';
+        container.innerHTML = buildCancelLetterHtml(cvOrder, letterNo, snapshot, draft, letterheadSrc);
+        document.body.appendChild(container);
+        var imgEl = container.querySelector('img');
+        return (imgEl && !imgEl.complete) ? new Promise(function (res) { imgEl.onload = res; imgEl.onerror = res; }) : Promise.resolve();
+      })
+      .then(function () { return window.html2canvas(container, { scale: 2, useCORS: true, backgroundColor: '#ffffff' }); })
+      .then(function (canvas) {
+        var pdf = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4' });
+        var pageWidth = 210, pageHeight = 297;
+        var imgData = canvas.toDataURL('image/jpeg', 0.92);
+        var imgHeight = (canvas.height * pageWidth) / canvas.width;
+        var heightLeft = imgHeight, position = 0;
+        pdf.addImage(imgData, 'JPEG', 0, position, pageWidth, imgHeight);
+        heightLeft -= pageHeight;
+        while (heightLeft > 0) {
+          position = heightLeft - imgHeight;
+          pdf.addPage();
+          pdf.addImage(imgData, 'JPEG', 0, position, pageWidth, imgHeight);
+          heightLeft -= pageHeight;
+        }
+        return pdf.output('blob');
+      })
+      .then(function (blob) {
+        var path = 'cancel-letters/' + orderId.replace(/[^a-zA-Z0-9_-]/g, '_') + '-' + letterNo + '.pdf';
+        return db.storage.from(CLOUD_BUCKET).upload(path, blob, { upsert: true, contentType: 'application/pdf', cacheControl: '0' }).then(function (res) {
+          if (res.error) throw res.error;
+          return path;
+        });
+      })
+      .then(function (path) {
+        var entry = {
+          no: letterNo, at: nowTimestamp(), by: currentActorName(), url: path,
+          reason: draft.reason, assetName: draft.assetName, assetQty: draft.assetQty,
+          serialNumber: draft.serialNumber, accessoriesList: draft.accessoriesList,
+          returnDate: draft.returnDate, returnMethod: draft.returnMethod,
+          refund: draft.refund, refundAmount: draft.refundAmount,
+          waiveOutstanding: draft.waiveOutstanding, waiveAmount: draft.waiveAmount,
+          totalContractDisp: snapshot.totalContractDisp, totalPaidDisp: snapshot.totalPaidDisp, totalOutstandingDisp: snapshot.totalOutstandingDisp
+        };
+        // Same cascade shape as ACCOUNT_LEVEL_STATUSES in updateInstallment (see there), except this
+        // one deliberately SKIPS any งวด already ชำระแล้ว instead of overwriting it too — explicit
+        // user request 2026-08-10, unlike the general cascade which is unconditional. Also mirrors
+        // the lockSystemMode auto-removal rule (autoLockModeFromStatusChange's 4th case) for
+        // consistency with every other path that reaches ยกเลิกสัญญา คืนเครื่อง.
+        state.orders = state.orders.map(function (o) {
+          if (o.orderId !== orderId) return o;
+          var cascadeInst = function (i) { return effectiveStatusOf(i) === 'ชำระแล้ว' ? i : Object.assign({}, i, { status: 'ยกเลิกสัญญา คืนเครื่อง', statusOverride: true }); };
+          var patch = {
+            installments: (o.installments || []).map(cascadeInst),
+            accessoryInstallments: (o.accessoryInstallments || []).map(cascadeInst),
+            wasCancelled: true,
+            cancelLetterHistory: (o.cancelLetterHistory || []).concat([entry])
+          };
+          if (o.lockSystem) { patch.lockSystemMode = 'นำออกจากระบบแล้ว'; patch.lockSystemUpdatedAt = nowTimestamp(); }
+          return Object.assign({}, o, patch);
+        });
+        state.hasUnsavedChanges = true;
+        state.cancelLetterIssuing = null;
+        state.cancelLetterModalTarget = null;
+        state.cancelLetterDraft = null;
+        if (container.parentNode) document.body.removeChild(container);
+        render();
+        window.alert('ออกหนังสือบอกเลิกสัญญาเช่าซื้อสำเร็จ (ครั้งที่ ' + letterNo + ')');
+      })
+      .catch(function (err) {
+        state.cancelLetterIssuing = null;
         if (container && container.parentNode) document.body.removeChild(container);
         window.alert('เกิดข้อผิดพลาดขณะออกเอกสาร: ' + (err && err.message ? err.message : String(err)));
         render();
@@ -7406,6 +7609,9 @@
     if (state.emailModalTarget) {
       html += renderSendEmailModal();
     }
+    if (state.cancelLetterModalTarget) {
+      html += renderCancelLetterModal();
+    }
 
     html += '</div>';
     return html;
@@ -7581,6 +7787,50 @@
     '</div>';
   }
 
+  // ครั้งที่ picker was omitted here on purpose — see confirmIssueCancelLetter's comment (this form
+  // only ever issues the next ครั้งที่, never re-edits an old one).
+  function renderCancelLetterModal() {
+    var orderId = state.cancelLetterModalTarget;
+    var draft = state.cancelLetterDraft;
+    var order = state.orders.find(function (o) { return o.orderId === orderId; });
+    if (!order || !draft) { state.cancelLetterModalTarget = null; return ''; }
+    var cvOrder = (CV.computedOrders || []).find(function (o) { return o.orderId === orderId; }) || order;
+    function field(label, inputHtml) {
+      return '<div style="margin-bottom:12px;"><div style="font-size:12px; color:#6b6785; font-weight:600; margin-bottom:5px;">' + label + '</div>' + inputHtml + '</div>';
+    }
+    var textInputStyle = 'width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(179,38,30,0.25); background:#fffaf9; font-size:13.5px; color:#2b2540; outline:none;';
+    function radio(name, value, current, label) {
+      return '<label style="display:inline-flex; align-items:center; gap:5px; margin-right:16px; font-size:13px; color:#2b2540; cursor:pointer;"><input type="radio" name="' + name + '" data-action="' + name + '" value="' + value + '"' + (current === value ? ' checked' : '') + ' style="cursor:pointer;" />' + label + '</label>';
+    }
+    return '<div style="position:fixed; inset:0; z-index:9999; background:rgba(43,37,64,0.35); display:flex; align-items:center; justify-content:center; padding:20px;">' +
+      '<div style="max-width:560px; width:100%; max-height:90vh; overflow-y:auto; background:#fff; border-radius:20px; padding:26px 26px 22px; box-shadow:0 24px 60px rgba(43,37,64,0.3);">' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#b3261e; margin-bottom:4px;">📄 ออกหนังสือบอกเลิกสัญญาเช่าซื้อ</div>' +
+        '<div style="font-size:12.5px; color:#6b6785; margin-bottom:18px;">' + esc(cvOrder.customerName) + ' · SO ' + esc(cvOrder.soDisplay || cvOrder.orderId) + ' · ยอดคงเหลือ ฿' + esc(cvOrder.totalOutstandingDisp) + '</div>' +
+        field('เหตุผลที่ขอยกเลิกสัญญา <span style="color:#e03131;">*</span>', '<input type="text" value="' + esc(draft.reason) + '" data-action="cancelLetterReason" placeholder="เช่น ลูกค้าขาดความสามารถในการผ่อนชำระ" style="' + textInputStyle + '" />') +
+        '<div style="display:grid; grid-template-columns:2fr 1fr; gap:12px;">' +
+          field('ทรัพย์สินที่เช่าซื้อ', '<input type="text" value="' + esc(draft.assetName) + '" data-action="cancelLetterAssetName" style="' + textInputStyle + '" />') +
+          field('จำนวน (เครื่อง)', '<input type="number" min="1" value="' + esc(draft.assetQty) + '" data-action="cancelLetterAssetQty" style="' + textInputStyle + '" />') +
+        '</div>' +
+        field('หมายเลขเครื่อง (IMEI/Serial Number)', '<input type="text" value="' + esc(draft.serialNumber) + '" data-action="cancelLetterSerialNumber" style="' + textInputStyle + '" />') +
+        field('อุปกรณ์และส่วนควบที่ต้องคืนทั้งหมด', '<input type="text" value="' + esc(draft.accessoriesList) + '" placeholder="เช่น กล่อง สายชาร์จ อะแดปเตอร์" data-action="cancelLetterAccessoriesList" style="' + textInputStyle + '" />') +
+        '<div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">' +
+          field('วันที่คืนเครื่อง', '<input type="date" value="' + esc(draft.returnDate) + '" data-action="cancelLetterReturnDate" style="' + textInputStyle + '" />') +
+          field('วิธีการคืน', '<input type="text" value="' + esc(draft.returnMethod) + '" placeholder="เช่น มาคืนที่บริษัท" data-action="cancelLetterReturnMethod" style="' + textInputStyle + '" />') +
+        '</div>' +
+        field('การคืนเงิน', radio('cancelLetterRefund', 'no', draft.refund, 'ไม่คืนเงิน') + radio('cancelLetterRefund', 'yes', draft.refund, 'คืนเงิน') +
+          (draft.refund === 'yes' ? '<input type="text" inputmode="decimal" value="' + esc(fmtMoney(draft.refundAmount)) + '" data-action="cancelLetterRefundAmount" placeholder="จำนวนเงินที่คืน" style="' + textInputStyle + ' margin-top:8px;" />' : '')) +
+        field('ยอดค้างชำระคงเหลือ', radio('cancelLetterWaive', 'waive', draft.waiveOutstanding, 'ยกเลิกการเรียกเก็บ') + radio('cancelLetterWaive', 'keep', draft.waiveOutstanding, 'ยังคงเรียกเก็บ') +
+          (draft.waiveOutstanding === 'keep' ? '<input type="text" inputmode="decimal" value="' + esc(fmtMoney(draft.waiveAmount)) + '" data-action="cancelLetterWaiveAmount" placeholder="จำนวนที่ยังเรียกเก็บ" style="' + textInputStyle + ' margin-top:8px;" />' : '')) +
+        field('ทำที่ (สถานที่ทำหนังสือ)', '<input type="text" value="' + esc(draft.place) + '" data-action="cancelLetterPlace" style="' + textInputStyle + '" />') +
+        '<div style="font-size:11px; color:#e03131; background:rgba(224,49,49,0.06); border:1px solid rgba(224,49,49,0.2); border-radius:10px; padding:10px 12px; margin:6px 0 18px; line-height:1.5;">⚠️ เมื่อกด "ยืนยันออกเอกสาร" ระบบจะตั้งสถานะทุกงวดที่ยังไม่ชำระของบิลนี้ (ทั้งเครื่องหลักและอุปกรณ์เสริม) เป็น "ยกเลิกสัญญา คืนเครื่อง" ทันที และปรับสถานะบัญชีลูกค้าเป็นยกเลิกสัญญา — งวดที่ชำระแล้วจะไม่ถูกแตะต้อง</div>' +
+        '<div style="display:flex; justify-content:flex-end; gap:10px;">' +
+          '<div data-action="closeCancelLetterModal" style="padding:11px 20px; border-radius:10px; color:#6b6785; font-size:13.5px; font-weight:600; cursor:pointer;">ยกเลิก</div>' +
+          '<div data-action="confirmIssueCancelLetter" style="background:' + (state.cancelLetterIssuing ? '#8a86a3' : 'linear-gradient(135deg,#b3261e,#8f1d17)') + '; color:#fff; padding:11px 22px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer;">' + (state.cancelLetterIssuing ? '⏳ กำลังสร้าง...' : '📄 ยืนยันออกเอกสาร') + '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
+
   function renderPostponeModal() {
     return '<div style="position:fixed; inset:0; z-index:9999; background:rgba(43,37,64,0.35); display:flex; align-items:center; justify-content:center; padding:20px;">' +
       '<div style="max-width:420px; width:100%; background:#fff; border-radius:20px; padding:26px 26px 22px; box-shadow:0 24px 60px rgba(43,37,64,0.3);">' +
@@ -7743,7 +7993,21 @@
               '<button data-action="undoAccountLevelStatus" data-order="' + esc(ord.orderId) + '" data-status="ยกเลิกบิล" title="แก้ไข — ใช้เมื่อสถานะนี้เกิดจากการตั้งค่าผิดพลาด" style="border:none; background:rgba(255,255,255,0.55); color:#0c8599; width:18px; height:18px; border-radius:50%; font-size:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">✏️</button>' +
             '</div>'
             : (ord.isCancelled ? '' : '<button data-action="cancelOrder" data-order="' + esc(ord.orderId) + '" title="ตั้งทุกงวดในบิลนี้เป็น \'ยกเลิกบิล\' — บิลที่เปิดผิด/มีบิลใหม่แทนแล้ว ไม่นับเป็นหนี้ของบริษัทฯ อีกต่อไป (คนละสถานะกับยกเลิกสัญญา คืนเครื่อง)" style="border:1px solid rgba(12,133,153,0.35); background:#fff; color:#0c8599; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;">🗑 ยกเลิกบิล</button>')) +
+          // ออกเอกสารหนังสือยกเลิก (2026-08-10) — deliberately NOT gated on payment/overdue status
+          // (per explicit user request, unlike จดหมายทวงถามหนี้'s ≥2-งวด-ค้าง gate) since staff may
+          // need to cancel a contract for many reasons, not just non-payment. Confirming the form
+          // modal this opens cascades every not-yet-paid งวด to ยกเลิกสัญญา คืนเครื่อง — see
+          // confirmIssueCancelLetter.
+          '<button data-action="openCancelLetterModal" data-order="' + esc(ord.orderId) + '" title="ออกหนังสือบอกเลิกสัญญาเช่าซื้อ (PDF)" style="border:1px solid rgba(179,38,30,0.35); background:#fff; color:#b3261e; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;">📄 ออกเอกสารหนังสือยกเลิก</button>' +
         '</div>' +
+        (ord.cancelLetterHistory && ord.cancelLetterHistory.length ? (
+          '<div style="margin-bottom:16px; padding:10px 14px; background:rgba(179,38,30,0.05); border:1px solid rgba(179,38,30,0.14); border-radius:12px;">' +
+            '<div style="font-size:11.5px; color:#b3261e; font-weight:700; margin-bottom:6px;">📄 ประวัติหนังสือบอกเลิกสัญญา</div>' +
+            ord.cancelLetterHistory.slice().reverse().map(function (h) {
+              return '<div style="font-size:11.5px; color:#2b2540; margin-bottom:3px;">🕐 ' + esc(h.at) + ' · ครั้งที่ ' + h.no + (h.by ? ' · โดย ' + esc(h.by) : '') + ' · <span data-action="downloadLetterPdf" data-path="' + esc(h.url) + '" style="color:#7c5cff; font-weight:600; cursor:pointer;">⬇ ดาวน์โหลด</span></div>';
+            }).join('') +
+          '</div>'
+        ) : '') +
         '<div style="display:grid; grid-template-columns:2fr 1fr; gap:16px; margin-bottom:16px;">' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">📦 รายการสินค้า' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><input type="text" value="' + esc(ord.productList) + '" data-order-field="productList" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:15px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">🏷 ราคาสินค้า</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.productPrice)) + '" data-order-field="productPrice" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#2b2540; background:#fff; outline:none;" /></div>' +
@@ -8272,6 +8536,9 @@
         case 'deactivateStaffUser': quickToggleStaffActive(t.getAttribute('data-uid'), false); break;
         case 'activateStaffUser': quickToggleStaffActive(t.getAttribute('data-uid'), true); break;
         case 'downloadLetterPdf': downloadLetterPdf(t.getAttribute('data-path')); break;
+        case 'openCancelLetterModal': openCancelLetterModal(t.getAttribute('data-order')); break;
+        case 'closeCancelLetterModal': closeCancelLetterModal(); break;
+        case 'confirmIssueCancelLetter': confirmIssueCancelLetter(); break;
         case 'filterStaffStatus': state.userMgmtStatusFilter = t.getAttribute('data-status'); render(); break;
       }
     });
@@ -8397,6 +8664,20 @@
         case 'staffSearchQuery': state.userMgmtSearchQuery = t.value; render(); break;
         case 'reportDateFrom': state.reportDateFrom = t.value; render(); break;
         case 'reportDateTo': state.reportDateTo = t.value; render(); break;
+        case 'cancelLetterReason': if (state.cancelLetterDraft) state.cancelLetterDraft.reason = t.value; break;
+        case 'cancelLetterAssetName': if (state.cancelLetterDraft) state.cancelLetterDraft.assetName = t.value; break;
+        case 'cancelLetterAssetQty': if (state.cancelLetterDraft) state.cancelLetterDraft.assetQty = toNumber(t.value); break;
+        case 'cancelLetterSerialNumber': if (state.cancelLetterDraft) state.cancelLetterDraft.serialNumber = t.value; break;
+        case 'cancelLetterAccessoriesList': if (state.cancelLetterDraft) state.cancelLetterDraft.accessoriesList = t.value; break;
+        case 'cancelLetterReturnDate': if (state.cancelLetterDraft) state.cancelLetterDraft.returnDate = t.value; break;
+        case 'cancelLetterReturnMethod': if (state.cancelLetterDraft) state.cancelLetterDraft.returnMethod = t.value; break;
+        case 'cancelLetterRefundAmount': if (state.cancelLetterDraft) state.cancelLetterDraft.refundAmount = toNumber(t.value); break;
+        case 'cancelLetterWaiveAmount': if (state.cancelLetterDraft) state.cancelLetterDraft.waiveAmount = toNumber(t.value); break;
+        case 'cancelLetterPlace': if (state.cancelLetterDraft) state.cancelLetterDraft.place = t.value; break;
+        // Radios toggle whether the matching amount <input> is shown at all, so (unlike the plain
+        // text/date fields above) these need a render() to redraw the form with/without that field.
+        case 'cancelLetterRefund': if (state.cancelLetterDraft) { state.cancelLetterDraft.refund = t.value; render(); } break;
+        case 'cancelLetterWaive': if (state.cancelLetterDraft) { state.cancelLetterDraft.waiveOutstanding = t.value; render(); } break;
       }
     });
   }
