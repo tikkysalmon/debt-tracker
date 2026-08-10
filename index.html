@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-10.01';
+  var APP_BUILD = '2026-08-10.02';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1518,6 +1518,10 @@
     smsModalTarget: null, smsModalPhone: '', smsModalTemplateId: '', smsModalDraft: '', smsModalManaging: false, smsModalSending: false,
     callDraft: '',
     trackingOrderId: '', trackingTrack: '',
+    // การแจ้งเตือน page (2026-08-10) — which summary group (templateId) is currently expanded to
+    // show its full row list; null = every group collapsed, just the summary cards. See
+    // renderNotifications/toggleNotificationGroup.
+    notificationsExpandedGroup: null,
     // Letterhead image for จดหมายทวงถามหนี้ (PDF) — one company-wide image, uploaded once via the
     // Upload tab. Falls back to a plain-text company name header (buildLetterHtml) until set.
     letterheadImageUrl: (persisted && persisted.letterheadImageUrl) || '',
@@ -7446,6 +7450,62 @@
       '</div>' +
     '</div>';
   }
+  // การแจ้งเตือน page (2026-08-10, per explicit user request) — same underlying data as
+  // renderPendingSmsBanner above (CV.pendingSmsReminders), but grouped into a summary (count per
+  // ติดตามหนี้ escalation template) with a click-to-expand drill-down, instead of one long always-
+  // expanded list. Reuses selectCustomer (same data-cid format as orderTableRow — customerId +
+  // '||' + customerName, see customerKey) so clicking a customer here opens the normal customer
+  // detail view, same as every other entry point into it.
+  function renderNotifications() {
+    var list = CV.pendingSmsReminders || [];
+    var groupsByKey = {};
+    list.forEach(function (r) {
+      var key = r.templateId || '';
+      if (!groupsByKey[key]) groupsByKey[key] = { key: key, templateName: r.templateName || '(ไม่ระบุ Template)', items: [] };
+      groupsByKey[key].items.push(r);
+    });
+    // Stable ordering by escalation stage (1→4), not alphabetical — matches how staff think about
+    // "ขั้นไหนของระบบแจ้งเตือนติดตามหนี้อัตโนมัติ" (see the SMS template stage setting).
+    var groups = Object.keys(groupsByKey).map(function (k) { return groupsByKey[k]; })
+      .sort(function (a, b) { return (a.items[0] && a.items[0].stage || 0) - (b.items[0] && b.items[0].stage || 0); });
+    var activeGroup = groups.find(function (g) { return g.key === state.notificationsExpandedGroup; });
+    var html = '<div>' +
+      '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:20px; color:#2b2540; margin-bottom:4px;">🔔 การแจ้งเตือน</div>' +
+      '<div style="font-size:13px; color:#6b6785; margin-bottom:22px;">สรุปรายการลูกหนี้ที่ต้องส่ง SMS ทวงหนี้วันนี้ ตามขั้นของระบบแจ้งเตือนติดตามหนี้อัตโนมัติ — คลิกการ์ดเพื่อดูรายการ</div>';
+    if (!list.length) {
+      html += '<div style="background:#fff; border:1px solid rgba(124,92,255,0.12); border-radius:16px; padding:40px; text-align:center; color:#8a86a3; font-size:14px;">✅ ไม่มีรายการที่ต้องแจ้งเตือนในตอนนี้</div>';
+      return html + '</div>';
+    }
+    html += '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:14px; margin-bottom:22px;">' +
+      groups.map(function (g) {
+        var expanded = g.key === state.notificationsExpandedGroup;
+        return '<div data-action="toggleNotificationGroup" data-group="' + esc(g.key) + '" style="cursor:pointer; background:' + (expanded ? 'linear-gradient(135deg,#7c5cff,#6647e0)' : '#fff') + '; border:1px solid ' + (expanded ? 'transparent' : 'rgba(240,140,0,0.3)') + '; border-radius:16px; padding:18px 20px; box-shadow:0 4px 14px rgba(124,92,255,0.06); transition:background 0.15s ease;">' +
+          '<div style="font-size:12.5px; font-weight:600; color:' + (expanded ? 'rgba(255,255,255,0.85)' : '#8a4b00') + '; margin-bottom:6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">🔔 ' + esc(g.templateName) + '</div>' +
+          '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:24px; color:' + (expanded ? '#fff' : '#2b2540') + ';">' + g.items.length + ' <span style="font-size:13px; font-weight:600;">รายการ</span></div>' +
+        '</div>';
+      }).join('') +
+    '</div>';
+    if (activeGroup) {
+      html += '<div style="background:rgba(240,140,0,0.05); border:1px solid rgba(240,140,0,0.2); border-radius:20px; padding:18px 22px;">' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:15px; color:#8a4b00; margin-bottom:12px;">📋 ' + esc(activeGroup.templateName) + ' (' + activeGroup.items.length + ' รายการ)</div>' +
+        '<div style="display:flex; flex-direction:column; gap:8px; max-height:520px; overflow-y:auto;">' +
+          activeGroup.items.map(function (r) {
+            return '<div style="background:#fff; border:1px solid rgba(240,140,0,0.2); border-radius:12px; padding:10px 14px; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">' +
+              '<div data-action="selectCustomer" data-cid="' + esc(String(r.customerId || '').trim() + '||' + String(r.customerName || '').trim()) + '" style="font-size:13px; color:#2b2540; cursor:pointer;" title="ดูรายละเอียดลูกค้า">' +
+                '<span style="font-weight:700; text-decoration:underline; text-decoration-color:rgba(43,37,64,0.25);">' + esc(r.customerName) + '</span>' +
+                ' <span style="color:#8a86a3;">(' + esc(r.customerId) + ')</span>' +
+                ' · 🔗 ' + esc(r.soDisplay) +
+                ' · งวดที่ ' + r.no +
+                ' <span style="color:#8a86a3;">(ครบกำหนดส่งตั้งแต่ ' + esc(r.dueSinceDisp) + ')</span>' +
+              '</div>' +
+              '<button data-action="openSendSms" data-level="installment" data-order="' + esc(r.orderId) + '" data-no="' + r.no + '" data-track="' + r.track + '" data-template="' + esc(r.templateId) + '" style="border:none; background:linear-gradient(135deg,#0ca678,#0b7a5b); color:#fff; padding:6px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:pointer; white-space:nowrap;">📱 ส่ง ' + esc(r.templateName) + '</button>' +
+            '</div>';
+          }).join('') +
+        '</div>' +
+      '</div>';
+    }
+    return html + '</div>';
+  }
   // Shared with renderReportDrilldownModal (2026-08-05) — same exact table used in ติดตามหนี้'s
   // results, so "เหมือนการแสดงข้อมูลในเมนูติดตามหนี้" (per explicit user request) is literally true,
   // not just visually similar.
@@ -8247,12 +8307,19 @@
     var uploadIcon = '<div style="width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-bottom:5px solid currentColor;"></div><div style="width:3px; height:5px; background:currentColor;"></div><div style="width:12px; height:2px; background:currentColor; border-radius:1px; margin-top:1px;"></div>';
     var usersIcon = '<div style="width:9px; height:9px; border-radius:50%; border:2px solid currentColor; box-sizing:border-box; position:absolute; top:1px; left:5.5px;"></div><div style="width:16px; height:8px; border-radius:8px 8px 0 0; border:2px solid currentColor; border-bottom:none; box-sizing:border-box; position:absolute; bottom:0; left:1px;"></div>';
     var reportIcon = '<div style="width:3px; height:6px; background:currentColor; border-radius:1px; position:absolute; bottom:1px; left:1px; opacity:0.55;"></div><div style="width:3px; height:10px; background:currentColor; border-radius:1px; position:absolute; bottom:1px; left:5.5px;"></div><div style="width:3px; height:14px; background:currentColor; border-radius:1px; position:absolute; bottom:1px; left:10px;"></div>';
+    var notifIcon = '<div style="width:11px; height:9px; border:2px solid currentColor; border-bottom:none; border-radius:8px 8px 0 0; box-sizing:border-box; position:absolute; top:2px; left:3.5px;"></div><div style="width:15px; height:2px; background:currentColor; border-radius:1px; position:absolute; top:10px; left:1.5px;"></div><div style="width:4px; height:3px; border-radius:0 0 4px 4px; background:currentColor; position:absolute; top:12px; left:6.5px;"></div>';
 
     // Nav items are permission-gated (2026-08) — a staff account without a given permission never
     // even sees the tab, not just gets denied after clicking it (the click-switch guards in
     // initEvents are the real enforcement; hiding the tab is just not dangling an option nobody
     // can use in front of them).
     var navTracking = can('tracking_view') ? navItem('tab-tracking', 'goTracking', trackIcon, 'ติดตามหนี้') : '';
+    // Right after ติดตามหนี้ in the sidebar (per explicit user request 2026-08-10) — reuses the same
+    // tracking_view permission rather than a new one, since it's the same ติดตามหนี้ escalation data
+    // (CV.pendingSmsReminders), just grouped into a summary + drill-down instead of Tracking's always-
+    // expanded inline banner (renderPendingSmsBanner, left untouched — this is additive, not a
+    // replacement, in case staff already rely on that at-a-glance view while on the Tracking page).
+    var navNotifications = can('tracking_view') ? navItem('tab-notifications', 'goNotifications', notifIcon, 'การแจ้งเตือน') : '';
     var navUpload = can('upload_files') ? navItem('tab-upload', 'goUpload', uploadIcon, 'อัพโหลดไฟล์') : '';
     var navUsers = (state.currentUser && state.currentUser.isAdmin) ? navItem('tab-users', 'goUsers', usersIcon, 'จัดการผู้ใช้งาน') : '';
     // Admin-only per explicit user request ("เฉพาะให้ผู้ดูแลระบบดูอย่างเดียว") — same isAdmin-only
@@ -8290,7 +8357,7 @@
       '</div>' +
       '<div style="display:flex; flex-direction:column; gap:4px;">' +
         navItem('tab-dashboard', 'goDashboard', dashIcon.replace('position:relative;', ''), 'Dashboard') +
-        navTracking + navUpload + navUsers + navReport +
+        navTracking + navNotifications + navUpload + navUsers + navReport +
       '</div>' +
       '<div style="flex:1;"></div>' +
       userChip +
@@ -8344,7 +8411,7 @@
 
   // ---------- Render ----------
   function updateTabStyles() {
-    var tabs = [['tab-dashboard', 'dashboard'], ['tab-tracking', 'tracking'], ['tab-upload', 'upload'], ['tab-users', 'users']];
+    var tabs = [['tab-dashboard', 'dashboard'], ['tab-tracking', 'tracking'], ['tab-notifications', 'notifications'], ['tab-upload', 'upload'], ['tab-users', 'users']];
     tabs.forEach(function (t) {
       var el = document.getElementById(t[0]);
       if (!el) return;
@@ -8387,6 +8454,7 @@
     var inner = document.getElementById('main-inner');
     if (state.view === 'upload') inner.innerHTML = renderUpload();
     else if (state.view === 'tracking') inner.innerHTML = renderTracking();
+    else if (state.view === 'notifications') inner.innerHTML = renderNotifications();
     else if (state.view === 'users') inner.innerHTML = renderUserManagement();
     else if (state.view === 'report') inner.innerHTML = renderReport();
     else inner.innerHTML = renderDashboard();
@@ -8421,6 +8489,13 @@
         // the user is already on an unrelated menu (จัดการผู้ใช้งาน/อัพโหลดไฟล์, etc.).
         case 'goDashboard': if (state.view !== 'tracking' || confirmDiscardIfDirty()) { state.view = 'dashboard'; render(); } break;
         case 'goTracking': if (!can('tracking_view')) { denyToast(); return; } if (state.view !== 'tracking' || confirmDiscardIfDirty()) { state.view = 'tracking'; render(); } break;
+        case 'goNotifications': if (!can('tracking_view')) { denyToast(); return; } if (state.view !== 'tracking' || confirmDiscardIfDirty()) { state.view = 'notifications'; render(); } break;
+        case 'toggleNotificationGroup': {
+          var ng = t.getAttribute('data-group') || '';
+          state.notificationsExpandedGroup = state.notificationsExpandedGroup === ng ? null : ng;
+          render();
+          break;
+        }
         case 'goUsers': if (!(state.currentUser && state.currentUser.isAdmin)) { denyToast(); return; } state.view = 'users'; render(); break;
         case 'goReport': if (!(state.currentUser && state.currentUser.isAdmin)) { denyToast(); return; } state.view = 'report'; render(); break;
         case 'showReportDrilldown': state.reportDrilldownSeg = t.getAttribute('data-seg'); state.reportDrilldownGroup = t.getAttribute('data-group'); render(); break;
