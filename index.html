@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-10.05';
+  var APP_BUILD = '2026-08-10.06';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -3490,64 +3490,58 @@
     state.cancelLetterDraft = null;
     render();
   }
-  // Container/font sizing (2026-08-10, tightened per real-PDF user report: original 14px/1.6/42×55
-  // spilled a 2nd page and — worse — a signature line got physically cut across the page-1/page-2
-  // boundary in the exported PDF, rendering as garbled overlapping text). This document has
-  // meaningfully more legal text than จดหมายทวงถามหนี้, so it needs an even tighter budget than that
-  // one's already-tightened 14px/1.55/42×55 (~950-1000px target) — see that function's own comment
-  // for the same single-page-budget philosophy. Letterhead now capped to a fixed max-height (user
-  // explicitly OK'd shrinking it: "สามารถปรับหัวกระดาษเพิ่มได้") since an oversized real letterhead
-  // image was eating a disproportionate share of the page-1 budget on its own.
+  // Container/font sizing (2026-08-10, second follow-up: after fitting on one page, user reported
+  // (via a real generated PDF) a large amount of leftover blank space at the bottom — the previous
+  // round tightened too aggressively for how much room a single A4 page actually has. Loosened back
+  // up (13.5px/1.55/36×50, was 12.5px/1.42/28×44) to fill the page better while still comfortably
+  // fitting on one page — the earlier round's screenshot showed content ending well before the
+  // halfway mark at the tighter sizing, so there's real room to grow before risking a 2nd page again.
   function buildCancelLetterHtml(order, letterNo, snapshot, draft, letterheadSrc) {
     var now = new Date();
     var todayIso = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
     var headerHtml = letterheadSrc
-      // Uncapped again (2026-08-10 follow-up) — the earlier 72px cap was over-correcting: once the
-      // body text tightening below got the document onto a single page with plenty of blank space
-      // left at the bottom (user report, real PDF), there was no longer any need to shrink the
-      // letterhead too — full-size like buildLetterHtml's own header treatment.
-      ? '<img src="' + letterheadSrc + '" style="width:100%; display:block; margin-bottom:14px;" />'
-      : '<div style="font-weight:700; font-size:16px; margin-bottom:5px;">บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด</div><div style="height:2px; background:#1f3a5f; margin-bottom:10px;"></div>';
+      ? '<img src="' + letterheadSrc + '" style="width:100%; display:block; margin-bottom:16px;" />'
+      : '<div style="font-weight:700; font-size:17px; margin-bottom:6px;">บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด</div><div style="height:2px; background:#1f3a5f; margin-bottom:14px;"></div>';
     var refundLine = draft.refund === 'yes'
       ? 'บริษัทตกลง <b>คืนเงิน</b> จำนวน ฿' + esc(fmtMoney(draft.refundAmount)) + ' ให้แก่ท่าน'
       : 'บริษัทตกลง <b>ไม่คืนเงิน</b> ให้แก่ท่าน';
     var waiveLine = draft.waiveOutstanding === 'waive'
       ? 'และ <b>ยกเลิกการเรียกเก็บ</b>ยอดค้างชำระคงเหลือ'
       : 'และ <b>ยังคงเรียกเก็บ</b>ยอดค้างชำระจำนวน ฿' + esc(fmtMoney(draft.waiveAmount)) + ' จากท่าน';
-    return '<div style="width:794px; box-sizing:border-box; padding:28px 44px; background:#ffffff; font-family:\'Sarabun\',\'Noto Sans Thai\',\'Leelawadee UI\',sans-serif; color:#1c1b19; font-size:12.5px; line-height:1.42;">' +
+    return '<div style="width:794px; box-sizing:border-box; padding:36px 50px; background:#ffffff; font-family:\'Sarabun\',\'Noto Sans Thai\',\'Leelawadee UI\',sans-serif; color:#1c1b19; font-size:13.5px; line-height:1.55;">' +
       headerHtml +
-      '<div style="display:flex; justify-content:space-between; font-size:11px; color:#5b5750; margin-bottom:10px;">' +
+      '<div style="display:flex; justify-content:space-between; font-size:12px; color:#5b5750; margin-bottom:14px;">' +
         '<div>เลขที่หนังสือ: CL-' + esc(order.orderId) + '-' + letterNo + '</div>' +
         '<div>ทำที่ ' + esc(draft.place) + ' · วันที่ ' + esc(fmtDate(todayIso)) + '</div>' +
       '</div>' +
-      '<div style="text-align:center; font-size:15px; font-weight:700; margin-bottom:2px;">หนังสือบอกเลิกสัญญาเช่าซื้อ</div>' +
-      '<div style="text-align:center; font-size:11px; color:#5b5750; margin-bottom:10px;">(ครั้งที่ ' + letterNo + ')</div>' +
-      '<div style="margin-bottom:3px;">เรื่อง การบอกเลิกสัญญาเช่าซื้อ</div>' +
-      '<div style="margin-bottom:8px;">เรียน คุณ' + esc(order.customerName) + '</div>' +
-      '<p style="margin:0 0 8px; text-align:justify; text-indent:1.5em;">ตามที่ท่านได้ทำสัญญาเช่าซื้อสินค้ากับบริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด ตามหนังสือสัญญาเช่าซื้อเลขที่ ' + esc(order.orderId) + (order.contractNo ? ' / ' + esc(order.contractNo) : '') + ' ฉบับลงวันที่ ' + esc(order.contractDateDisp) + ' สินค้าที่เช่าซื้อคือ ' + esc(draft.assetName) + ' จำนวน ' + esc(draft.assetQty) + ' เครื่อง ราคาเช่าซื้อสุทธิรวมทั้งสิ้น ฿' + esc(snapshot.totalContractDisp) + ' บาท โดยนับแต่วันทำสัญญา ท่านได้ชำระค่าเช่าซื้อให้แก่บริษัทมาแล้วเป็นเงิน ฿' + esc(snapshot.totalPaidDisp) + ' บาท และคงเหลือยอดค้างชำระตามสัญญาอีกจำนวน ฿' + esc(snapshot.totalOutstandingDisp) + ' บาท</p>' +
-      '<p style="margin:0 0 8px; text-align:justify; text-indent:1.5em;">เนื่องจากท่านมีความประสงค์ขอยกเลิกการเช่าซื้อและหยุดผ่อนชำระค่าเช่าซื้อสินค้าดังกล่าวก่อนครบกำหนดตามสัญญา โดยแจ้งเหตุผลว่า ' + esc(draft.reason || '-') + '</p>' +
-      '<p style="margin:0 0 8px; text-align:justify; text-indent:1.5em;">ทั้งนี้ ตามข้อ 6.2 และข้อ 8 แห่งสัญญาเช่าซื้อฉบับดังกล่าว กำหนดให้เมื่อสัญญาเช่าซื้อสิ้นสุดลงไม่ว่าด้วยเหตุใด ผู้เช่าซื้อมีหน้าที่ต้องส่งมอบทรัพย์สินที่เช่าซื้อพร้อมอุปกรณ์และส่วนควบทั้งหมดคืนแก่บริษัทในสภาพเรียบร้อย บริษัทจึงกำหนดเงื่อนไขการยกเลิกสัญญาว่า การบอกเลิกสัญญาเช่าซื้อฉบับนี้จะมีผลสมบูรณ์ต่อเมื่อ (1) ผู้เช่าซื้อได้ลงลายมือชื่อในหนังสือบอกเลิกสัญญาฉบับนี้ และ (2) ผู้เช่าซื้อได้ส่งมอบทรัพย์สินที่เช่าซื้อพร้อมอุปกรณ์เสริมและอุปกรณ์ประกอบทั้งหมดคืนให้แก่บริษัทครบถ้วนแล้วเท่านั้น เมื่อบริษัทได้รับหนังสือฉบับนี้และตรวจรับทรัพย์สินคืนครบถ้วนถูกต้องแล้ว จึงขอแจ้งบอกเลิกสัญญาเช่าซื้อฉบับดังกล่าว และให้ถือว่าสัญญาเป็นอันสิ้นสุดลงนับแต่วันที่บริษัทได้รับทรัพย์สินและอุปกรณ์คืนครบถ้วน</p>' +
-      '<p style="margin:0 0 8px; text-align:justify; text-indent:1.5em;">ในส่วนของยอดเงินที่ผู้เช่าซื้อได้ชำระมาแล้วและยอดค้างชำระคงเหลือ ให้เป็นไปตามข้อ 6.5 แห่งสัญญาเช่าซื้อ ซึ่งผู้เช่าซื้อยินยอมให้บริษัทหักเงินที่ชำระมาแล้วทั้งหมดเป็นค่าตอบแทนการใช้ทรัพย์สินและค่าเสียหาย โดยไม่มีการคืนเงิน เว้นแต่บริษัทจะใช้ดุลพินิจผ่อนปรนเป็นกรณีไป ในการนี้' + refundLine + ' ' + waiveLine + '</p>' +
-      '<div style="background:rgba(31,58,95,0.04); border:1px solid rgba(31,58,95,0.15); border-radius:8px; padding:8px 12px; margin:0 0 8px; font-size:11.5px; line-height:1.3;">' +
-        '<div style="font-weight:700; color:#1f3a5f; margin-bottom:3px;">บริษัทขอรับมอบทรัพย์สินที่เช่าซื้อและอุปกรณ์ทั้งหมดคืนจากท่านไว้ในสภาพเรียบร้อย ดังนี้</div>' +
-        '<div style="margin-bottom:1px;">ทรัพย์สิน ' + esc(draft.assetName) + ' จำนวน ' + esc(draft.assetQty) + ' เครื่อง</div>' +
-        '<div style="margin-bottom:1px;">หมายเลขเครื่อง (IMEI/Serial Number) ' + esc(draft.serialNumber || '-') + '</div>' +
-        '<div style="margin-bottom:1px;">อุปกรณ์และส่วนควบที่ต้องคืนทั้งหมด ' + esc(draft.accessoriesList || '-') + '</div>' +
-        '<div style="margin-bottom:1px;">วันที่คืนเครื่อง ' + esc(fmtDate(draft.returnDate) || '-') + '</div>' +
+      '<div style="text-align:center; font-size:16px; font-weight:700; margin-bottom:3px;">หนังสือบอกเลิกสัญญาเช่าซื้อ</div>' +
+      '<div style="text-align:center; font-size:12px; color:#5b5750; margin-bottom:14px;">(ครั้งที่ ' + letterNo + ')</div>' +
+      '<div style="margin-bottom:5px;">เรื่อง การบอกเลิกสัญญาเช่าซื้อ</div>' +
+      '<div style="margin-bottom:11px;">เรียน คุณ' + esc(order.customerName) + '</div>' +
+      '<p style="margin:0 0 11px; text-align:justify; text-indent:1.8em;">ตามที่ท่านได้ทำสัญญาเช่าซื้อสินค้ากับบริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด ตามหนังสือสัญญาเช่าซื้อเลขที่ ' + esc(order.orderId) + (order.contractNo ? ' / ' + esc(order.contractNo) : '') + ' ฉบับลงวันที่ ' + esc(order.contractDateDisp) + ' สินค้าที่เช่าซื้อคือ ' + esc(draft.assetName) + ' จำนวน ' + esc(draft.assetQty) + ' เครื่อง ราคาเช่าซื้อสุทธิรวมทั้งสิ้น ฿' + esc(snapshot.totalContractDisp) + ' บาท โดยนับแต่วันทำสัญญา ท่านได้ชำระค่าเช่าซื้อให้แก่บริษัทมาแล้วเป็นเงิน ฿' + esc(snapshot.totalPaidDisp) + ' บาท และคงเหลือยอดค้างชำระตามสัญญาอีกจำนวน ฿' + esc(snapshot.totalOutstandingDisp) + ' บาท</p>' +
+      '<p style="margin:0 0 11px; text-align:justify; text-indent:1.8em;">เนื่องจากท่านมีความประสงค์ขอยกเลิกการเช่าซื้อและหยุดผ่อนชำระค่าเช่าซื้อสินค้าดังกล่าวก่อนครบกำหนดตามสัญญา โดยแจ้งเหตุผลว่า ' + esc(draft.reason || '-') + '</p>' +
+      '<p style="margin:0 0 11px; text-align:justify; text-indent:1.8em;">ทั้งนี้ ตามข้อ 6.2 และข้อ 8 แห่งสัญญาเช่าซื้อฉบับดังกล่าว กำหนดให้เมื่อสัญญาเช่าซื้อสิ้นสุดลงไม่ว่าด้วยเหตุใด ผู้เช่าซื้อมีหน้าที่ต้องส่งมอบทรัพย์สินที่เช่าซื้อพร้อมอุปกรณ์และส่วนควบทั้งหมดคืนแก่บริษัทในสภาพเรียบร้อย บริษัทจึงกำหนดเงื่อนไขการยกเลิกสัญญาว่า การบอกเลิกสัญญาเช่าซื้อฉบับนี้จะมีผลสมบูรณ์ต่อเมื่อ (1) ผู้เช่าซื้อได้ลงลายมือชื่อในหนังสือบอกเลิกสัญญาฉบับนี้ และ (2) ผู้เช่าซื้อได้ส่งมอบทรัพย์สินที่เช่าซื้อพร้อมอุปกรณ์เสริมและอุปกรณ์ประกอบทั้งหมดคืนให้แก่บริษัทครบถ้วนแล้วเท่านั้น เมื่อบริษัทได้รับหนังสือฉบับนี้และตรวจรับทรัพย์สินคืนครบถ้วนถูกต้องแล้ว จึงขอแจ้งบอกเลิกสัญญาเช่าซื้อฉบับดังกล่าว และให้ถือว่าสัญญาเป็นอันสิ้นสุดลงนับแต่วันที่บริษัทได้รับทรัพย์สินและอุปกรณ์คืนครบถ้วน</p>' +
+      '<p style="margin:0 0 11px; text-align:justify; text-indent:1.8em;">ในส่วนของยอดเงินที่ผู้เช่าซื้อได้ชำระมาแล้วและยอดค้างชำระคงเหลือ ให้เป็นไปตามข้อ 6.5 แห่งสัญญาเช่าซื้อ ซึ่งผู้เช่าซื้อยินยอมให้บริษัทหักเงินที่ชำระมาแล้วทั้งหมดเป็นค่าตอบแทนการใช้ทรัพย์สินและค่าเสียหาย โดยไม่มีการคืนเงิน เว้นแต่บริษัทจะใช้ดุลพินิจผ่อนปรนเป็นกรณีไป ในการนี้' + refundLine + ' ' + waiveLine + '</p>' +
+      '<div style="background:rgba(31,58,95,0.04); border:1px solid rgba(31,58,95,0.15); border-radius:8px; padding:9px 13px; margin:0 0 11px; font-size:12.5px; line-height:1.4;">' +
+        '<div style="font-weight:700; color:#1f3a5f; margin-bottom:4px;">บริษัทขอรับมอบทรัพย์สินที่เช่าซื้อและอุปกรณ์ทั้งหมดคืนจากท่านไว้ในสภาพเรียบร้อย ดังนี้</div>' +
+        '<div style="margin-bottom:2px;">ทรัพย์สิน ' + esc(draft.assetName) + ' จำนวน ' + esc(draft.assetQty) + ' เครื่อง</div>' +
+        '<div style="margin-bottom:2px;">หมายเลขเครื่อง (IMEI/Serial Number) ' + esc(draft.serialNumber || '-') + '</div>' +
+        '<div style="margin-bottom:2px;">อุปกรณ์และส่วนควบที่ต้องคืนทั้งหมด ' + esc(draft.accessoriesList || '-') + '</div>' +
+        '<div style="margin-bottom:2px;">วันที่คืนเครื่อง ' + esc(fmtDate(draft.returnDate) || '-') + '</div>' +
         '<div>วิธีการคืน ' + esc(draft.returnMethod || '-') + '</div>' +
       '</div>' +
-      '<p style="margin:0 0 10px; text-align:justify;">ค่าใช้จ่ายและค่าเสื่อมสภาพอันเกิดจากการเปิดใช้งานเครื่อง (ถ้ามี) ให้เป็นไปตามที่คู่สัญญาตกลงกันตามข้อ 8.2 แห่งสัญญาเช่าซื้อ บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด และ ' + esc(order.customerName) + ' (ผู้เช่าซื้อ) ตกลงร่วมกันให้บรรดาข้อพิพาทและข้อเรียกร้องทั้งปวงที่เกี่ยวข้องกับสัญญาเช่าซื้อฉบับนี้เป็นอันระงับสิ้นสุดลง และทั้งสองฝ่ายไม่ติดใจที่จะเรียกร้องค่าเสียหายเพิ่มเติม หรือดำเนินคดีใด ๆ ต่อกันอีก ทั้งทางแพ่งและทางอาญา ทั้งนี้ ภายใต้เงื่อนไขที่คู่สัญญาทั้งสองฝ่ายได้ปฏิบัติตามที่ตกลงกันไว้ในหนังสือฉบับนี้ครบถ้วนแล้ว</p>' +
-      '<p style="margin:0 0 12px;">จึงเรียนมาเพื่อทราบ<br/>ขอแสดงความนับถือ</p>' +
-      '<div style="display:flex; justify-content:space-between; margin-top:10px;">' +
-        '<div style="text-align:center; font-size:12px; width:45%;">' +
-          '<div style="border-top:1px solid #5b5750; margin-bottom:4px; padding-top:4px;">ลงชื่อ ........................................... ผู้แทนผู้ให้เช่า</div>' +
-          '<div style="color:#5b5750; font-size:11px;">( พนักงานฝ่ายบัญชีหนี้สิน บจก.แซลม่อน เอ็นเตอร์ไพรส์ )</div>' +
-          '<div style="color:#5b5750; font-size:11px; margin-top:3px;">วันที่ ...................................</div>' +
+      '<p style="margin:0 0 14px; text-align:justify;">ค่าใช้จ่ายและค่าเสื่อมสภาพอันเกิดจากการเปิดใช้งานเครื่อง (ถ้ามี) ให้เป็นไปตามที่คู่สัญญาตกลงกันตามข้อ 8.2 แห่งสัญญาเช่าซื้อ บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด และ ' + esc(order.customerName) + ' (ผู้เช่าซื้อ) ตกลงร่วมกันให้บรรดาข้อพิพาทและข้อเรียกร้องทั้งปวงที่เกี่ยวข้องกับสัญญาเช่าซื้อฉบับนี้เป็นอันระงับสิ้นสุดลง และทั้งสองฝ่ายไม่ติดใจที่จะเรียกร้องค่าเสียหายเพิ่มเติม หรือดำเนินคดีใด ๆ ต่อกันอีก ทั้งทางแพ่งและทางอาญา ทั้งนี้ ภายใต้เงื่อนไขที่คู่สัญญาทั้งสองฝ่ายได้ปฏิบัติตามที่ตกลงกันไว้ในหนังสือฉบับนี้ครบถ้วนแล้ว</p>' +
+      '<p style="margin:0 0 16px;">จึงเรียนมาเพื่อทราบ<br/>ขอแสดงความนับถือ</p>' +
+      '<div style="display:flex; justify-content:space-between; margin-top:22px;">' +
+        '<div style="text-align:center; font-size:13px; width:45%;">' +
+          '<div style="border-top:1px solid #5b5750; margin-bottom:6px; padding-top:6px;">ลงชื่อ ........................................... ผู้แทนผู้ให้เช่า</div>' +
+          '<div style="color:#5b5750; font-size:12px;">( พนักงานฝ่ายบัญชีหนี้สิน บจก.แซลม่อน เอ็นเตอร์ไพรส์ )</div>' +
+          '<div style="color:#5b5750; font-size:12px; margin-top:4px;">วันที่ ...................................</div>' +
         '</div>' +
-        '<div style="text-align:center; font-size:12px; width:45%;">' +
-          '<div style="border-top:1px solid #5b5750; margin-bottom:4px; padding-top:4px;">ลงชื่อ ........................................... ผู้เช่าซื้อ</div>' +
-          '<div style="color:#5b5750; font-size:11px;">( ' + esc(order.customerName) + ' )</div>' +
-          '<div style="color:#5b5750; font-size:11px; margin-top:3px;">วันที่ ...................................</div>' +
+        '<div style="text-align:center; font-size:13px; width:45%;">' +
+          '<div style="border-top:1px solid #5b5750; margin-bottom:6px; padding-top:6px;">ลงชื่อ ........................................... ผู้เช่าซื้อ</div>' +
+          '<div style="color:#5b5750; font-size:12px;">( ' + esc(order.customerName) + ' )</div>' +
+          '<div style="color:#5b5750; font-size:12px; margin-top:4px;">วันที่ ...................................</div>' +
         '</div>' +
       '</div>' +
     '</div>';
