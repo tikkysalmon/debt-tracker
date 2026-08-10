@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-10.07';
+  var APP_BUILD = '2026-08-10.08';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -3508,6 +3508,13 @@
     var waiveLine = draft.waiveOutstanding === 'waive'
       ? 'และ <b>ยกเลิกการเรียกเก็บ</b>ยอดค้างชำระคงเหลือ'
       : 'และ <b>ยังคงเรียกเก็บ</b>ยอดค้างชำระจำนวน ฿' + esc(fmtMoney(draft.waiveAmount)) + ' จากท่าน';
+    // Per explicit user request: when there's no real เลขที่สัญญา on file, don't just swap in the SO
+    // number under the "ตามหนังสือสัญญาเช่าซื้อเลขที่" phrasing (a document reference a customer never
+    // received) — use "ตามคำสั่งซื้อเลขที่" instead, since SO-prefixed numbers are order numbers, not
+    // contract numbers.
+    var contractRefPhrase = order.contractNo
+      ? 'ตามหนังสือสัญญาเช่าซื้อเลขที่ ' + esc(order.contractNo)
+      : 'ตามคำสั่งซื้อเลขที่ ' + esc(order.orderId);
     return '<div style="width:794px; box-sizing:border-box; padding:36px 50px; background:#ffffff; font-family:\'Sarabun\',\'Noto Sans Thai\',\'Leelawadee UI\',sans-serif; color:#1c1b19; font-size:13.5px; line-height:1.55;">' +
       headerHtml +
       '<div style="display:flex; justify-content:space-between; font-size:12px; color:#5b5750; margin-bottom:14px;">' +
@@ -3518,7 +3525,7 @@
       '<div style="text-align:center; font-size:12px; color:#5b5750; margin-bottom:14px;">(ครั้งที่ ' + letterNo + ')</div>' +
       '<div style="margin-bottom:5px;">เรื่อง การบอกเลิกสัญญาเช่าซื้อ</div>' +
       '<div style="margin-bottom:11px;">เรียน คุณ' + esc(order.customerName) + '</div>' +
-      '<p style="margin:0 0 11px; text-align:justify; text-indent:1.8em;">ตามที่ท่านได้ทำสัญญาเช่าซื้อสินค้ากับบริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด ตามหนังสือสัญญาเช่าซื้อเลขที่ ' + esc(order.contractNo || order.orderId) + ' ฉบับลงวันที่ ' + esc(order.contractDateDisp) + ' สินค้าที่เช่าซื้อคือ ' + esc(draft.assetName) + ' จำนวน ' + esc(draft.assetQty) + ' เครื่อง ราคาเช่าซื้อสุทธิรวมทั้งสิ้น ฿' + esc(snapshot.totalContractDisp) + ' บาท โดยนับแต่วันทำสัญญา ท่านได้ชำระค่าเช่าซื้อให้แก่บริษัทมาแล้วเป็นเงิน ฿' + esc(snapshot.totalPaidDisp) + ' บาท และคงเหลือยอดค้างชำระตามสัญญาอีกจำนวน ฿' + esc(snapshot.totalOutstandingDisp) + ' บาท</p>' +
+      '<p style="margin:0 0 11px; text-align:justify; text-indent:1.8em;">ตามที่ท่านได้ทำสัญญาเช่าซื้อสินค้ากับบริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด ' + contractRefPhrase + ' ฉบับลงวันที่ ' + esc(order.contractDateDisp) + ' สินค้าที่เช่าซื้อคือ ' + esc(draft.assetName) + ' จำนวน ' + esc(draft.assetQty) + ' เครื่อง ราคาเช่าซื้อสุทธิรวมทั้งสิ้น ฿' + esc(snapshot.totalContractDisp) + ' บาท โดยนับแต่วันทำสัญญา ท่านได้ชำระค่าเช่าซื้อให้แก่บริษัทมาแล้วเป็นเงิน ฿' + esc(snapshot.totalPaidDisp) + ' บาท และคงเหลือยอดค้างชำระตามสัญญาอีกจำนวน ฿' + esc(snapshot.totalOutstandingDisp) + ' บาท</p>' +
       '<p style="margin:0 0 11px; text-align:justify; text-indent:1.8em;">เนื่องจากท่านมีความประสงค์ขอยกเลิกการเช่าซื้อและหยุดผ่อนชำระค่าเช่าซื้อสินค้าดังกล่าวก่อนครบกำหนดตามสัญญา โดยแจ้งเหตุผลว่า ' + esc(draft.reason || '-') + '</p>' +
       '<p style="margin:0 0 11px; text-align:justify; text-indent:1.8em;">ทั้งนี้ ตามข้อ 6.2 และข้อ 8 แห่งสัญญาเช่าซื้อฉบับดังกล่าว กำหนดให้เมื่อสัญญาเช่าซื้อสิ้นสุดลงไม่ว่าด้วยเหตุใด ผู้เช่าซื้อมีหน้าที่ต้องส่งมอบทรัพย์สินที่เช่าซื้อพร้อมอุปกรณ์และส่วนควบทั้งหมดคืนแก่บริษัทในสภาพเรียบร้อย บริษัทจึงกำหนดเงื่อนไขการยกเลิกสัญญาว่า การบอกเลิกสัญญาเช่าซื้อฉบับนี้จะมีผลสมบูรณ์ต่อเมื่อ (1) ผู้เช่าซื้อได้ลงลายมือชื่อในหนังสือบอกเลิกสัญญาฉบับนี้ และ (2) ผู้เช่าซื้อได้ส่งมอบทรัพย์สินที่เช่าซื้อพร้อมอุปกรณ์เสริมและอุปกรณ์ประกอบทั้งหมดคืนให้แก่บริษัทครบถ้วนแล้วเท่านั้น เมื่อบริษัทได้รับหนังสือฉบับนี้และตรวจรับทรัพย์สินคืนครบถ้วนถูกต้องแล้ว จึงขอแจ้งบอกเลิกสัญญาเช่าซื้อฉบับดังกล่าว และให้ถือว่าสัญญาเป็นอันสิ้นสุดลงนับแต่วันที่บริษัทได้รับทรัพย์สินและอุปกรณ์คืนครบถ้วน</p>' +
       '<p style="margin:0 0 11px; text-align:justify; text-indent:1.8em;">ในส่วนของยอดเงินที่ผู้เช่าซื้อได้ชำระมาแล้วและยอดค้างชำระคงเหลือ ให้เป็นไปตามข้อ 6.5 แห่งสัญญาเช่าซื้อ ซึ่งผู้เช่าซื้อยินยอมให้บริษัทหักเงินที่ชำระมาแล้วทั้งหมดเป็นค่าตอบแทนการใช้ทรัพย์สินและค่าเสียหาย โดยไม่มีการคืนเงิน เว้นแต่บริษัทจะใช้ดุลพินิจผ่อนปรนเป็นกรณีไป ในการนี้' + refundLine + ' ' + waiveLine + '</p>' +
