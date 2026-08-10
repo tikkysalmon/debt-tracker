@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-10.10';
+  var APP_BUILD = '2026-08-10.11';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -6261,9 +6261,12 @@
   // Neither Soti (CSV export: Device Name/Customer_Name/...) nor Marena (Excel export: ชื่อลูกค้า/
   // ข้อมูลติดต่อลูกค้า/..., sheet "ข้อมูลอุปกรณ์") carries an SO/order number, so matching is
   // inherently by customer identity — phone (Marena only, far more reliable than a name) first,
-  // then name (both systems), and ONLY applied when EXACTLY ONE order matches; 2+ candidates is
-  // left unmatched rather than guessing which customer a row belongs to (same caution as the
-  // email-status importer's ambiguous-match handling).
+  // then name (both systems, split on "/" — see splitLockMatchNames — since a name cell can carry
+  // 2+ people), and ONLY applied when EXACTLY ONE order matches; 2+ candidates is left unmatched
+  // rather than guessing which customer a row belongs to (same caution as the email-status
+  // importer's ambiguous-match handling). Marena rows additionally cross-check "ชื่ออุปกรณ์" against
+  // the candidate order(s)' product to narrow a name collision down further — see
+  // normalizeLockMatchDevice and its call site in onLockSystemFileChange.
   function normalizeLockMatchName(name) {
     return String(name || '')
       .replace(/\([^)]*\)/g, '')   // drop a parenthetical nickname, e.g. "ปิยะพร สมใจ (เค้ก)" → "ปิยะพร สมใจ"
@@ -6272,8 +6275,41 @@
       .trim()
       .toLowerCase();
   }
+  // A name cell can carry 2+ people separated by "/" (e.g. "กันยภร แดงหนู / พรนภา แดงหนู" — primary +
+  // a reference/co-signer) — fixed 2026-08-10, user report via screenshot. Matching the WHOLE string
+  // as one name never hits a real order (whose customerName is almost always just one of them), so
+  // this tries each split name separately and the caller unions whatever each one matches.
+  function splitLockMatchNames(raw) {
+    var out = [];
+    String(raw || '').split('/').forEach(function (part) {
+      var k = normalizeLockMatchName(part);
+      if (k && out.indexOf(k) === -1) out.push(k);
+    });
+    return out;
+  }
   function normalizeLockMatchPhone(phone) {
     return String(phone || '').replace(/\D+/g, '');
+  }
+  // Same "/" multi-value problem as names, found while investigating that bug report (2026-08-10) —
+  // real Marena/Soti exports carry 2 phone numbers in one cell just as often as 2 names (e.g.
+  // "0876635332 / 0642288207"). normalizeLockMatchPhone alone strips ALL non-digits from the WHOLE
+  // string, which for a 2-phone cell silently concatenates both numbers into one 20-digit string
+  // that can never match anything real — this splits first, normalizes each, same union pattern as
+  // splitLockMatchNames.
+  function splitLockMatchPhones(raw) {
+    var out = [];
+    String(raw || '').split('/').forEach(function (part) {
+      var k = normalizeLockMatchPhone(part);
+      if (k && out.indexOf(k) === -1) out.push(k);
+    });
+    return out;
+  }
+  // Marena-only (2026-08-10, per explicit user request): its "ชื่ออุปกรณ์" column often carries a
+  // trailing " - <serial>" (e.g. "iPhone - J9WLXQHYTJ") — stripped here since this app's own
+  // productList never records a serial, only the model/variant text, so keeping the serial would
+  // make every comparison fail.
+  function normalizeLockMatchDevice(name) {
+    return String(name || '').split(' - ')[0].replace(/\s+/g, ' ').trim().toLowerCase();
   }
   function onLockSystemFileChange(file) {
     if (!file) return;
@@ -6281,6 +6317,7 @@
     var system = state.lockImportSystem, mode = state.lockImportMode;
     var NAME_ALIASES = ['customer_name', 'ชื่อลูกค้า'];
     var PHONE_ALIASES = ['ข้อมูลติดต่อลูกค้า', 'เบอร์ติดต่อลูกค้า', 'เบอร์โทรศัพท์'];
+    var DEVICE_ALIASES = ['ชื่ออุปกรณ์'];
     readRows(file).then(function (rows) {
       if (!rows.length) { state.uploadMsgLockSystem = '⚠️ ไม่พบข้อมูลในไฟล์'; render(); return; }
       var headers = Object.keys(rows[0]);
@@ -6303,13 +6340,40 @@
       rows.forEach(function (r) {
         var rawName = resolveField(r, NAME_ALIASES);
         var rawPhone = resolveField(r, PHONE_ALIASES);
-        var nameKey = normalizeLockMatchName(rawName);
-        var phoneKey = normalizeLockMatchPhone(rawPhone);
+        var nameKeys = splitLockMatchNames(rawName);
+        var phoneKeys = splitLockMatchPhones(rawPhone);
         // Blank device-only rows (spare/unassigned devices, e.g. Soti's own "เครื่องร้านแอดมินเพจ"
         // entries) are expected noise in these exports, not a data-quality problem — skip silently,
         // don't count toward "unmatched".
-        if (!nameKey && !phoneKey) return;
-        var candidates = (phoneKey && byPhone[phoneKey]) || (nameKey && byName[nameKey]) || [];
+        if (!nameKeys.length && !phoneKeys.length) return;
+        var candidates = [];
+        var seenIds = {};
+        function addCandidates(list) {
+          list.forEach(function (o) { if (!seenIds[o.orderId]) { seenIds[o.orderId] = true; candidates.push(o); } });
+        }
+        phoneKeys.forEach(function (pk) { if (byPhone[pk]) addCandidates(byPhone[pk]); });
+        // Name only contributes candidates when phone matched NOTHING — phone is the more reliable
+        // signal (Marena only; Soti rows have no phoneKeys at all, so this is a no-op for Soti and
+        // falls straight through to name matching as before).
+        if (!candidates.length) {
+          nameKeys.forEach(function (nk) { if (byName[nk]) addCandidates(byName[nk]); });
+        }
+        // Marena-only extra check (per explicit user request 2026-08-10): once matched by name/
+        // phone, also cross-check the row's device name against that order's product — narrows down
+        // a name collision (2+ candidates → exactly 1 whose product plausibly matches). Only ever
+        // NARROWS, never widens or vetoes to zero — if the device text doesn't line up with ANY
+        // candidate's productList (e.g. wording/language difference), the original candidate set is
+        // kept rather than silently turning an otherwise-good match into unmatched.
+        if (system === 'Marena' && candidates.length > 1) {
+          var deviceKey = normalizeLockMatchDevice(resolveField(r, DEVICE_ALIASES));
+          if (deviceKey) {
+            var deviceFiltered = candidates.filter(function (o) {
+              var hay = (String(o.productList || '') + ' ' + String(o.accessoryProductList || '')).toLowerCase();
+              return hay.indexOf(deviceKey) !== -1;
+            });
+            if (deviceFiltered.length) candidates = deviceFiltered;
+          }
+        }
         if (candidates.length === 1) {
           var o = candidates[0];
           o.lockSystem = system;
