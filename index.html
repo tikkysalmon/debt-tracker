@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-10.04';
+  var APP_BUILD = '2026-08-10.05';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -3502,7 +3502,11 @@
     var now = new Date();
     var todayIso = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
     var headerHtml = letterheadSrc
-      ? '<div style="width:100%; max-height:72px; overflow:hidden; margin-bottom:10px;"><img src="' + letterheadSrc + '" style="width:100%; display:block;" /></div>'
+      // Uncapped again (2026-08-10 follow-up) — the earlier 72px cap was over-correcting: once the
+      // body text tightening below got the document onto a single page with plenty of blank space
+      // left at the bottom (user report, real PDF), there was no longer any need to shrink the
+      // letterhead too — full-size like buildLetterHtml's own header treatment.
+      ? '<img src="' + letterheadSrc + '" style="width:100%; display:block; margin-bottom:14px;" />'
       : '<div style="font-weight:700; font-size:16px; margin-bottom:5px;">บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด</div><div style="height:2px; background:#1f3a5f; margin-bottom:10px;"></div>';
     var refundLine = draft.refund === 'yes'
       ? 'บริษัทตกลง <b>คืนเงิน</b> จำนวน ฿' + esc(fmtMoney(draft.refundAmount)) + ' ให้แก่ท่าน'
