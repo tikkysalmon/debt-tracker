@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-10.08';
+  var APP_BUILD = '2026-08-10.09';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -220,6 +220,7 @@
     confirmIssueCancelLetter: 'send_letter',
     onDebtFile: 'upload_files', onPaymentFile: 'upload_files', onCustomerInfo: 'upload_files', onLetterheadFile: 'upload_files', onEmailReportFile: 'upload_files', onSmsLogFile: 'upload_files', onLockSystemFile: 'upload_files',
     deleteInstallment: 'delete_data', cancelOrder: 'delete_data', undoAccountLevelStatus: 'delete_data',
+    deleteCancelLetterHistory: 'delete_data',
     // Full data wipe — too dangerous to leave as a togglable permission; admin-only no matter what.
     clearToEmpty: '__admin__', resetToSample: '__admin__',
     newStaffUser: '__admin__', editStaffUser: '__admin__', saveStaffUser: '__admin__',
@@ -3653,6 +3654,30 @@
         render();
       });
   }
+  // Unlike letterHistory/emailHistory (จดหมายทวงถามหนี้ — a purely informational document, kept as a
+  // permanent audit trail with no delete path anywhere in this app), a cancelLetterHistory entry has
+  // a REAL side effect attached — issuing it cascades every not-yet-paid งวด to ยกเลิกสัญญา คืนเครื่อง
+  // and flips the account status (see confirmIssueCancelLetter). A test/mistaken issuance therefore
+  // needs to be genuinely reversible, not just correctable-by-reissue — added per explicit user
+  // request 2026-08-10 to clean up test data before go-live. Deliberately does NOT auto-undo the
+  // status cascade itself (that's a separate, already-existing tool — undoAccountLevelStatus, the
+  // ✏️ on the "ยกเลิกสัญญา คืนเครื่อง" pill — since an order could legitimately be cancelled for a
+  // reason unrelated to this specific ครั้งที่, e.g. issued twice or cancelled via the per-งวด
+  // dropdown separately; auto-coupling the two could silently revert a real cancellation status).
+  function deleteCancelLetterHistory(orderId, no) {
+    var order = state.orders.find(function (o) { return o.orderId === orderId; });
+    if (!order) return;
+    var entry = (order.cancelLetterHistory || []).find(function (h) { return h.no === no; });
+    if (!entry) return;
+    if (!window.confirm('ยืนยันลบประวัติหนังสือบอกเลิกสัญญา ครั้งที่ ' + no + ' ของ SO ' + (order.soDisplay || order.orderId) + ' ?\n\nใช้เฉพาะกรณีเป็นการทดสอบ/ออกผิดพลาดเท่านั้น (ยกเลิกไม่ได้)\n\nการลบนี้ไม่คืนสถานะงวดที่ถูกตั้งเป็น "ยกเลิกสัญญา คืนเครื่อง" ให้อัตโนมัติ — ถ้าครั้งนี้เป็นการทดสอบ ให้กด ✏️ ที่ป้าย "ยกเลิกสัญญา คืนเครื่อง" บนข้อมูล SO ด้วย เพื่อคืนสถานะงวดกลับไปคำนวณตามข้อมูลจริง')) return;
+    updateOrderField(orderId, 'cancelLetterHistory', (order.cancelLetterHistory || []).filter(function (h) { return h.no !== no; }));
+    // Best-effort — an orphaned PDF left behind in Storage is harmless (nothing references it once
+    // the history entry above is gone), so a failure here is silently ignored rather than blocking
+    // the actual deletion the user asked for.
+    if (db && entry.url) {
+      db.storage.from(CLOUD_BUCKET).remove([storagePathFromValue(entry.url)]).catch(function () {});
+    }
+  }
   // ---------- ส่งเมลล์จดหมายทวงถามหนี้ (Thaibulksms Email API) ----------
   // Thaibulksms's Email API (confirmed from their official developer PDF, 2026-07-31) is
   // TEMPLATE-based only: POST https://tbs-email-api-gateway.omb.to/email/v1/send_template with
@@ -4703,7 +4728,7 @@
       trackingHistoryList(history, function (h) {
         return '<div style="background:rgba(179,38,30,0.05); border:1px solid rgba(179,38,30,0.12); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' +
           '<div style="font-weight:700; color:#b3261e; margin-bottom:2px;">🕐 ' + esc(h.at) + ' · ครั้งที่ ' + h.no + (h.by ? ' · โดย ' + esc(h.by) : '') + '</div>' +
-          '<div style="color:#6b6785;"><span data-action="downloadLetterPdf" data-path="' + esc(h.url) + '" style="color:#7c5cff; font-weight:600; cursor:pointer;">⬇ ดาวน์โหลด</span></div>' +
+          '<div style="color:#6b6785;"><span data-action="downloadLetterPdf" data-path="' + esc(h.url) + '" style="color:#7c5cff; font-weight:600; cursor:pointer;">⬇ ดาวน์โหลด</span> · <span data-action="deleteCancelLetterHistory" data-order="' + esc(ord.orderId) + '" data-no="' + h.no + '" title="ลบประวัตินี้ — ใช้เฉพาะกรณีทดสอบ/ออกผิดพลาด" style="color:#e03131; font-weight:600; cursor:pointer;">🗑 ลบ</span></div>' +
         '</div>';
       });
     return trackingCard('#b3261e', '📄', 'หนังสือบอกเลิกสัญญาเช่าซื้อ', history.length, body);
@@ -8622,6 +8647,7 @@
         case 'openCancelLetterModal': openCancelLetterModal(t.getAttribute('data-order')); break;
         case 'closeCancelLetterModal': closeCancelLetterModal(); break;
         case 'confirmIssueCancelLetter': confirmIssueCancelLetter(); break;
+        case 'deleteCancelLetterHistory': deleteCancelLetterHistory(t.getAttribute('data-order'), Number(t.getAttribute('data-no'))); break;
         case 'filterStaffStatus': state.userMgmtStatusFilter = t.getAttribute('data-status'); render(); break;
       }
     });
