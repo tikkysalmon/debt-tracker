@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-10.11';
+  var APP_BUILD = '2026-08-10.12';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -6267,6 +6267,12 @@
   // importer's ambiguous-match handling). Marena rows additionally cross-check "ชื่ออุปกรณ์" against
   // the candidate order(s)' product to narrow a name collision down further — see
   // normalizeLockMatchDevice and its call site in onLockSystemFileChange.
+  //
+  // Re-uploads are gap-filling only (2026-08-10, per explicit user request): a matched order whose
+  // lockSystem is already set (from any earlier import or manual edit) is left untouched, not
+  // re-stamped/overwritten — see the "alreadySet" branch in onLockSystemFileChange. Re-running the
+  // same file (or a different system's file for the same customer) is therefore always safe to
+  // repeat; it only ever fills orders still showing "ไม่มีในระบบล็อคเครื่อง".
   function normalizeLockMatchName(name) {
     return String(name || '')
       .replace(/\([^)]*\)/g, '')   // drop a parenthetical nickname, e.g. "ปิยะพร สมใจ (เค้ก)" → "ปิยะพร สมใจ"
@@ -6336,7 +6342,7 @@
         var nameKey = normalizeLockMatchName(o.customerName);
         if (nameKey) (byName[nameKey] = byName[nameKey] || []).push(o);
       });
-      var matched = 0, unmatched = 0, ambiguous = 0, sampleUnmatched = [];
+      var matched = 0, unmatched = 0, ambiguous = 0, alreadySet = 0, sampleUnmatched = [];
       rows.forEach(function (r) {
         var rawName = resolveField(r, NAME_ALIASES);
         var rawPhone = resolveField(r, PHONE_ALIASES);
@@ -6376,10 +6382,22 @@
         }
         if (candidates.length === 1) {
           var o = candidates[0];
-          o.lockSystem = system;
-          o.lockSystemMode = mode;
-          o.lockSystemUpdatedAt = nowTimestamp();
-          matched++;
+          // Re-upload safety (2026-08-10, per explicit user request): only fill in orders CURRENTLY
+          // showing "ไม่มีในระบบล็อคเครื่อง" (o.lockSystem empty) — an order that already carries a
+          // lockSystem value is treated as already-current and left untouched, so re-running an
+          // import only ever fills gaps instead of re-stamping/overwriting already-good records
+          // (and, as a side effect, structurally protects an earlier Marena match from being
+          // silently overwritten by a later Soti upload of the same customer). Staff can still
+          // correct an individual order's lockSystem/lockSystemMode by hand via the order card's own
+          // dropdowns — this only narrows what BULK file re-import is allowed to touch.
+          if (o.lockSystem) {
+            alreadySet++;
+          } else {
+            o.lockSystem = system;
+            o.lockSystemMode = mode;
+            o.lockSystemUpdatedAt = nowTimestamp();
+            matched++;
+          }
         } else if (candidates.length > 1) {
           ambiguous++;
         } else {
@@ -6387,7 +6405,11 @@
           if (sampleUnmatched.length < 10) sampleUnmatched.push(rawName || rawPhone);
         }
       });
-      if (matched === 0) {
+      // "No new rows to write" now has 2 very different causes — a genuine failure to recognize
+      // anything (alreadySet===0 too — the original hard-stop) vs. a clean re-upload where every
+      // matched row was already up to date (alreadySet>0) — the latter is a success, just with
+      // nothing left to add, and must still fall through to show that in the summary message below.
+      if (matched === 0 && alreadySet === 0) {
         state.uploadMsgLockSystem = '⚠️ อ่านไฟล์ได้ ' + rows.length + ' แถว แต่จับคู่กับข้อมูลลูกหนี้ไม่ได้เลย (ยังไม่บันทึก)';
         render();
         return;
@@ -6395,7 +6417,8 @@
       state.orders = orders;
       state.hasUnsavedChanges = false;
       savePersisted();
-      state.uploadMsgLockSystem = '✅ อัปเดตสำเร็จ ' + matched + ' ราย (ระบบ ' + system + ' / ' + mode + ')'
+      state.uploadMsgLockSystem = (matched ? '✅ อัปเดตสำเร็จ ' + matched + ' ราย' : '✅ ไม่มีรายการใหม่ที่ต้องอัปเดต') + ' (ระบบ ' + system + ' / ' + mode + ')'
+        + (alreadySet ? (' · มีข้อมูลระบบล็อคอยู่แล้ว ข้าม ' + alreadySet + ' ราย (ไม่มีการเขียนทับข้อมูลเดิม)') : '')
         + (ambiguous ? (' · ชื่อ/เบอร์ซ้ำกันหลายราย ข้าม ' + ambiguous + ' แถว') : '')
         + (unmatched ? ('\n⚠️ ไม่พบลูกค้าที่ตรงกัน ' + unmatched + ' แถว เช่น: ' + sampleUnmatched.join(', ') + (unmatched > sampleUnmatched.length ? ' ...' : '')) : '');
       render();
