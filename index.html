@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-10.02';
+  var APP_BUILD = '2026-08-10.03';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -4686,6 +4686,24 @@
       emailHistoryHtml;
     return trackingCard('#b3261e', '📄', 'ส่งจดหมายทวงถามหนี้' + (track === 'accessory' ? ' (อุปกรณ์เสริม)' : ''), letterHistory.length, letterBody);
   }
+  // หนังสือบอกเลิกสัญญาเช่าซื้อ (2026-08-10) — moved here from the order-card header (per explicit
+  // user request) to sit alongside ส่ง SMS/จดหมายทวงถามหนี้, since it's the same "ติดตามหนี้ document
+  // issuance" family. Whole-order, not track-split like renderLetterCard above (a contract
+  // termination ends the whole relationship, not just one track) — always reads `ord` regardless of
+  // which SO/track is currently picked in the dropdown, so it stays constant while staff switch
+  // between main/accessory entries above it.
+  function renderCancelLetterCard(ord) {
+    var history = ord.cancelLetterHistory || [];
+    var body =
+      '<div><button data-action="openCancelLetterModal" data-order="' + esc(ord.orderId) + '" title="ออกหนังสือบอกเลิกสัญญาเช่าซื้อ (PDF)" style="border:1px solid rgba(179,38,30,0.35); background:#fff; color:#b3261e; padding:6px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:pointer; white-space:nowrap;">📄 ออกเอกสารหนังสือยกเลิก</button></div>' +
+      trackingHistoryList(history, function (h) {
+        return '<div style="background:rgba(179,38,30,0.05); border:1px solid rgba(179,38,30,0.12); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#2b2540;">' +
+          '<div style="font-weight:700; color:#b3261e; margin-bottom:2px;">🕐 ' + esc(h.at) + ' · ครั้งที่ ' + h.no + (h.by ? ' · โดย ' + esc(h.by) : '') + '</div>' +
+          '<div style="color:#6b6785;"><span data-action="downloadLetterPdf" data-path="' + esc(h.url) + '" style="color:#7c5cff; font-weight:600; cursor:pointer;">⬇ ดาวน์โหลด</span></div>' +
+        '</div>';
+      });
+    return trackingCard('#b3261e', '📄', 'หนังสือบอกเลิกสัญญาเช่าซื้อ', history.length, body);
+  }
   // Back at customer-header level (2026-08-01, reverted from the per-order-card placement above)
   // per explicit user request — but now with a SO picker instead of silently operating on whatever
   // pickContactOrder() happens to return, since smsHistory/letterHistory/emailHistory and the
@@ -4728,7 +4746,7 @@
       '<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px;">' +
         '<div style="font-size:12px; color:#6b6785; font-weight:600; white-space:nowrap;">เลือก SO:</div>' + selectHtml + balanceHtml +
       '</div>' +
-      '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px;">' + renderSmsCard(ord, track) + renderLetterCard(ord, track) + '</div>' +
+      '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px;">' + renderSmsCard(ord, track) + renderLetterCard(ord, track) + renderCancelLetterCard(ord) + '</div>' +
     '</div>';
   }
   // An early full-settlement payment often gets recorded entirely against ONE งวด (e.g. "ยอดชำระ
@@ -8053,21 +8071,7 @@
               '<button data-action="undoAccountLevelStatus" data-order="' + esc(ord.orderId) + '" data-status="ยกเลิกบิล" title="แก้ไข — ใช้เมื่อสถานะนี้เกิดจากการตั้งค่าผิดพลาด" style="border:none; background:rgba(255,255,255,0.55); color:#0c8599; width:18px; height:18px; border-radius:50%; font-size:10px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;">✏️</button>' +
             '</div>'
             : (ord.isCancelled ? '' : '<button data-action="cancelOrder" data-order="' + esc(ord.orderId) + '" title="ตั้งทุกงวดในบิลนี้เป็น \'ยกเลิกบิล\' — บิลที่เปิดผิด/มีบิลใหม่แทนแล้ว ไม่นับเป็นหนี้ของบริษัทฯ อีกต่อไป (คนละสถานะกับยกเลิกสัญญา คืนเครื่อง)" style="border:1px solid rgba(12,133,153,0.35); background:#fff; color:#0c8599; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;">🗑 ยกเลิกบิล</button>')) +
-          // ออกเอกสารหนังสือยกเลิก (2026-08-10) — deliberately NOT gated on payment/overdue status
-          // (per explicit user request, unlike จดหมายทวงถามหนี้'s ≥2-งวด-ค้าง gate) since staff may
-          // need to cancel a contract for many reasons, not just non-payment. Confirming the form
-          // modal this opens cascades every not-yet-paid งวด to ยกเลิกสัญญา คืนเครื่อง — see
-          // confirmIssueCancelLetter.
-          '<button data-action="openCancelLetterModal" data-order="' + esc(ord.orderId) + '" title="ออกหนังสือบอกเลิกสัญญาเช่าซื้อ (PDF)" style="border:1px solid rgba(179,38,30,0.35); background:#fff; color:#b3261e; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;">📄 ออกเอกสารหนังสือยกเลิก</button>' +
         '</div>' +
-        (ord.cancelLetterHistory && ord.cancelLetterHistory.length ? (
-          '<div style="margin-bottom:16px; padding:10px 14px; background:rgba(179,38,30,0.05); border:1px solid rgba(179,38,30,0.14); border-radius:12px;">' +
-            '<div style="font-size:11.5px; color:#b3261e; font-weight:700; margin-bottom:6px;">📄 ประวัติหนังสือบอกเลิกสัญญา</div>' +
-            ord.cancelLetterHistory.slice().reverse().map(function (h) {
-              return '<div style="font-size:11.5px; color:#2b2540; margin-bottom:3px;">🕐 ' + esc(h.at) + ' · ครั้งที่ ' + h.no + (h.by ? ' · โดย ' + esc(h.by) : '') + ' · <span data-action="downloadLetterPdf" data-path="' + esc(h.url) + '" style="color:#7c5cff; font-weight:600; cursor:pointer;">⬇ ดาวน์โหลด</span></div>';
-            }).join('') +
-          '</div>'
-        ) : '') +
         '<div style="display:grid; grid-template-columns:2fr 1fr; gap:16px; margin-bottom:16px;">' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">📦 รายการสินค้า' + (ord.hasAccessory ? ' (เครื่องหลัก)' : '') + '</div><input type="text" value="' + esc(ord.productList) + '" data-order-field="productList" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:15px; font-weight:600; color:#2b2540; background:#fff; outline:none;" /></div>' +
           '<div><div style="font-size:12px; color:#6b6785; margin-bottom:4px;">🏷 ราคาสินค้า</div><input type="text" inputmode="decimal" value="' + esc(fmtMoney(ord.productPrice)) + '" data-order-field="productPrice" data-order="' + esc(ord.orderId) + '" style="width:100%; box-sizing:border-box; border:1px solid rgba(124,92,255,0.2); border-radius:8px; padding:6px 8px; font-size:14px; font-weight:700; color:#2b2540; background:#fff; outline:none;" /></div>' +
