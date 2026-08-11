@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-10.12';
+  var APP_BUILD = '2026-08-11.1';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -4970,6 +4970,11 @@
       accessoryAmountDue: ['ยอดผ่อนต่องวด (อุปกรณ์เสริม)', 'ราคาผ่อนต่องวด (อุปกรณ์เสริม)'],
       accessoryTerm: ['งวดที่ผ่อน (อุปกรณ์เสริม)', 'ระยะเวลาผ่อน (อุปกรณ์เสริม)', 'จำนวนงวด (อุปกรณ์เสริม)'],
       downPayment: ['ยอดวางดาวน์', 'downpayment', 'down payment', 'เงินดาวน์', 'ดาวน์', 'ยอดดาวน์'],
+      // Combined column seen in the "ลูกค้ากรอกฟอร์ม" export (customer self-entry form) — one cell
+      // means ยอดวางดาวน์ for a ดาวน์*-type order or ยอดผ่อนสะสม (cumulative paid) for a ผ่อน-type
+      // order, decided per row by purchaseType via isInstallmentPurchaseType (same classifier the
+      // UI already uses to choose which figure to display on the order card).
+      downOrPaidCombo: ['ยอดวางดาวน์ / ยอดผ่อนสะสม', 'ยอดวางดาวน์/ยอดผ่อนสะสม', 'ยอดวางดาวน์ /ยอดผ่อนสะสม', 'ยอดวางดาวน์/ ยอดผ่อนสะสม'],
       // Deliberately narrow — "ราคาสุทธิ (ผ่อน/ดาวน์)" etc. don't reliably equal ราคาสินค้า, and a
       // wrong auto-fill here would trigger the ยอดผ่อนต่องวด recalc below and overwrite the
       // file's real per-installment amount. Leave productPrice blank unless the column is exact.
@@ -5070,6 +5075,15 @@
         var explicitPaidCount = Math.round(resolveNumber(r, ALIASES.paidCount));
         var netOutstandingRaw = resolveField(r, ALIASES.netOutstanding);
         var totalDueRaw = resolveField(r, ALIASES.totalDue);
+        var purchaseType = String(resolveField(r, ALIASES.purchaseType) || '');
+        // Combined ยอดวางดาวน์/ยอดผ่อนสะสม column only fills in for whichever field has no dedicated
+        // column of its own on this row (checked via !== '', not the resolved number, so a real
+        // dedicated column reporting a genuine 0 is never clobbered) — routed by the same
+        // isInstallmentPurchaseType classifier the UI uses to pick which figure to show.
+        var downPaymentRaw = resolveField(r, ALIASES.downPayment);
+        var paidTotalRaw = resolveField(r, ALIASES.paidTotal);
+        var comboRaw = resolveField(r, ALIASES.downOrPaidCombo);
+        var comboVal = comboRaw !== '' ? toNumber(comboRaw) : null;
         return {
           customerId: String(resolveField(r, ALIASES.customerId) || ''),
           customerName: String(resolveField(r, ALIASES.customerName) || ''),
@@ -5077,10 +5091,10 @@
           soUnknown: !!soUnknown,
           contractDate: toDateString(resolveField(r, ALIASES.contractDate)),
           productList: joinText(r, ALIASES.productList),
-          downPayment: resolveNumber(r, ALIASES.downPayment),
+          downPayment: downPaymentRaw !== '' ? toNumber(downPaymentRaw) : (comboVal !== null && !isInstallmentPurchaseType(purchaseType) ? comboVal : 0),
           productPrice: resolveNumber(r, ALIASES.productPrice),
           discount: resolveNumber(r, ALIASES.discount),
-          purchaseType: String(resolveField(r, ALIASES.purchaseType) || ''),
+          purchaseType: purchaseType,
           age: Math.round(resolveNumber(r, ALIASES.age)),
           phone: String(resolveField(r, ALIASES.phone) || ''),
           // Filled in later by the separate "ข้อมูลลูกค้าเพิ่มเติม" upload (onCustomerInfoFileChange)
@@ -5091,7 +5105,7 @@
           _perInst: resolveNumber(r, ALIASES.amountDue),
           _term: term,
           _paidCount: explicitPaidCount || Math.max(0, originalTerm - term),
-          _paidTotal: resolveNumber(r, ALIASES.paidTotal),
+          _paidTotal: paidTotalRaw !== '' ? toNumber(paidTotalRaw) : (comboVal !== null && isInstallmentPurchaseType(purchaseType) ? comboVal : 0),
           // ลูกหนี้เก่า: on ~58 rows ยอดผ่อนต่องวด × งวดทั้งหมด doesn't equal the file's own
           // ยอดที่ต้องผ่อนต่อ (a pre-existing inconsistency in the source file) — generateSchedule
           // reconciles by using ยอดที่ต้องผ่อนต่อ ÷ N as the per-installment amount instead of the
