@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-11.4';
+  var APP_BUILD = '2026-08-11.5';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -7632,6 +7632,26 @@
       { label: 'เกินกำหนดมากกว่า 30 วัน', count: b.odOver30, valueDisp: fmtMoney(v.odOver30), pctDisp: pct(b.odOver30), color: '#e03131', bg: 'rgba(224,49,49,0.12)' },
       { label: 'เกินกำหนดทั้งหมด', count: totalOverdue, valueDisp: fmtMoney(totalOverdueValue), pctDisp: pct(totalOverdue), color: '#9c1f4a', bg: 'rgba(156,31,74,0.10)' }
     ];
+    // Added 2026-08-11, per explicit request: when staff narrow "สถานะการชำระ" down to exactly
+    // ชำระแล้ว or ชำระบางส่วน, every bucket above goes all-zero (a paid/partial installment is never
+    // the "current unpaid" one the aging buckets track), leaving only the "ทั้งหมด" count meaningful.
+    // Add a count+amount summary for both statuses so the view stays useful for that case — computed
+    // over the same filtered installment pool (o.filteredInstallments||o.installments) and the same
+    // `active` order scope as the buckets above, not a separate/unfiltered pass.
+    var selectedPaymentStatuses = STATUS_OPTIONS.filter(function (s) { return state.appliedPaymentStatuses.indexOf(s) === -1; });
+    var showPaidCards = selectedPaymentStatuses.length === 1 &&
+      (selectedPaymentStatuses[0] === 'ชำระแล้ว' || selectedPaymentStatuses[0] === 'ชำระบางส่วน');
+    if (showPaidCards) {
+      var paidCount = 0, paidValue = 0, partialCount = 0, partialValue = 0;
+      active.forEach(function (o) {
+        (o.filteredInstallments || o.installments).forEach(function (i) {
+          if (i.effectiveStatus === 'ชำระแล้ว') { paidCount++; paidValue += toNumber(i.amountPaid); }
+          else if (i.effectiveStatus === 'ชำระบางส่วน') { partialCount++; partialValue += toNumber(i.amountPaid); }
+        });
+      });
+      tiles.push({ label: 'ชำระแล้ว', count: paidCount, valueDisp: fmtMoney(paidValue), pctDisp: '', color: '#12b886', bg: 'rgba(18,184,134,0.10)' });
+      tiles.push({ label: 'ชำระบางส่วน', count: partialCount, valueDisp: fmtMoney(partialValue), pctDisp: '', color: '#f08c00', bg: 'rgba(240,140,0,0.10)' });
+    }
     return '<div style="margin-bottom:20px;">' +
       '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#2b2540; margin-bottom:12px;">📊 รายงานสินเชื่อที่ครบกำหนด</div>' +
       '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:12px;">' +
