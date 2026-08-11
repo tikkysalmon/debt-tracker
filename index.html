@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-11.2';
+  var APP_BUILD = '2026-08-11.3';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -223,6 +223,7 @@
     deleteCancelLetterHistory: 'delete_data',
     // Full data wipe — too dangerous to leave as a togglable permission; admin-only no matter what.
     clearToEmpty: '__admin__', resetToSample: '__admin__',
+    bulkDeleteOrdersFromCleanupDate: '__admin__',
     newStaffUser: '__admin__', editStaffUser: '__admin__', saveStaffUser: '__admin__',
     deactivateStaffUser: '__admin__', activateStaffUser: '__admin__'
   };
@@ -4314,6 +4315,31 @@
     state.hasUnsavedChanges = true;
     render();
   }
+  // One-time cleanup tool (2026-08-11), per explicit admin request: the June-2026 debtor file was
+  // uploaded/tested while the combo-column (ยอดวางดาวน์/ยอดผ่อนสะสม) import logic still had a bug
+  // (fixed same day — see makeOrder), and a payment file was uploaded on top of that bad data too —
+  // rather than trying to hand-patch every affected order, admin wants every order from that
+  // contract-date range removed so the (now-fixed) debtor + payment files can be re-uploaded clean.
+  // Hardcoded cutoff/date on purpose — this is a one-off cleanup for this specific incident, not a
+  // general "delete by date" feature; remove this function + its button/permission entry once the
+  // clean re-upload is confirmed working.
+  var CLEANUP_CONTRACT_DATE_FROM = '2026-06-01';
+  function countCleanupOrders() {
+    return state.orders.filter(function (o) { return o.contractDate && o.contractDate >= CLEANUP_CONTRACT_DATE_FROM; }).length;
+  }
+  function bulkDeleteOrdersFromCleanupDate() {
+    var toDelete = state.orders.filter(function (o) { return o.contractDate && o.contractDate >= CLEANUP_CONTRACT_DATE_FROM; });
+    if (!toDelete.length) { window.alert('ไม่พบคำสั่งซื้อที่ทำสัญญาตั้งแต่ ' + CLEANUP_CONTRACT_DATE_FROM + ' เป็นต้นไป'); return; }
+    var sample = toDelete.slice(0, 8).map(function (o) { return (o.soDisplay || o.orderId) + ' — ' + o.customerName; }).join('\n');
+    var msg = 'ยืนยันลบคำสั่งซื้อที่ "วันที่ที่ออกสัญญา" ตั้งแต่ ' + CLEANUP_CONTRACT_DATE_FROM + ' เป็นต้นไป ทั้งหมด ' + toDelete.length + ' รายการ?\n\n'
+      + 'ตัวอย่าง:\n' + sample + (toDelete.length > 8 ? ('\n... และอีก ' + (toDelete.length - 8) + ' รายการ') : '')
+      + '\n\nลบแล้วกู้คืนไม่ได้ — ยังไม่ถาวรจนกว่าจะกดปุ่ม "บันทึก" อีกครั้งหลังจากนี้';
+    if (!window.confirm(msg)) return;
+    state.orders = state.orders.filter(function (o) { return !(o.contractDate && o.contractDate >= CLEANUP_CONTRACT_DATE_FROM); });
+    state.hasUnsavedChanges = true;
+    state.uploadMsgDebt = '🗑 ลบคำสั่งซื้อที่ทำสัญญาตั้งแต่ ' + CLEANUP_CONTRACT_DATE_FROM + ' แล้ว ' + toDelete.length + ' รายการ — กด "บันทึก" ด้านบนเพื่อยืนยันถาวร แล้วจึงอัปโหลดไฟล์ใหม่';
+    render();
+  }
   function resetAllData(toSample) {
     clearPersisted();
     state.orders = toSample ? generateMock() : [];
@@ -5076,12 +5102,17 @@
         var netOutstandingRaw = resolveField(r, ALIASES.netOutstanding);
         var totalDueRaw = resolveField(r, ALIASES.totalDue);
         var purchaseType = String(resolveField(r, ALIASES.purchaseType) || '');
-        // Combined ยอดวางดาวน์/ยอดผ่อนสะสม column only fills in for whichever field has no dedicated
-        // column of its own on this row (checked via !== '', not the resolved number, so a real
-        // dedicated column reporting a genuine 0 is never clobbered) — routed by the same
-        // isInstallmentPurchaseType classifier the UI uses to pick which figure to show.
+        // Combined ยอดวางดาวน์/ยอดผ่อนสะสม column only fills in when the file has no dedicated
+        // downPayment column of its own (checked via !== '', not the resolved number, so a real
+        // dedicated column reporting a genuine 0 is never clobbered). Always routes to downPayment,
+        // REGARDLESS of purchaseType — o.downPayment is the one raw field the order card already
+        // reuses for both labels (see isInstallmentPurchaseType's render branch: the "ยอดผ่อนสะสม"
+        // input for ผ่อน-type orders is data-order-field="downPayment", same field as "ยอดวางดาวน์"
+        // for ดาวน์-type orders, just relabeled — both feed the same (price−downPayment−discount)/N
+        // recalc). NOT routed into _paidTotal — that field is a distinct, unrelated mechanism (only
+        // used by the ลูกหนี้เก่า file's "ยอดชำระหลังทำสัญญา" column to distribute historical payments
+        // across specific installments on first import) and does not correspond to this column at all.
         var downPaymentRaw = resolveField(r, ALIASES.downPayment);
-        var paidTotalRaw = resolveField(r, ALIASES.paidTotal);
         var comboRaw = resolveField(r, ALIASES.downOrPaidCombo);
         var comboVal = comboRaw !== '' ? toNumber(comboRaw) : null;
         return {
@@ -5091,7 +5122,7 @@
           soUnknown: !!soUnknown,
           contractDate: toDateString(resolveField(r, ALIASES.contractDate)),
           productList: joinText(r, ALIASES.productList),
-          downPayment: downPaymentRaw !== '' ? toNumber(downPaymentRaw) : (comboVal !== null && !isInstallmentPurchaseType(purchaseType) ? comboVal : 0),
+          downPayment: downPaymentRaw !== '' ? toNumber(downPaymentRaw) : (comboVal !== null ? comboVal : 0),
           productPrice: resolveNumber(r, ALIASES.productPrice),
           discount: resolveNumber(r, ALIASES.discount),
           purchaseType: purchaseType,
@@ -5105,7 +5136,7 @@
           _perInst: resolveNumber(r, ALIASES.amountDue),
           _term: term,
           _paidCount: explicitPaidCount || Math.max(0, originalTerm - term),
-          _paidTotal: paidTotalRaw !== '' ? toNumber(paidTotalRaw) : (comboVal !== null && isInstallmentPurchaseType(purchaseType) ? comboVal : 0),
+          _paidTotal: resolveNumber(r, ALIASES.paidTotal),
           // ลูกหนี้เก่า: on ~58 rows ยอดผ่อนต่องวด × งวดทั้งหมด doesn't equal the file's own
           // ยอดที่ต้องผ่อนต่อ (a pre-existing inconsistency in the source file) — generateSchedule
           // reconciles by using ยอดที่ต้องผ่อนต่อ ÷ N as the per-installment amount instead of the
@@ -7070,6 +7101,14 @@
       cloudHealthy
         ? '<div style="background:rgba(18,184,134,0.08); border:1px solid rgba(18,184,134,0.25); border-radius:16px; padding:14px 20px; margin-bottom:16px; font-size:13px; color:#0b7a5b; line-height:1.7;">ℹ️ ข้อมูลมีขนาดใหญ่เกินกว่าเบราว์เซอร์จะสำรองไว้ในเครื่องได้ (localStorage เต็ม) แต่ไม่ต้องกังวล — ระบบบันทึกข้อมูลไว้บนฐานข้อมูลกลาง (Supabase) แทนอยู่แล้ว ข้อมูลปลอดภัย</div>'
         : '<div style="background:rgba(224,49,49,0.10); border:1px solid rgba(224,49,49,0.4); border-radius:16px; padding:14px 20px; margin-bottom:16px; font-size:13px; color:#a51111; line-height:1.7;">🛑 ' + esc(state.storageError) + '</div>';
+    // One-time cleanup button (2026-08-11) — see bulkDeleteOrdersFromCleanupDate for why. Admin-only,
+    // and self-hides once nothing matches anymore so it doesn't linger as a trap after cleanup is done.
+    var cleanupCount = (state.currentUser && state.currentUser.isAdmin) || !CLOUD_ENABLED ? countCleanupOrders() : 0;
+    var cleanupBanner = cleanupCount === 0 ? '' :
+      '<div style="background:rgba(224,49,49,0.08); border:1px solid rgba(224,49,49,0.35); border-radius:16px; padding:14px 20px; margin-bottom:16px; display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap;">' +
+        '<div style="font-size:12.5px; color:#a51111; line-height:1.6;"><b>🧹 เครื่องมือล้างข้อมูลชั่วคราว</b> — พบคำสั่งซื้อที่ทำสัญญาตั้งแต่ ' + esc(CLEANUP_CONTRACT_DATE_FROM) + ' เป็นต้นไป ' + cleanupCount + ' รายการ (สำหรับล้างก่อนอัปโหลดไฟล์ใหม่ทั้งหมด)</div>' +
+        '<button data-action="bulkDeleteOrdersFromCleanupDate" style="background:#e03131; border:none; color:#fff; font-size:12.5px; padding:8px 16px; border-radius:20px; cursor:pointer; font-weight:600; white-space:nowrap;">🗑 ลบคำสั่งซื้อ ' + cleanupCount + ' รายการ</button>' +
+      '</div>';
     var sampleWarn = state.isSampleData
       ? '<div style="background:rgba(240,140,0,0.10); border:1px solid rgba(240,140,0,0.35); border-radius:16px; padding:14px 20px; margin-bottom:16px; font-size:13px; color:#8a4b00; line-height:1.7;">⚠️ ตอนนี้กำลังแสดง <b>ข้อมูลตัวอย่าง</b> — เมื่อคุณอัปโหลด <b>ไฟล์ลูกหนี้จริง</b> ครั้งแรก ข้อมูลตัวอย่างจะถูกแทนที่ด้วยข้อมูลจริงทั้งหมดโดยอัตโนมัติ (หรือกดปุ่ม “เริ่มจากว่างเปล่า” ด้านล่างก่อนก็ได้)</div>'
       : '';
@@ -7082,7 +7121,7 @@
         '<div style="font-size:13px; color:#4b3fa0; font-weight:600;">มีการเปลี่ยนแปลงที่ยังไม่ได้บันทึกถาวร</div>' +
         renderSaveButton(true) +
       '</div>';
-    var banner = unsavedBanner + storageWarn + sampleWarn +
+    var banner = unsavedBanner + cleanupBanner + storageWarn + sampleWarn +
       '<div style="background:rgba(18,184,134,0.08); border:1px solid rgba(18,184,134,0.25); border-radius:16px; padding:16px 20px; margin-bottom:20px; display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap;">' +
         '<div style="font-size:12.5px; color:#0b7a5b; line-height:1.7;">' +
           '<div style="font-weight:600; font-size:13.5px; margin-bottom:2px;">💾 โหมดยอดสะสม (บวกเพิ่ม) + จำข้อมูลอัตโนมัติ</div>' +
@@ -8705,6 +8744,7 @@
         case 'downloadTemplate': downloadTemplate(t.getAttribute('data-type')); break;
         case 'clearToEmpty': if (window.confirm('ล้างข้อมูลทั้งหมดเพื่อเริ่มจากว่างเปล่า (พร้อมอัปโหลดข้อมูลจริง)?\n(ยกเลิกไม่ได้)')) resetAllData(false); break;
         case 'resetToSample': if (window.confirm('ล้างข้อมูลทั้งหมด และกลับไปเป็นข้อมูลตัวอย่าง?\n(ยกเลิกไม่ได้)')) resetAllData(true); break;
+        case 'bulkDeleteOrdersFromCleanupDate': bulkDeleteOrdersFromCleanupDate(); break;
         case 'toggleCancelledDetail': state.showCancelledDetail = !state.showCancelledDetail; render(); break;
         case 'toggleSoldDetail': state.showSoldDetail = !state.showSoldDetail; render(); break;
         case 'toggleBillCancelledDetail': state.showBillCancelledDetail = !state.showBillCancelledDetail; render(); break;
