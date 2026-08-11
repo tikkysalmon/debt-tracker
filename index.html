@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-11.1';
+  var APP_BUILD = '2026-08-11.2';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -5302,16 +5302,23 @@
       newOrders.forEach(function (o) {
         var old = map[o.orderId];
         if (old) {
+          // Per-งวด merge: an installment's SCHEDULE fields (no/dueDate/amountDue) come from the
+          // fresh file, but everything else the old installment was carrying — not just
+          // amountPaid/paidDate/status/statusOverride/discount/note, but also fields no debtor file
+          // ever sets (verifiedCRM*, lateFee/unlockFee/penaltyPaid, postponeHistory, smsHistory) —
+          // must survive untouched. A hardcoded field-by-field copy silently drops any such field,
+          // which is exactly what happened before this fix (see the order-level note below).
           o.installments.forEach(function (ni) {
             var oi = old.installments.find(function (x) { return x.no === ni.no; });
             if (oi) {
-              ni.amountPaid = oi.amountPaid; ni.paidDate = oi.paidDate;
-              ni.status = oi.status; ni.statusOverride = oi.statusOverride;
-              ni.discount = oi.discount; ni.note = oi.note;
+              var freshNo = ni.no, freshDue = ni.dueDate, freshAmt = ni.amountDue;
+              Object.assign(ni, oi, { no: freshNo, dueDate: freshDue, amountDue: freshAmt });
             }
           });
-          // accessoryOrderId is staff-entered, never in the debtor file — always carry it forward.
+          // accessoryOrderId/ProductList are staff-entered or only sometimes present in the file —
+          // never overwritten with blank just because this particular re-upload omitted them.
           if (old.accessoryOrderId) o.accessoryOrderId = old.accessoryOrderId;
+          if (old.accessoryProductList) o.accessoryProductList = old.accessoryProductList;
           if (old.accessoryProductPrice) o.accessoryProductPrice = old.accessoryProductPrice;
           if (old.accessoryDownPayment) o.accessoryDownPayment = old.accessoryDownPayment;
           if (old.accessoryFirstDueDate) o.accessoryFirstDueDate = old.accessoryFirstDueDate;
@@ -5321,9 +5328,8 @@
               o.accessoryInstallments.forEach(function (ni) {
                 var oi = old.accessoryInstallments.find(function (x) { return x.no === ni.no; });
                 if (oi) {
-                  ni.amountPaid = oi.amountPaid; ni.paidDate = oi.paidDate;
-                  ni.status = oi.status; ni.statusOverride = oi.statusOverride;
-                  ni.discount = oi.discount; ni.note = oi.note;
+                  var freshNo = ni.no, freshDue = ni.dueDate, freshAmt = ni.amountDue;
+                  Object.assign(ni, oi, { no: freshNo, dueDate: freshDue, amountDue: freshAmt });
                 }
               });
             } else {
@@ -5332,8 +5338,23 @@
               o.accessoryInstallments = old.accessoryInstallments;
             }
           }
-          if (old.wasSold) o.wasSold = true;
-          if (old.wasCancelled) o.wasCancelled = true;
+          // contractNo/shippedAt/referenceName/referencePhone come from a separate upload
+          // (ข้อมูลลูกค้าเพิ่มเติม), never from the debtor file — makeOrder() always starts them blank,
+          // so without this they'd be wiped back to blank on every debtor re-import.
+          if (old.contractNo) o.contractNo = old.contractNo;
+          if (old.shippedAt) o.shippedAt = old.shippedAt;
+          if (old.referenceName) o.referenceName = old.referenceName;
+          if (old.referencePhone) o.referencePhone = old.referencePhone;
+          // Fixed 2026-08-11: everything ELSE the debtor file has no concept of at all — email/SMS/
+          // call/letter history, ระบบล็อคเครื่อง reference (lockSystem/lockSystemMode), wasSold/
+          // wasCancelled/wasBillCancelled — used to be silently erased on every re-import of an
+          // already-existing order, because `o` (fresh from makeOrder) only ever carries the fixed
+          // field set the debtor file actually populates, and `map[o.orderId] = o` replaced the old
+          // order object outright. A plain "old, then o" merge lets any field o doesn't itself own
+          // pass through from old untouched, while o's own fields (the real, possibly-updated debtor-
+          // file columns) still win — run last, after the installment-level merges above, so
+          // o.installments/o.accessoryInstallments already carry the correct per-งวด data.
+          o = Object.assign({}, old, o);
         }
         map[o.orderId] = o;
       });
