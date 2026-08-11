@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-11.3';
+  var APP_BUILD = '2026-08-11.4';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -990,7 +990,13 @@
       }
       return localOrder || remoteOrder || null;
     }
-    if (!localOrder) return remoteOrder || null;
+    // Fixed 2026-08-11: baseOrder is this client's own last-known-synced copy (lastServerSnapshot),
+    // so if it existed there but is missing from localOrder, THIS client deliberately removed it
+    // (see bulkDeleteOrdersFromCleanupDate — the first feature in this app that ever removes an
+    // order from state.orders rather than just mutating its fields). Previously fell through to
+    // "return remoteOrder", which silently resurrected every deleted order on the very next save,
+    // since nothing before this feature existed ever needed mergeOrder to represent a real deletion.
+    if (!localOrder) return null;
     if (!remoteOrder) return localOrder;
     if (fieldsEqual(baseOrder, localOrder)) return remoteOrder; // this client never touched this order
     if (fieldsEqual(baseOrder, remoteOrder)) return localOrder; // nobody else touched it either
