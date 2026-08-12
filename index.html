@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-12.3';
+  var APP_BUILD = '2026-08-12.4';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -727,6 +727,7 @@
         customerTrackingReturn: state.customerTrackingReturn,
         customerTrackingReturnAt: state.customerTrackingReturnAt,
         appliedPaymentKeys: Object.keys(appliedPaymentKeys),
+        uploadHistory: state.uploadHistory,
         smsTemplates: state.smsTemplates,
         letterheadImageUrl: state.letterheadImageUrl,
         savedAt: new Date().toISOString()
@@ -809,7 +810,7 @@
   // server right now (another client may have saved since), but the baseline this client's local
   // edits are measured against. Updated whenever a remote snapshot is applied (connect/poll) and
   // after every successful save (see cloudSaveNow) so the next diff is always against reality.
-  var lastServerSnapshot = { orders: [], customerNotes: {}, customerTrackingReturn: {}, customerTrackingReturnAt: {}, appliedPaymentKeys: [] };
+  var lastServerSnapshot = { orders: [], customerNotes: {}, customerTrackingReturn: {}, customerTrackingReturnAt: {}, appliedPaymentKeys: [], uploadHistory: [] };
 
   var CLOUD_BUCKET = 'app-data';
   var CLOUD_FILE = IS_OLD_DATASET ? 'state-old.json' : 'state.json';
@@ -911,6 +912,7 @@
     var rawTrackingReturn = data.customerTrackingReturn || {};
     var rawTrackingReturnAt = data.customerTrackingReturnAt || {};
     var rawKeys = data.appliedPaymentKeys || [];
+    var rawUploadHistory = Array.isArray(data.uploadHistory) ? data.uploadHistory : [];
     if (Array.isArray(data.orders)) {
       state.orders = repairStaleSampleOrders(repairFractionalInstallmentAmounts(repairOverpaidInstallments(repairAccessoryProductNames(repairPostponedDueDates(repairDueDateSchedules(repairInvalidStatusOverrides(data.orders)))))));
       // Trust an explicit flag from the payload when present (see cloudSaveNow) — only fall back to
@@ -938,8 +940,34 @@
     }
     appliedPaymentKeys = {};
     rawKeys.forEach(function (k) { appliedPaymentKeys[k] = true; });
-    lastServerSnapshot = { orders: rawOrders, customerNotes: rawNotes, customerTrackingReturn: rawTrackingReturn, customerTrackingReturnAt: rawTrackingReturnAt, appliedPaymentKeys: rawKeys };
+    // Not shown anywhere in the UI (internal audit trail only, per explicit request 2026-08-12) —
+    // union with whatever this client already has rather than overwriting, so a snapshot from
+    // before this field existed (or one saved by an older, not-yet-updated tab) never drops entries
+    // this client already logged locally.
+    state.uploadHistory = mergeUploadHistory(state.uploadHistory, rawUploadHistory);
+    lastServerSnapshot = { orders: rawOrders, customerNotes: rawNotes, customerTrackingReturn: rawTrackingReturn, customerTrackingReturnAt: rawTrackingReturnAt, appliedPaymentKeys: rawKeys, uploadHistory: rawUploadHistory };
     applyingRemote = false;
+  }
+  // Append-only audit log — never needs true 3-way conflict resolution (entries are immutable once
+  // created), so a simple id-deduped union of both sides, newest first, capped so the payload never
+  // grows unbounded, is sufficient. Reused by applySnapshot (merge with what's already local) and
+  // cloudSaveNow (merge local+remote before upload).
+  var UPLOAD_HISTORY_MAX = 500;
+  function mergeUploadHistory(a, b) {
+    var seen = {}, out = [];
+    (a || []).concat(b || []).forEach(function (e) {
+      if (e && e.id && !seen[e.id]) { seen[e.id] = true; out.push(e); }
+    });
+    out.sort(function (x, y) { return (y.at || '').localeCompare(x.at || ''); });
+    return out.slice(0, UPLOAD_HISTORY_MAX);
+  }
+  // Records one upload/import action into the invisible audit log above — NOT rendered in any page
+  // (explicit request 2026-08-12, prompted by not being able to tell what time a payment file was
+  // actually uploaded the day before). Call at the end of every onXFileChange, after the normal
+  // uploadMsgXxx result is known, so `summary` mirrors what staff saw on screen.
+  function logUpload(kind, filename, summary) {
+    var entry = { id: kind + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8), kind: kind, file: filename || '', at: new Date().toISOString(), summary: summary || '' };
+    state.uploadHistory = mergeUploadHistory(state.uploadHistory, [entry]);
   }
   // ---- Merge helpers for cloudSaveNow ----
   // Three-way merge (base = lastServerSnapshot, local = this client's state, remote = what's
@@ -1259,6 +1287,7 @@
     var localTrackingReturnSnapshot = state.customerTrackingReturn;
     var localTrackingReturnAtSnapshot = state.customerTrackingReturnAt;
     var localKeysSnapshot = Object.keys(appliedPaymentKeys);
+    var localUploadHistorySnapshot = state.uploadHistory;
     // Only clear cloudDirty once this was the LAST queued save (nothing newer waiting behind it)
     // and it actually succeeded — on failure or when another save is already queued, local state
     // still isn't confirmed saved, so cloudPoll() must keep refusing incoming snapshots.
@@ -1274,6 +1303,7 @@
         if (state.customerNotes === localNotesSnapshot) state.customerNotes = merged.customerNotes;
         if (state.customerTrackingReturn === localTrackingReturnSnapshot) state.customerTrackingReturn = merged.customerTrackingReturn;
         if (state.customerTrackingReturnAt === localTrackingReturnAtSnapshot) state.customerTrackingReturnAt = merged.customerTrackingReturnAt;
+        if (state.uploadHistory === localUploadHistorySnapshot) state.uploadHistory = merged.uploadHistory;
         appliedPaymentKeys = {};
         merged.appliedPaymentKeys.forEach(function (k) { appliedPaymentKeys[k] = true; });
       }
@@ -1296,7 +1326,7 @@
       // paper over the race this lock now structurally prevents).
       findCloudFileMeta().then(function (item) {
         if (item && lastServerTs && item.updated_at === lastServerTs) {
-          return proceed({ orders: baseOrders, customerNotes: baseNotes, customerTrackingReturn: baseTrackingReturn, customerTrackingReturnAt: baseTrackingReturnAt, appliedPaymentKeys: lastServerSnapshot.appliedPaymentKeys });
+          return proceed({ orders: baseOrders, customerNotes: baseNotes, customerTrackingReturn: baseTrackingReturn, customerTrackingReturnAt: baseTrackingReturnAt, appliedPaymentKeys: lastServerSnapshot.appliedPaymentKeys, uploadHistory: lastServerSnapshot.uploadHistory });
         }
         if (!item) return proceed(null);
         return downloadCloudFile().then(function (res) {
@@ -1323,6 +1353,7 @@
           var remoteTrackingReturn = (remote && remote.customerTrackingReturn) ? remote.customerTrackingReturn : {};
           var remoteTrackingReturnAt = (remote && remote.customerTrackingReturnAt) ? remote.customerTrackingReturnAt : {};
           var remoteKeys = (remote && remote.appliedPaymentKeys) ? remote.appliedPaymentKeys : [];
+          var remoteUploadHistory = (remote && Array.isArray(remote.uploadHistory)) ? remote.uploadHistory : [];
           mergedOrders = mergeOrdersList(baseOrders, localOrdersSnapshot, remoteOrders);
           mergedNotes = mergeNotes(baseNotes, localNotesSnapshot, remoteNotes);
           // mergeNotes is fully generic (any scalar-valued map keyed by customerKey, not notes-
@@ -1330,12 +1361,14 @@
           mergedTrackingReturn = mergeNotes(baseTrackingReturn, localTrackingReturnSnapshot, remoteTrackingReturn);
           mergedTrackingReturnAt = mergeNotes(baseTrackingReturnAt, localTrackingReturnAtSnapshot, remoteTrackingReturnAt);
           mergedKeys = unionKeys(remoteKeys, localKeysSnapshot);
+          // Append-only, so id-deduped union (not a 3-way merge) is enough — see mergeUploadHistory.
+          var mergedUploadHistory = mergeUploadHistory(remoteUploadHistory, localUploadHistorySnapshot);
           // isSampleData travels WITH the payload so applySnapshot can trust it explicitly instead of
           // guessing from orders.length — a freshly-seeded bucket's built-in demo data (generateMock())
           // is non-empty too, and inferring "no longer sample" from length alone meant the demo orders
           // silently got treated as real and merged alongside the first genuine upload (see
           // repairStaleSampleOrders below for cleaning up datasets already affected by this).
-          var payload = { orders: mergedOrders, customerNotes: mergedNotes, customerTrackingReturn: mergedTrackingReturn, customerTrackingReturnAt: mergedTrackingReturnAt, appliedPaymentKeys: mergedKeys, isSampleData: state.isSampleData, smsTemplates: state.smsTemplates, letterheadImageUrl: state.letterheadImageUrl, _meta: { updatedAt: new Date().toISOString(), updatedBy: myClientId } };
+          var payload = { orders: mergedOrders, customerNotes: mergedNotes, customerTrackingReturn: mergedTrackingReturn, customerTrackingReturnAt: mergedTrackingReturnAt, appliedPaymentKeys: mergedKeys, uploadHistory: mergedUploadHistory, isSampleData: state.isSampleData, smsTemplates: state.smsTemplates, letterheadImageUrl: state.letterheadImageUrl, _meta: { updatedAt: new Date().toISOString(), updatedBy: myClientId } };
           text = JSON.stringify(payload);
           blob = new Blob([text], { type: 'application/json' });
         } catch (mergeErr) {
@@ -1358,7 +1391,7 @@
             return;
           }
           cloudErrorDetail = '';
-          var merged = { orders: mergedOrders, customerNotes: mergedNotes, customerTrackingReturn: mergedTrackingReturn, customerTrackingReturnAt: mergedTrackingReturnAt, appliedPaymentKeys: mergedKeys };
+          var merged = { orders: mergedOrders, customerNotes: mergedNotes, customerTrackingReturn: mergedTrackingReturn, customerTrackingReturnAt: mergedTrackingReturnAt, appliedPaymentKeys: mergedKeys, uploadHistory: mergedUploadHistory };
           // Upload response doesn't include the new updated_at — fetch it so the next poll
           // recognizes this save as already-applied instead of re-downloading the whole file.
           findCloudFileMeta().then(function (item2) {
@@ -1507,6 +1540,7 @@
     customerNotes: (persisted && persisted.customerNotes) || {},
     customerTrackingReturn: (persisted && persisted.customerTrackingReturn) || {},
     customerTrackingReturnAt: (persisted && persisted.customerTrackingReturnAt) || {},
+    uploadHistory: (persisted && Array.isArray(persisted.uploadHistory)) ? persisted.uploadHistory : [], // internal audit log, never rendered — see logUpload/mergeUploadHistory
     lastSavedAt: (persisted && persisted.savedAt) || '',
     isSampleData: !(persisted && persisted.orders && persisted.orders.length),
     // Manual-save mode (2026-07-30, per user request): edits to งวด/order fields, customer name/id,
@@ -3338,9 +3372,11 @@
       state.letterheadResolvedUrl = null; // stale cache — next render re-resolves the new image
       state.hasUnsavedChanges = true;
       state.uploadMsgLetterhead = '✅ อัปโหลดหัวฟอร์มสำเร็จ — ต้องกด "บันทึกการเปลี่ยนแปลง" ด้วยเพื่อบันทึกถาวร';
+      logUpload('letterhead', file.name, state.uploadMsgLetterhead);
       render();
     }).catch(function (err) {
       state.uploadMsgLetterhead = '⚠️ อัปโหลดไม่สำเร็จ: ' + err.message;
+      logUpload('letterhead', file.name, state.uploadMsgLetterhead);
       render();
     });
   }
@@ -4346,6 +4382,38 @@
     state.hasUnsavedChanges = true;
     state.uploadMsgDebt = '🗑 ลบคำสั่งซื้อที่ทำสัญญาตั้งแต่ ' + CLEANUP_CONTRACT_DATE_FROM + ' แล้ว ' + toDelete.length + ' รายการ — กด "บันทึก" ด้านบนเพื่อยืนยันถาวร แล้วจึงอัปโหลดไฟล์ใหม่';
     render();
+  }
+  // Read-only audit (2026-08-12, per explicit request): finds every งวด currently showing this
+  // exact symptom — a paidDate on file but amountPaid still 0, i.e. it LOOKS like a payment date was
+  // recorded but no money actually landed. Root cause (a payment-file row with a blank amount could
+  // stamp paidDate anyway) is fixed going forward in onPaymentFileChange, but existing data from
+  // before that fix isn't touched automatically — this only lists/exports so staff can review and
+  // decide per record (re-upload the file that has the real amount vs. clear it by hand); it never
+  // changes any data itself.
+  function scanStrayPaidDates() {
+    var out = [];
+    function scanList(order, list, track) {
+      (list || []).forEach(function (i) {
+        if (i.paidDate && toNumber(i.amountPaid) <= 0.005) {
+          out.push({ orderId: track === 'accessory' ? (order.accessoryOrderId || order.orderId) : order.orderId, customerName: order.customerName, track: track, no: i.no, dueDate: i.dueDate, amountDue: i.amountDue, paidDate: i.paidDate });
+        }
+      });
+    }
+    state.orders.forEach(function (o) {
+      scanList(o, o.installments, 'main');
+      scanList(o, o.accessoryInstallments, 'accessory');
+    });
+    return out;
+  }
+  function downloadStrayPaidDatesReport() {
+    var rows = scanStrayPaidDates();
+    if (!rows.length) { window.alert('ไม่พบงวดที่มีลักษณะนี้ในระบบตอนนี้'); return; }
+    var content = 'คำสั่งซื้อ,ชื่อลูกค้า,ประเภทงวด,งวดที่,วันครบกำหนดชำระ,ยอดผ่อนต่องวด,วันที่ชำระที่ค้างอยู่ (ยอดชำระจริง=0)\n';
+    rows.forEach(function (r) {
+      content += [r.orderId, r.customerName, r.track === 'accessory' ? 'อุปกรณ์เสริม' : 'หลัก', r.no, r.dueDate, r.amountDue, r.paidDate]
+        .map(function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; }).join(',') + '\n';
+    });
+    downloadBlob(content, 'stray_paiddate_zero_amount.csv');
   }
   function resetAllData(toSample) {
     clearPersisted();
@@ -5443,8 +5511,9 @@
         warn.push('มี ' + noInstOrders + ' คำสั่งซื้อ ที่ไม่มีงวดชำระเลย');
       }
       state.uploadMsgDebt = msg + (warn.length ? ('\n⚠️ ' + warn.join('\n⚠️ ')) : '');
+      logUpload('debt', file.name, state.uploadMsgDebt);
       render();
-    }).catch(function (err) { state.uploadMsgDebt = 'เกิดข้อผิดพลาด: ' + err.message; render(); });
+    }).catch(function (err) { state.uploadMsgDebt = 'เกิดข้อผิดพลาด: ' + err.message; logUpload('debt', file.name, state.uploadMsgDebt); render(); });
   }
   function onPaymentFileChange(file) {
     if (!file) return;
@@ -5553,6 +5622,7 @@
 
         if (setPaid === 0 && statusOnly === 0) {
           state.uploadMsgPayment = '⚠️ อ่านไฟล์ประวัติสถานะได้ ' + rows.length + ' แถว แต่จับคู่กับข้อมูลลูกหนี้ไม่ได้ (ยังไม่บันทึก) — ตรวจว่า SO และงวดที่รับชำระ ตรงกับข้อมูลลูกหนี้ที่มีอยู่';
+          logUpload('payment', file.name, state.uploadMsgPayment);
           render();
           return;
         }
@@ -5567,6 +5637,7 @@
         state.uploadMsgPayment = 'อัปเดตประวัติสถานะสำเร็จ: ตั้งยอดชำระ ' + setPaid + ' งวด · อัปเดตสถานะอย่างเดียว ' + statusOnly + ' งวด'
           + (missedSnap ? (' · ไม่พบ ' + missedSnap + ' แถว (SO หรืองวดที่ไม่ตรงกับข้อมูลลูกหนี้ เช่น รหัสงวด 900+ ที่ยังไม่ทราบความหมาย)') : '')
           + (shouldSwapPaidDate ? '\nℹ️ ตรวจพบว่าไฟล์นี้สลับวัน/เดือนในคอลัมน์วันที่รับชำระ — ระบบแก้ให้อัตโนมัติแล้ว' : '');
+        logUpload('payment', file.name, state.uploadMsgPayment);
         render();
         return;
       }
@@ -5726,6 +5797,7 @@
         state.uploadMsgPayment = '⚠️ อ่านไฟล์ได้ ' + rows.length + ' แถว แต่จับคู่กับข้อมูลลูกหนี้ไม่ได้ (ยังไม่บันทึก) — '
           + (state.orders.length === 0 ? 'ยังไม่มีข้อมูลลูกหนี้ในระบบ กรุณาอัปโหลด “ไฟล์ลูกหนี้” ก่อน' : ('ตรวจว่าคอลัมน์ “คำสั่งซื้อ” และ “งวดที่” ตรงกับไฟล์ลูกหนี้ — หัวคอลัมน์ในไฟล์นี้คือ: ' + (headers.length ? headers.join(' | ') : '(ไม่พบหัวคอลัมน์)')));
         state.paymentImportDiagnostics = skippedRows;
+        logUpload('payment', file.name, state.uploadMsgPayment);
         render();
         return;
       }
@@ -5745,8 +5817,9 @@
         + (missed ? (' · ไม่พบ ' + missed + ' แถว') : '')
         + (shouldSwapPaidDate ? '\nℹ️ ตรวจพบว่าไฟล์นี้สลับวัน/เดือนในคอลัมน์วันที่รับชำระ — ระบบแก้ให้อัตโนมัติแล้ว' : '');
       state.paymentImportDiagnostics = skippedRows;
+      logUpload('payment', file.name, state.uploadMsgPayment);
       render();
-    }).catch(function (err) { state.uploadMsgPayment = 'เกิดข้อผิดพลาด: ' + err.message; render(); });
+    }).catch(function (err) { state.uploadMsgPayment = 'เกิดข้อผิดพลาด: ' + err.message; logUpload('payment', file.name, state.uploadMsgPayment); render(); });
   }
 
   // Separate "ข้อมูลลูกค้าเพิ่มเติม" file (เลขที่สัญญา/เบอร์ติดต่อลูกค้า/วันเวลาที่ส่งเครื่อง/บุคคล
@@ -5822,8 +5895,9 @@
       savePersisted();
       state.uploadMsgCustomerInfo = '✅ จับคู่สำเร็จ ' + matchedRows + ' แถว (อัปเดต ' + matchedOrders + ' สัญญา)'
         + (unmatched.length ? ('\n⚠️ ไม่พบลูกค้าที่ตรงกัน ' + unmatched.length + ' แถว: ' + unmatched.slice(0, 10).join(', ') + (unmatched.length > 10 ? ' ...' : '')) : '');
+      logUpload('customerinfo', file.name, state.uploadMsgCustomerInfo);
       render();
-    }).catch(function (err) { state.uploadMsgCustomerInfo = 'เกิดข้อผิดพลาด: ' + err.message; render(); });
+    }).catch(function (err) { state.uploadMsgCustomerInfo = 'เกิดข้อผิดพลาด: ' + err.message; logUpload('customerinfo', file.name, state.uploadMsgCustomerInfo); render(); });
   }
 
   // Imports Thaibulk's own "email-api-report" dashboard export (สถานะการส่ง/bounced/opened/etc.) —
@@ -5987,8 +6061,9 @@
         + (recreatedCount ? (' (กู้คืนประวัติที่หายไปจากบัคซิงก์เดิม ' + recreatedCount + ' ฉบับ)') : '')
         + (unchanged ? (' · ไม่มีการเปลี่ยนแปลง ' + unchanged + ' ฉบับ') : '')
         + (unmatchedReasons.length ? ('\n⚠️ ไม่พบข้อมูลที่ตรงกัน ' + unmatchedReasons.length + ' แถว:\n' + unmatchedReasons.slice(0, 10).join('\n') + (unmatchedReasons.length > 10 ? '\n...' : '')) : '');
+      logUpload('emailReport', file.name, state.uploadMsgEmailReport);
       render();
-    }).catch(function (err) { state.uploadMsgEmailReport = 'เกิดข้อผิดพลาด: ' + err.message; render(); });
+    }).catch(function (err) { state.uploadMsgEmailReport = 'เกิดข้อผิดพลาด: ' + err.message; logUpload('emailReport', file.name, state.uploadMsgEmailReport); render(); });
   }
 
   // Imports Thaibulk's SMS send-log export (their dashboard "sms-log" download) — same rationale
@@ -6365,8 +6440,9 @@
         + (recreatedCount ? (' (กู้คืนประวัติการส่งที่ไม่เคยบันทึกไว้ในระบบ ' + recreatedCount + ' ฉบับ)') : '')
         + (unchanged ? (' · ไม่มีการเปลี่ยนแปลง ' + unchanged + ' ฉบับ') : '')
         + (unmatchedReasons.length ? ('\n⚠️ ไม่พบข้อมูลที่ตรงกัน ' + unmatchedReasons.length + ' แถว:\n' + unmatchedReasons.slice(0, 10).join('\n') + (unmatchedReasons.length > 10 ? '\n...' : '')) : '');
+      logUpload('smsLog', file.name, state.uploadMsgSmsLog);
       render();
-    }).catch(function (err) { state.uploadMsgSmsLog = 'เกิดข้อผิดพลาด: ' + err.message; render(); });
+    }).catch(function (err) { state.uploadMsgSmsLog = 'เกิดข้อผิดพลาด: ' + err.message; logUpload('smsLog', file.name, state.uploadMsgSmsLog); render(); });
   }
 
   // ---------- Lock-system (Soti/Marena) reference import (2026-08-05) ----------
@@ -6540,8 +6616,9 @@
         + (alreadySet ? (' · มีข้อมูลระบบล็อคอยู่แล้ว ข้าม ' + alreadySet + ' ราย (ไม่มีการเขียนทับข้อมูลเดิม)') : '')
         + (ambiguous ? (' · ชื่อ/เบอร์ซ้ำกันหลายราย ข้าม ' + ambiguous + ' แถว') : '')
         + (unmatched ? ('\n⚠️ ไม่พบลูกค้าที่ตรงกัน ' + unmatched + ' แถว เช่น: ' + sampleUnmatched.join(', ') + (unmatched > sampleUnmatched.length ? ' ...' : '')) : '');
+      logUpload('lockSystem', file.name, state.uploadMsgLockSystem);
       render();
-    }).catch(function (err) { state.uploadMsgLockSystem = 'เกิดข้อผิดพลาด: ' + err.message; render(); });
+    }).catch(function (err) { state.uploadMsgLockSystem = 'เกิดข้อผิดพลาด: ' + err.message; logUpload('lockSystem', file.name, state.uploadMsgLockSystem); render(); });
   }
 
   // ---------- Render: shared bits ----------
@@ -7163,6 +7240,14 @@
         '<div style="font-size:12.5px; color:#a51111; line-height:1.6;"><b>🧹 เครื่องมือล้างข้อมูลชั่วคราว</b> — พบคำสั่งซื้อที่ทำสัญญาตั้งแต่ ' + esc(CLEANUP_CONTRACT_DATE_FROM) + ' เป็นต้นไป ' + cleanupCount + ' รายการ (สำหรับล้างก่อนอัปโหลดไฟล์ใหม่ทั้งหมด)</div>' +
         '<button data-action="bulkDeleteOrdersFromCleanupDate" style="background:#e03131; border:none; color:#fff; font-size:12.5px; padding:8px 16px; border-radius:20px; cursor:pointer; font-weight:600; white-space:nowrap;">🗑 ลบคำสั่งซื้อ ' + cleanupCount + ' รายการ</button>' +
       '</div>';
+    // Read-only audit tool (2026-08-12) — admin-only, same gating as the cleanup banner above.
+    // Never modifies data; just lists/exports งวด stuck showing a paid date with ฿0 actually paid.
+    var strayCount = (state.currentUser && state.currentUser.isAdmin) || !CLOUD_ENABLED ? scanStrayPaidDates().length : 0;
+    var strayBanner = strayCount === 0 ? '' :
+      '<div style="background:rgba(240,140,0,0.08); border:1px solid rgba(240,140,0,0.35); border-radius:16px; padding:14px 20px; margin-bottom:16px; display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap;">' +
+        '<div style="font-size:12.5px; color:#8a4b00; line-height:1.6;"><b>🔎 ตรวจสอบข้อมูลผิดปกติ</b> — พบ ' + strayCount + ' งวด ที่มี “วันที่ชำระ” ติดอยู่แต่ “ยอดที่ชำระจริง” เป็น 0 บาท (ดูเหมือนชำระแล้วแต่จริงๆ ยังไม่มีเงินเข้า) — ไม่แก้ไขข้อมูลอัตโนมัติ กดดาวน์โหลดเพื่อตรวจทีละรายการ</div>' +
+        '<button data-action="downloadStrayPaidDatesReport" style="background:transparent; border:1px solid rgba(240,140,0,0.4); color:#8a4b00; font-size:12.5px; padding:8px 16px; border-radius:20px; cursor:pointer; font-weight:600; white-space:nowrap;">📥 ดาวน์โหลดรายการ ' + strayCount + ' งวด</button>' +
+      '</div>';
     var sampleWarn = state.isSampleData
       ? '<div style="background:rgba(240,140,0,0.10); border:1px solid rgba(240,140,0,0.35); border-radius:16px; padding:14px 20px; margin-bottom:16px; font-size:13px; color:#8a4b00; line-height:1.7;">⚠️ ตอนนี้กำลังแสดง <b>ข้อมูลตัวอย่าง</b> — เมื่อคุณอัปโหลด <b>ไฟล์ลูกหนี้จริง</b> ครั้งแรก ข้อมูลตัวอย่างจะถูกแทนที่ด้วยข้อมูลจริงทั้งหมดโดยอัตโนมัติ (หรือกดปุ่ม “เริ่มจากว่างเปล่า” ด้านล่างก่อนก็ได้)</div>'
       : '';
@@ -7175,7 +7260,7 @@
         '<div style="font-size:13px; color:#4b3fa0; font-weight:600;">มีการเปลี่ยนแปลงที่ยังไม่ได้บันทึกถาวร</div>' +
         renderSaveButton(true) +
       '</div>';
-    var banner = unsavedBanner + cleanupBanner + storageWarn + sampleWarn +
+    var banner = unsavedBanner + cleanupBanner + strayBanner + storageWarn + sampleWarn +
       '<div style="background:rgba(18,184,134,0.08); border:1px solid rgba(18,184,134,0.25); border-radius:16px; padding:16px 20px; margin-bottom:20px; display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap;">' +
         '<div style="font-size:12.5px; color:#0b7a5b; line-height:1.7;">' +
           '<div style="font-weight:600; font-size:13.5px; margin-bottom:2px;">💾 โหมดยอดสะสม (บวกเพิ่ม) + จำข้อมูลอัตโนมัติ</div>' +
@@ -8820,6 +8905,7 @@
           break;
         case 'downloadTemplate': downloadTemplate(t.getAttribute('data-type')); break;
         case 'downloadPaymentImportDiagnostics': downloadPaymentImportDiagnostics(); break;
+        case 'downloadStrayPaidDatesReport': downloadStrayPaidDatesReport(); break;
         case 'clearToEmpty': if (window.confirm('ล้างข้อมูลทั้งหมดเพื่อเริ่มจากว่างเปล่า (พร้อมอัปโหลดข้อมูลจริง)?\n(ยกเลิกไม่ได้)')) resetAllData(false); break;
         case 'resetToSample': if (window.confirm('ล้างข้อมูลทั้งหมด และกลับไปเป็นข้อมูลตัวอย่าง?\n(ยกเลิกไม่ได้)')) resetAllData(true); break;
         case 'bulkDeleteOrdersFromCleanupDate': bulkDeleteOrdersFromCleanupDate(); break;
