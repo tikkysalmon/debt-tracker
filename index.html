@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-12.1';
+  var APP_BUILD = '2026-08-12.2';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -5615,7 +5615,13 @@
         // → the customer already has this payment on file, skip outright (per explicit user rule —
         // don't try to reconcile a differing amount, just drop it). Checked before targeting, and
         // independent of the file's งวดที่ column (which is no longer trusted for this at all).
-        if (paidDateStr && trackList.some(function (i) { return i.paidDate === paidDateStr; })) {
+        // Requires the matching งวด to also have a real amountPaid (fixed 2026-08-12) — found via a
+        // real report (SO-2026050100081) that a งวด can end up with paidDate stamped but amountPaid
+        // still 0 (e.g. a stray/partial edit), which made this guard block the real payment forever:
+        // every future re-upload of the genuine payment saw the date "already on file" and skipped
+        // it, even though no money had actually been recorded. A paidDate with zero amountPaid was
+        // never a real recorded payment, so it must not count as "already have this on file."
+        if (paidDateStr && trackList.some(function (i) { return i.paidDate === paidDateStr && toNumber(i.amountPaid) > 0.005; })) {
           duplicateDate++;
           skippedRows.push({ reason: 'ข้ามแถววันที่ซ้ำ (มีอยู่ในระบบแล้ว)', orderId: orderId, amount: amountPaid, paidDate: paidDateStr });
           return;
