@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-11.5';
+  var APP_BUILD = '2026-08-12.1';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -1468,6 +1468,7 @@
     selectedCustomerId: null,
     uploadMsgDebt: '',
     uploadMsgPayment: '',
+    paymentImportDiagnostics: [],
     uploadMsgCustomerInfo: '',
     uploadMsgEmailReport: '',
     uploadMsgSmsLog: '',
@@ -4407,6 +4408,18 @@
     });
     downloadBlob(content, 'debt_data_export.csv');
   }
+  // Lets staff see exactly which SO/แถว a payment-file upload skipped and why, instead of only a
+  // count — see the skippedRows collection in onPaymentFileChange.
+  function downloadPaymentImportDiagnostics() {
+    var rows = state.paymentImportDiagnostics || [];
+    if (!rows.length) return;
+    var content = 'สาเหตุ,คำสั่งซื้อ,ยอดในไฟล์,วันที่ชำระในไฟล์\n';
+    rows.forEach(function (r) {
+      content += [r.reason, r.orderId, r.amount, r.paidDate]
+        .map(function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; }).join(',') + '\n';
+    });
+    downloadBlob(content, 'payment_import_skipped.csv');
+  }
   function downloadTemplate(type) {
     var debtContent = 'รหัสลูกค้า,ชื่อลูกค้า,คำสั่งซื้อ,วันที่ออกสัญญา,รายการสินค้า,ยอดวางดาวน์,ส่วนลด,ประเภทการซื้อ,งวดที่,วันครบกำหนดชำระ,ยอดผ่อนต่องวด\n' +
       'C001,สมชาย ใจดี,O-2026-001,2026-01-09,iPhone 15 128GB,3000,500,ผ่อนชำระรายเดือน,1,2026-02-09,1500\n';
@@ -5436,6 +5449,7 @@
   function onPaymentFileChange(file) {
     if (!file) return;
     if (!window.XLSX) { state.uploadMsgPayment = 'ไม่พบไลบรารีอ่านไฟล์ กรุณาลองใหม่'; render(); return; }
+    state.paymentImportDiagnostics = []; // cleared on every new upload, filled in below for the regular (non-snapshot) path
     var ALIASES = {
       orderId: ['คำสั่งซื้อ', 'orderid', 'order id', 'order no', 'orderno', 'เลขที่คำสั่งซื้อ', 'หมายเลขคำสั่งซื้อ', 'เลขคำสั่งซื้อ', 'so', 'so number', 'sonumber', 'เลขที่ so', 'เลขที่เอกสาร', 'เลขที่ใบสั่งขาย', 'เลขที่สัญญา', 'เลขสัญญา', 'เลขที่บิล'],
       customerId: ['รหัสลูกค้า', 'customerid', 'customer id', 'รหัส', 'รหัสสมาชิก', 'รหัสลูกค้า crm'],
@@ -5573,10 +5587,19 @@
         return toDateStringPaymentCell(resolveField(a, ALIASES.paidDate), shouldSwapPaidDate).localeCompare(toDateStringPaymentCell(resolveField(b, ALIASES.paidDate), shouldSwapPaidDate));
       });
       var added = 0, addedPenalty = 0, missed = 0, duplicate = 0, duplicateDate = 0, updatedOnly = 0;
+      // Diagnostic-only (2026-08-12): the counts above never said WHICH rows were skipped, so a
+      // report like "SO-X still shows ฿0 after upload" had no way to tell missed/duplicateDate/
+      // duplicate apart without live production data. Collected alongside the counters (not
+      // instead of), surfaced as a downloadable CSV next to the upload result message.
+      var skippedRows = [];
       sortedRows.forEach(function (r) {
         var orderId = String(resolveField(r, ALIASES.orderId) || '').trim();
         var match = findOrderAndTrack(orderId, String(resolveField(r, ALIASES.customerId) || '').trim());
-        if (!match) { missed++; return; }
+        if (!match) {
+          missed++;
+          skippedRows.push({ reason: 'ไม่พบคำสั่งซื้อ', orderId: orderId, amount: resolveField(r, ALIASES.amountPaid), paidDate: resolveField(r, ALIASES.paidDate) });
+          return;
+        }
         var order = match.order, trackList = match.list;
         var amountPaid = resolveField(r, ALIASES.amountPaid);
         var paidDate = resolveField(r, ALIASES.paidDate);
@@ -5594,6 +5617,7 @@
         // independent of the file's งวดที่ column (which is no longer trusted for this at all).
         if (paidDateStr && trackList.some(function (i) { return i.paidDate === paidDateStr; })) {
           duplicateDate++;
+          skippedRows.push({ reason: 'ข้ามแถววันที่ซ้ำ (มีอยู่ในระบบแล้ว)', orderId: orderId, amount: amountPaid, paidDate: paidDateStr });
           return;
         }
 
@@ -5608,7 +5632,11 @@
         if (!inst) {
           inst = sortedInsts.find(function (i) { return toNumber(i.amountPaid) < (toNumber(i.amountDue) - toNumber(i.discount) - 0.01); }) || trackList[trackList.length - 1];
         }
-        if (!inst) { missed++; return; }
+        if (!inst) {
+          missed++;
+          skippedRows.push({ reason: 'พบคำสั่งซื้อ แต่ไม่มีงวดให้ลง', orderId: orderId, amount: amountPaid, paidDate: paidDateStr });
+          return;
+        }
         var payKey = orderId + '|' + inst.no + '|' + paidDateStr + '|' + toNumber(amountPaid);
 
         // ACCUMULATE the paid amount onto the running total, with duplicate-row protection.
@@ -5619,7 +5647,11 @@
         // combined payment can spread across several (see below), and paidDate/discount/note/status
         // below must stamp every one of them, not just the first.
         if (amountPaid !== '') {
-          if (appliedPaymentKeys[payKey]) { duplicate++; return; } // same row already added before → skip
+          if (appliedPaymentKeys[payKey]) {
+            duplicate++;
+            skippedRows.push({ reason: 'ข้ามแถวซ้ำ (บวกไปแล้ว)', orderId: orderId, amount: amountPaid, paidDate: paidDateStr });
+            return;
+          } // same row already added before → skip
           appliedPaymentKeys[payKey] = true;
           var rowAmount = toNumber(amountPaid);
           if (hasPenalty) {
@@ -5680,6 +5712,7 @@
       if (added === 0 && addedPenalty === 0 && updatedOnly === 0 && duplicate === 0 && duplicateDate === 0) {
         state.uploadMsgPayment = '⚠️ อ่านไฟล์ได้ ' + rows.length + ' แถว แต่จับคู่กับข้อมูลลูกหนี้ไม่ได้ (ยังไม่บันทึก) — '
           + (state.orders.length === 0 ? 'ยังไม่มีข้อมูลลูกหนี้ในระบบ กรุณาอัปโหลด “ไฟล์ลูกหนี้” ก่อน' : ('ตรวจว่าคอลัมน์ “คำสั่งซื้อ” และ “งวดที่” ตรงกับไฟล์ลูกหนี้ — หัวคอลัมน์ในไฟล์นี้คือ: ' + (headers.length ? headers.join(' | ') : '(ไม่พบหัวคอลัมน์)')));
+        state.paymentImportDiagnostics = skippedRows;
         render();
         return;
       }
@@ -5698,6 +5731,7 @@
         + (duplicate ? (' · ข้ามแถวซ้ำ ' + duplicate + ' แถว (บวกไปแล้ว)') : '')
         + (missed ? (' · ไม่พบ ' + missed + ' แถว') : '')
         + (shouldSwapPaidDate ? '\nℹ️ ตรวจพบว่าไฟล์นี้สลับวัน/เดือนในคอลัมน์วันที่รับชำระ — ระบบแก้ให้อัตโนมัติแล้ว' : '');
+      state.paymentImportDiagnostics = skippedRows;
       render();
     }).catch(function (err) { state.uploadMsgPayment = 'เกิดข้อผิดพลาด: ' + err.message; render(); });
   }
@@ -7085,7 +7119,7 @@
     // change from anywhere else (e.g. devtools) must still not render this view's content for
     // someone without the permission.
     if (!can('upload_files')) return '<div style="padding:60px 20px; text-align:center; color:#8a86a3; font-size:14px;">🔒 คุณไม่มีสิทธิ์เข้าเมนูนี้</div>';
-    var card = function (title, desc, tmplType, inputId, action, msg) {
+    var card = function (title, desc, tmplType, inputId, action, msg, extraHtml) {
       return '<div style="background:rgba(255,255,255,0.55); backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.8); border-radius:20px; padding:22px 24px; box-shadow:0 8px 30px rgba(124,92,255,0.10);">' +
         '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; gap:10px; flex-wrap:wrap;">' +
           '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:16px; color:#2b2540;">' + title + '</div>' +
@@ -7095,6 +7129,7 @@
         '<label for="' + inputId + '" style="display:inline-flex; align-items:center; gap:8px; background:linear-gradient(135deg,#7c5cff,#6647e0); color:#fff; padding:10px 20px; border-radius:12px; font-size:14px; font-weight:600; cursor:pointer; box-shadow:0 6px 16px rgba(124,92,255,0.35);">⬆ อัพโหลดไฟล์ Excel/CSV</label>' +
         '<input id="' + inputId + '" type="file" accept=".csv,.xlsx,.xls" data-action="' + action + '" style="display:none;" />' +
         (msg ? '<div style="margin-top:10px; font-size:13px; color:' + (msg.indexOf('⚠️') >= 0 || msg.indexOf('🛑') >= 0 ? '#a5620d' : '#4b3fa0') + '; white-space:pre-line; line-height:1.65;">' + esc(msg) + '</div>' : '') +
+        (extraHtml || '') +
       '</div>';
     };
     var savedInfo = state.lastSavedAt ? ('บันทึกล่าสุด: ' + fmtDate(state.lastSavedAt) + ' ' + new Date(state.lastSavedAt).toLocaleTimeString('th-TH')) : 'ยังไม่มีข้อมูลบันทึก';
@@ -7141,7 +7176,10 @@
     return banner +
     '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:20px; margin-bottom:28px;">' +
       card('📁 ข้อมูลลูกหนี้ / ตารางผ่อนชำระ', 'คอลัมน์: รหัสลูกค้า, ชื่อลูกค้า, คำสั่งซื้อ, วันที่ออกสัญญา, รายการสินค้า, ยอดวางดาวน์, ส่วนลด, ประเภทการซื้อ, งวดที่, วันครบกำหนดชำระ, ยอดผ่อนต่องวด<br><span style="color:#0b7a5b;">อัปซ้ำได้ — ยอดชำระที่บันทึกไว้จะไม่ถูกล้าง</span>', 'debt', 'debtFileInputTop', 'onDebtFile', state.uploadMsgDebt) +
-      card('💳 ข้อมูลยอดชำระเงิน', 'คอลัมน์: คำสั่งซื้อ, งวดที่, ยอดที่ชำระจริง, วันที่ชำระ, สถานะการชำระเงิน (ถ้ามี), ส่วนลด (ถ้ามี), หมายเหตุ (ถ้ามี)<br><span style="color:#0b7a5b;">โหมดบวกเพิ่ม — ควรใส่ “วันที่ชำระ” ทุกแถวเพื่อให้ระบบกันการบวกซ้ำได้แม่นยำ</span><br><span style="color:#6b6785;">รองรับไฟล์ประวัติสถานะจากระบบเก่า (มีคอลัมน์ “timestamp”) โดยอัตโนมัติ — จะตั้งค่าล่าสุดแทนการบวกสะสม</span>', 'payment', 'paymentFileInputTop', 'onPaymentFile', state.uploadMsgPayment) +
+      card('💳 ข้อมูลยอดชำระเงิน', 'คอลัมน์: คำสั่งซื้อ, งวดที่, ยอดที่ชำระจริง, วันที่ชำระ, สถานะการชำระเงิน (ถ้ามี), ส่วนลด (ถ้ามี), หมายเหตุ (ถ้ามี)<br><span style="color:#0b7a5b;">โหมดบวกเพิ่ม — ควรใส่ “วันที่ชำระ” ทุกแถวเพื่อให้ระบบกันการบวกซ้ำได้แม่นยำ</span><br><span style="color:#6b6785;">รองรับไฟล์ประวัติสถานะจากระบบเก่า (มีคอลัมน์ “timestamp”) โดยอัตโนมัติ — จะตั้งค่าล่าสุดแทนการบวกสะสม</span>', 'payment', 'paymentFileInputTop', 'onPaymentFile', state.uploadMsgPayment,
+        (state.paymentImportDiagnostics && state.paymentImportDiagnostics.length
+          ? '<button data-action="downloadPaymentImportDiagnostics" style="margin-top:10px; background:transparent; border:1px solid rgba(224,49,49,0.4); color:#c92a2a; font-size:12px; padding:6px 12px; border-radius:20px; cursor:pointer;">📥 ดาวน์โหลดรายการที่ถูกข้าม (' + state.paymentImportDiagnostics.length + ' แถว)</button>'
+          : '')) +
       card('📇 ข้อมูลลูกค้าเพิ่มเติม (เบอร์โทร/อีเมล/บุคคลอ้างอิง)', 'คอลัมน์: เลขที่สัญญา, ชื่อ-นามสกุลลูกค้า, เลข SO, รหัสลูกค้า, เบอร์ติดต่อลูกค้า, อีเมลลูกค้า, วันเวลาที่ส่งเครื่อง, ชื่อบุคคลอ้างอิง, เบอร์ติดต่อบุคคลอ้างอิง<br><span style="color:#0b7a5b;">จับคู่กับข้อมูลลูกหนี้ด้วยเลข SO ก่อน ตามด้วยรหัสลูกค้า แล้วจึงชื่อลูกค้า — อัปซ้ำได้ ค่าใหม่แทนที่ค่าเดิม</span>', 'customerinfo', 'customerInfoFileInputTop', 'onCustomerInfo', state.uploadMsgCustomerInfo) +
       '<div style="background:rgba(255,255,255,0.55); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.8); border-radius:20px; padding:22px 24px; box-shadow:0 8px 30px rgba(124,92,255,0.10);">' +
         '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:16px; color:#2b2540; margin-bottom:10px;">🖼 หัวฟอร์มจดหมายทวงถามหนี้</div>' +
@@ -8768,6 +8806,7 @@
           render();
           break;
         case 'downloadTemplate': downloadTemplate(t.getAttribute('data-type')); break;
+        case 'downloadPaymentImportDiagnostics': downloadPaymentImportDiagnostics(); break;
         case 'clearToEmpty': if (window.confirm('ล้างข้อมูลทั้งหมดเพื่อเริ่มจากว่างเปล่า (พร้อมอัปโหลดข้อมูลจริง)?\n(ยกเลิกไม่ได้)')) resetAllData(false); break;
         case 'resetToSample': if (window.confirm('ล้างข้อมูลทั้งหมด และกลับไปเป็นข้อมูลตัวอย่าง?\n(ยกเลิกไม่ได้)')) resetAllData(true); break;
         case 'bulkDeleteOrdersFromCleanupDate': bulkDeleteOrdersFromCleanupDate(); break;
