@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-12.2';
+  var APP_BUILD = '2026-08-12.3';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -5698,7 +5698,14 @@
           // This row touched mi's amountPaid (or is about to touch discount below) — a prior
           // ตรวจสอบ CRM confirmation was for the pre-payment figure and no longer applies.
           if (mi.verifiedCRM && (amountPaid !== '' || discount !== '')) { mi.verifiedCRM = false; mi.verifiedCRMAt = ''; mi.verifiedCRMBy = ''; }
-          if (paidDate !== '') mi.paidDate = paidDateStr; // latest payment date wins
+          // Only stamp paidDate when this row actually carried an amount (fixed 2026-08-12) — a row
+          // with a blank "ยอดที่ชำระจริง" cell falls into the updatedOnly branch above (no money
+          // recorded at all), but this line used to run unconditionally on ANY non-blank date,
+          // stamping paidDate with zero amountPaid. That silently froze the installment: it looked
+          // like nothing was owed on-screen but wasn't really paid, AND (before the duplicate-date
+          // guard fix above) permanently blocked the real payment from ever landing on a later
+          // upload, since the guard saw "this date is already on file" from the stray stamp.
+          if (paidDate !== '' && amountPaid !== '') mi.paidDate = paidDateStr; // latest payment date wins
           // ส่วนลดปิดยอด (closing/settlement discount) belongs on the LAST งวด this row touched only —
           // per explicit user rule — never repeated onto every spread-across งวด, which would multiply
           // the discount by however many งวด a combined payment happened to fill.
