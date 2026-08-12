@@ -67,7 +67,7 @@
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
   // member's already-open tab would never pick up a bug fix (including the merge-granularity fix
   // this constant shipped with) until they happened to refresh on their own.
-  var APP_BUILD = '2026-08-12.4';
+  var APP_BUILD = '2026-08-12.5';
 
   // ---------- Constants ----------
   var LATE_STATUSES = ['ค้างชำระ', 'เกินกำหนดชำระ', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'หนี้สงสัยจะสูญ', 'ชำระบางส่วน'];
@@ -8854,7 +8854,21 @@
         // (e.g. via goUsers/goUpload, which don't clear it) doesn't re-surface this popup later while
         // the user is already on an unrelated menu (จัดการผู้ใช้งาน/อัพโหลดไฟล์, etc.).
         case 'goDashboard': if (state.view !== 'tracking' || confirmDiscardIfDirty()) { state.view = 'dashboard'; render(); } break;
-        case 'goTracking': if (!can('tracking_view')) { denyToast(); return; } if (state.view !== 'tracking' || confirmDiscardIfDirty()) { state.view = 'tracking'; render(); } break;
+        case 'goTracking': {
+          if (!can('tracking_view')) { denyToast(); return; }
+          var wasOnTracking = state.view === 'tracking';
+          if (!wasOnTracking || confirmDiscardIfDirty()) {
+            // Per explicit user request 2026-08-12: leaving the ติดตามหนี้ menu for another menu and
+            // coming back used to still show the previous search/filter results untouched (state.query/
+            // filter* and the applied* copies performSearch() set are never cleared elsewhere) — only
+            // reset when genuinely ARRIVING from a different view, not on a same-view re-click, so this
+            // never fires while the user is still on the tracking page itself.
+            if (!wasOnTracking) state.searched = false;
+            state.view = 'tracking';
+            render();
+          }
+          break;
+        }
         case 'goNotifications': if (!can('tracking_view')) { denyToast(); return; } if (state.view !== 'tracking' || confirmDiscardIfDirty()) { state.view = 'notifications'; render(); } break;
         case 'toggleNotificationGroup': {
           var ng = t.getAttribute('data-group') || '';
