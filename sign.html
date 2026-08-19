@@ -61,6 +61,9 @@ const token = params.get("token");
 
 let signatureDataUrl = null; // ลายเซ็นเดียวกันถูกใช้ในทุกกรอบลายเซ็น/ลายเซ็นกำกับของผู้เซ็นคนนี้
 let sessionData = null;
+// เก็บลายเซ็นล่าสุดไว้ในเบราว์เซอร์เครื่องนี้ (localStorage) — ผูกกับเครื่อง/เบราว์เซอร์ ไม่ใช่บัญชี
+// ผู้ใช้ เหมาะกับพนักงานที่เซ็นเอกสารซ้ำๆ จากเครื่องเดิมเป็นประจำ ไม่ต้องอัปโหลด/วาดใหม่ทุกครั้ง
+const SAVED_SIGNATURE_KEY = "esign_saved_signature_v1";
 
 function renderError(message) {
   app.innerHTML = `<div class="msg error">${message}</div>`;
@@ -165,6 +168,7 @@ function updateSubmitState() {
 }
 
 function openSignatureModal(targetBox) {
+  const savedSignature = localStorage.getItem(SAVED_SIGNATURE_KEY);
   const modal = document.createElement("div");
   modal.className = "sig-modal";
   modal.innerHTML = `
@@ -172,6 +176,7 @@ function openSignatureModal(targetBox) {
       <h3 style="margin-top:0;">วาดลายเซ็นของท่าน</h3>
       <canvas id="sigCanvas"></canvas>
       <p style="font-size:12px;color:#6b7280;">ลายเซ็นนี้จะถูกใช้กับทุกจุดที่ท่านต้องเซ็นในเอกสารนี้</p>
+      ${savedSignature ? '<p style="font-size:11.5px;color:#0ca678;margin:0 0 8px;">✓ ใช้ลายเซ็นที่บันทึกไว้จากครั้งก่อนบนเครื่องนี้ — <span id="clearSavedSig" style="text-decoration:underline;cursor:pointer;">ลบลายเซ็นที่บันทึกไว้</span></p>' : ''}
       <div class="row">
         <button id="clearSig" style="flex:1;background:#e5e7eb;">ล้าง</button>
         <button id="uploadSigBtn" style="flex:1;background:#e5e7eb;">📁 อัปโหลดรูปภาพแทน</button>
@@ -218,28 +223,43 @@ function openSignatureModal(targetBox) {
   modal.querySelector("#clearSig").addEventListener("click", () => { ctx.clearRect(0, 0, canvas.width, canvas.height); hasDrawn = false; });
   modal.querySelector("#cancelSig").addEventListener("click", () => modal.remove());
 
+  // วาดรูปลายเซ็น (จากไฟล์อัปโหลด หรือจากลายเซ็นที่บันทึกไว้ในเครื่อง) ลงบน canvas แบบคงสัดส่วนเดิม
+  // (contain) กึ่งกลาง — ใช้ร่วมกันทั้ง 2 ทาง เพื่อให้ path ที่เหลือ (บันทึก/ตรวจสอบ hasDrawn) เหมือนกัน
+  const drawDataUrlToCanvas = (dataUrl) => new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const scale = Math.min(cssW / img.width, cssH / img.height);
+      const drawW = img.width * scale;
+      const drawH = img.height * scale;
+      ctx.drawImage(img, (cssW - drawW) / 2, (cssH - drawH) / 2, drawW, drawH);
+      hasDrawn = true;
+      resolve();
+    };
+    img.src = dataUrl;
+  });
+
+  // เปิด modal มาพร้อมลายเซ็นที่บันทึกไว้จากครั้งก่อน (ถ้ามี) ให้เลย ไม่ต้องอัปโหลด/วาดใหม่
+  if (savedSignature) drawDataUrlToCanvas(savedSignature);
+  const clearSavedBtn = modal.querySelector("#clearSavedSig");
+  if (clearSavedBtn) {
+    clearSavedBtn.addEventListener("click", () => {
+      localStorage.removeItem(SAVED_SIGNATURE_KEY);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      hasDrawn = false;
+      clearSavedBtn.closest("p").remove();
+    });
+  }
+
   // อัปโหลดรูปลายเซ็นที่มีอยู่แล้ว (เช่น ถ่ายรูป/สแกนลายเซ็นจริงไว้) แทนการวาดใหม่ทุกครั้ง —
-  // เหมาะกับพนักงานที่ต้องเซ็นเอกสารซ้ำๆ บ่อย วาดลง canvas เดียวกันเพื่อให้ path ที่เหลือ (บันทึก/
-  // ตรวจสอบ hasDrawn) ทำงานเหมือนกันทั้งสองแบบ ไม่ต้องแยกโค้ด
+  // เหมาะกับพนักงานที่ต้องเซ็นเอกสารซ้ำๆ บ่อย
   const fileInput = modal.querySelector("#sigFileInput");
   modal.querySelector("#uploadSigBtn").addEventListener("click", () => fileInput.click());
   fileInput.addEventListener("change", () => {
     const file = fileInput.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        // วาดแบบคงสัดส่วนเดิม (contain) กึ่งกลาง canvas ไม่ยืด/บีบภาพให้ผิดรูป
-        const scale = Math.min(cssW / img.width, cssH / img.height);
-        const drawW = img.width * scale;
-        const drawH = img.height * scale;
-        ctx.drawImage(img, (cssW - drawW) / 2, (cssH - drawH) / 2, drawW, drawH);
-        hasDrawn = true;
-      };
-      img.src = reader.result;
-    };
+    reader.onload = () => drawDataUrlToCanvas(reader.result);
     reader.readAsDataURL(file);
     fileInput.value = "";
   });
@@ -249,6 +269,7 @@ function openSignatureModal(targetBox) {
       return;
     }
     signatureDataUrl = canvas.toDataURL("image/png");
+    try { localStorage.setItem(SAVED_SIGNATURE_KEY, signatureDataUrl); } catch (e) { /* เต็มโควต้า/ปิด storage — ไม่ใช่เรื่องคอขวด ข้ามได้ */ }
     document.querySelectorAll(".field-box").forEach((box) => {
       if (box.textContent.includes("ลงลายมือชื่อ") || box.textContent.includes("เซ็นกำกับ")) {
         box.innerHTML = `<img src="${signatureDataUrl}" />`;
