@@ -4724,7 +4724,18 @@
         state.esignModalPageImages = null;
         esignModalPdfBase64 = null;
         render();
-        window.alert('ส่งลิงก์เซ็นออนไลน์สำเร็จ (ครั้งที่ ' + entry.no + ') — ผู้เซ็นทุกคนจะได้รับอีเมลลิงก์สำหรับลงลายมือชื่อ');
+        // เอกสารสร้างสำเร็จเสมอถึงจุดนี้ แต่การส่งอีเมลเชิญเซ็นอาจล้มเหลวแยกต่างหากได้ (เช่น
+        // ปัญหาฝั่งผู้ให้บริการอีเมล) — เช็ค emailSent/emailError ต่อผู้เซ็นแล้วแจ้งตรงๆ แทนการบอกว่า
+        // "สำเร็จ" เฉยๆ ทั้งที่ลูกค้าอาจไม่ได้รับอีเมลจริง
+        var failedSigners = (r.data.signers || []).filter(function (s) { return s.emailSent === false; });
+        if (failedSigners.length) {
+          window.alert('สร้างเอกสารสำเร็จ แต่ส่งอีเมลไม่สำเร็จสำหรับ: ' +
+            failedSigners.map(function (s) { return s.name + ' (' + s.email + ')'; }).join(', ') +
+            '\n\nสาเหตุ: ' + (failedSigners[0].emailError || 'ไม่ทราบสาเหตุ') +
+            '\n\nลิงก์เซ็นยังใช้งานได้ปกติ — ส่งให้ลูกค้าเองทางช่องทางอื่นได้ที่: ' + (failedSigners[0].signUrl || '-'));
+        } else {
+          window.alert('ส่งลิงก์เซ็นออนไลน์สำเร็จ (ครั้งที่ ' + entry.no + ') — ผู้เซ็นทุกคนจะได้รับอีเมลลิงก์สำหรับลงลายมือชื่อ');
+        }
       })
       .catch(function (err) {
         state.esignModalSending = false;
