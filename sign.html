@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>ลงลายมือชื่ออิเล็กทรอนิกส์ - บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด</title>
-<link href="https://fonts.googleapis.com/css2?family=Prompt:wght@500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Prompt:wght@500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&family=Charmonman:wght@400;700&family=Dancing+Script:wght@600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <style>
   :root { --orange-1:#f7823b; --orange-2:#f0630f; --green:#16a34a; --red:#dc2626; --border:#e9ecef; --bg:#f6f7f9; --ink:#212529; }
@@ -182,6 +182,13 @@ function openSignatureModal(targetBox) {
         <button id="uploadSigBtn" style="flex:1;background:#e5e7eb;">📁 อัปโหลดรูปภาพแทน</button>
       </div>
       <input type="file" id="sigFileInput" accept="image/*" style="display:none;" />
+      <div style="border-top:1px dashed var(--border);margin-top:14px;padding-top:12px;">
+        <p style="font-size:12px;color:#6b7280;margin:0 0 6px;">หรือให้ระบบออกแบบลายเซ็นจากชื่อของท่าน</p>
+        <div class="row" style="margin-top:0;">
+          <input type="text" id="sigNameInput" placeholder="พิมพ์ชื่อ-นามสกุล" value="${sessionData && sessionData.signerName ? sessionData.signerName.replace(/"/g, "&quot;") : ""}" style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:6px;font-family:'Noto Sans Thai',sans-serif;font-size:14px;" />
+          <button id="genSigBtn" style="flex:0 0 auto;background:#e5e7eb;">🔤 สร้างลายเซ็น</button>
+        </div>
+      </div>
       <div class="row">
         <button id="saveSig" class="primary" style="flex:1;">ใช้ลายเซ็นนี้</button>
       </div>
@@ -263,6 +270,29 @@ function openSignatureModal(targetBox) {
     reader.readAsDataURL(file);
     fileInput.value = "";
   });
+
+  // ให้ระบบ "ออกแบบ" ลายเซ็นจากชื่อที่พิมพ์ — เขียนชื่อด้วยฟอนต์ลายมือ (Charmonman รองรับภาษาไทย,
+  // Dancing Script สำรองกรณีมีอักษรละติน) ต้องรอฟอนต์โหลดเสร็จก่อนวาดลง canvas จริง ไม่งั้น browser
+  // จะ fallback ไปใช้ฟอนต์ระบบเงียบๆ โดยไม่มี error ให้เห็น
+  modal.querySelector("#genSigBtn").addEventListener("click", async () => {
+    const name = modal.querySelector("#sigNameInput").value.trim();
+    if (!name) { alert("กรุณาพิมพ์ชื่อก่อน"); return; }
+    const fontSize = Math.min(56, Math.max(28, (cssW - 40) / (name.length * 0.62)));
+    try {
+      await document.fonts.load(`${fontSize}px Charmonman`);
+      await document.fonts.load(`${fontSize}px "Dancing Script"`);
+    } catch (e) { /* โหลดไม่สำเร็จก็ยังวาดต่อได้ แค่ fallback เป็นฟอนต์ระบบ */ }
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.font = `${fontSize}px Charmonman, "Dancing Script", cursive`;
+    ctx.fillStyle = "#111827";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(name, cssW / 2, cssH / 2);
+    ctx.textAlign = "start";
+    ctx.textBaseline = "alphabetic";
+    hasDrawn = true;
+  });
+
   modal.querySelector("#saveSig").addEventListener("click", () => {
     if (!hasDrawn) {
       alert("กรุณาวาดลายเซ็นก่อน (ใช้เมาส์ค้างไว้แล้วลาก หรือใช้นิ้วลากบนหน้าจอสัมผัส)");
