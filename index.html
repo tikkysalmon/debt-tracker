@@ -985,6 +985,9 @@
   // เส้นทางเดิมขึ้น "Delivered" ใน Thaibulksms dashboard จริง แต่ไม่เคยไปถึง Gmail เลย (หาไม่เจอแม้
   // ใน All Mail/Spam) จึงเปลี่ยนมาใช้ path เดียวกับจดหมายทวงหนี้ที่พิสูจน์แล้วว่าส่งถึงจริง (2026-08-19)
   var ESIGN_EMAIL_TEMPLATE_ID = 'b3b0238c-e858-4742-9e63-28b2bf69c668';
+  // ปิดปุ่ม "ส่งให้เซ็นออนไลน์" ไว้ก่อนชั่วคราว (2026-08-19) — ปัญหาการส่งอีเมลจริงยังไม่นิ่ง
+  // (ThaiBulk รายงาน "Delivered" แต่อีเมลไม่เข้าถึงผู้รับจริง) เปิดกลับเป็น true เมื่อทดสอบผ่านแล้ว
+  var ESIGN_FEATURE_ENABLED = false;
   var esignModalPdfBase64 = null; // cache ของไฟล์ PDF ที่กำลังเตรียมส่งเซ็น (base64) — ไม่ใส่ใน state
   // เพราะข้อมูลใหญ่และไม่จำเป็นต้องกระตุ้น re-render เอง
   var esignPdfjsWorkerReady = false;
@@ -4549,6 +4552,7 @@
     });
   }
   function openSendEsignModal(orderId) {
+    if (!ESIGN_FEATURE_ENABLED) { window.alert('ฟีเจอร์นี้ปิดใช้งานชั่วคราว (อยู่ระหว่างแก้ปัญหาการส่งอีเมล)'); return; }
     var order = state.orders.find(function (o) { return o.orderId === orderId; });
     if (!order) return;
     var history = (order.cancelLetterHistory || []).slice().sort(function (a, b) { return b.no - a.no; });
@@ -5796,7 +5800,7 @@
     var body =
       '<div style="display:flex; gap:8px; flex-wrap:wrap;">' +
         '<button data-action="openCancelLetterModal" data-order="' + esc(ord.orderId) + '" title="ออกหนังสือบอกเลิกสัญญาเช่าซื้อ (PDF)" style="border:1px solid rgba(179,38,30,0.35); background:#fff; color:#b3261e; padding:6px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:pointer; white-space:nowrap;">📄 ออกเอกสารหนังสือยกเลิก</button>' +
-        (history.length
+        (ESIGN_FEATURE_ENABLED && history.length
           ? '<button data-action="openSendEsign" data-order="' + esc(ord.orderId) + '" title="ส่งลิงก์ให้ลูกค้าลงลายมือชื่ออิเล็กทรอนิกส์ทางอีเมล" style="border:none; background:linear-gradient(135deg,#f7823b,#f0630f); color:#fff; padding:6px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:pointer; white-space:nowrap; box-shadow:0 4px 12px rgba(247,130,59,0.3);">🖋️ ส่งให้เซ็นออนไลน์</button>'
           : '') +
       '</div>' +
