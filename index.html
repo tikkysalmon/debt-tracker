@@ -4288,8 +4288,7 @@
         '<div>เลขที่หนังสือ: CL-' + esc(order.orderId) + '-' + letterNo + '</div>' +
         '<div>ทำที่ ' + esc(draft.place) + ' · วันที่ ' + esc(fmtDate(todayIso)) + '</div>' +
       '</div>' +
-      '<div style="text-align:center; font-size:16px; font-weight:700; margin-bottom:3px;">หนังสือบอกเลิกสัญญาเช่าซื้อ</div>' +
-      '<div style="text-align:center; font-size:12px; color:#5b5750; margin-bottom:14px;">(ครั้งที่ ' + letterNo + ')</div>' +
+      '<div style="text-align:center; font-size:16px; font-weight:700; margin-bottom:14px;">หนังสือบอกเลิกสัญญาเช่าซื้อ</div>' +
       '<div style="margin-bottom:5px;">เรื่อง การบอกเลิกสัญญาเช่าซื้อ</div>' +
       '<div style="margin-bottom:11px;">เรียน คุณ' + esc(order.customerName) + '</div>' +
       '<p style="margin:0 0 11px; text-align:justify; text-indent:1.8em;">ตามที่ท่านได้ทำสัญญาเช่าซื้อสินค้ากับบริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด ' + contractRefPhrase + ' ฉบับลงวันที่ ' + esc(order.contractDateDisp) + ' สินค้าที่เช่าซื้อคือ ' + esc(draft.assetName) + ' จำนวน ' + esc(draft.assetQty) + ' เครื่อง ราคาเช่าซื้อสุทธิรวมทั้งสิ้น ฿' + esc(snapshot.totalContractDisp) + ' บาท โดยนับแต่วันทำสัญญา ท่านได้ชำระค่าเช่าซื้อให้แก่บริษัทมาแล้วเป็นเงิน ฿' + esc(snapshot.totalPaidDisp) + ' บาท และคงเหลือยอดค้างชำระตามสัญญาอีกจำนวน ฿' + esc(snapshot.totalOutstandingDisp) + ' บาท</p>' +
