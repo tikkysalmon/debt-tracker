@@ -1775,6 +1775,7 @@
     emailModalTarget: null, emailModalTrack: '', emailModalTo: '', emailModalLetterNo: null, emailModalSending: false,
     esignModalTarget: null, esignModalLetterNo: null, esignModalSending: false,
     esignResultLinks: null, // [{name, email, signUrl}] — โชว์หลังสร้างเอกสารสำเร็จ ให้พนักงานคัดลอกส่งเอง
+    esignStatusDocumentId: null, esignStatusLoading: false, esignStatusData: null,
     // ผู้เซ็นหลายคนต่อเอกสารได้ (เช่น ลูกหนี้ + ผู้ค้ำ) — signers: [{name,email,role,signOrder}]
     esignModalSigners: [], esignModalActiveSignerIndex: 0,
     esignModalNewSignerName: '', esignModalNewSignerEmail: '', esignModalNewSignerRole: '', esignModalNewSignerOrder: '1',
@@ -4754,6 +4755,35 @@
     state.esignResultLinks = null;
     render();
   }
+  function checkEsignStatus(documentId) {
+    state.esignStatusDocumentId = documentId;
+    state.esignStatusLoading = true;
+    state.esignStatusData = null;
+    render();
+    fetch(ESIGN_EDGE_BASE + '/esign-status?documentId=' + encodeURIComponent(documentId), {
+      headers: { 'Authorization': 'Bearer ' + currentAccessToken }
+    })
+      .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+      .then(function (r) {
+        state.esignStatusLoading = false;
+        if (!r.ok || !r.data || r.data.error) {
+          state.esignStatusData = { error: (r.data && r.data.error) || 'เช็คสถานะไม่สำเร็จ' };
+        } else {
+          state.esignStatusData = r.data;
+        }
+        render();
+      })
+      .catch(function (err) {
+        state.esignStatusLoading = false;
+        state.esignStatusData = { error: err && err.message ? err.message : String(err) };
+        render();
+      });
+  }
+  function closeEsignStatusModal() {
+    state.esignStatusDocumentId = null;
+    state.esignStatusData = null;
+    render();
+  }
   // Marks a single งวด as cross-checked against the reference CRM (or un-marks it) — a manual QA
   // step staff run monthly per ครบกำหนด month, per user request 2026-07-30: without this, a
   // customer still overdue next month gets re-verified from scratch instead of just checking the
@@ -5794,7 +5824,11 @@
       trackingHistoryList(history, function (h) {
         var esignSent = esignHistory.filter(function (e) { return e.letterNo === h.no; });
         var esignBadge = esignSent.length
-          ? '<div style="margin-top:4px; color:#f0630f; font-weight:600;">🖋️ ส่งให้เซ็นออนไลน์แล้ว ' + esignSent.length + ' ครั้ง (ล่าสุด ' + esc(esignSent[esignSent.length - 1].at) + ')</div>'
+          ? '<div style="margin-top:4px; color:#f0630f; font-weight:600;">🖋️ ส่งให้เซ็นออนไลน์แล้ว ' + esignSent.length + ' ครั้ง (ล่าสุด ' + esc(esignSent[esignSent.length - 1].at) + ')' +
+              (esignSent[esignSent.length - 1].documentId
+                ? ' · <span data-action="checkEsignStatus" data-document-id="' + esc(esignSent[esignSent.length - 1].documentId) + '" style="text-decoration:underline; cursor:pointer;">เช็คสถานะ/ดาวน์โหลด</span>'
+                : '') +
+            '</div>'
           : '';
         return '<div style="background:rgba(179,38,30,0.05); border:1px solid rgba(179,38,30,0.12); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#212529;">' +
           '<div style="font-weight:700; color:#b3261e; margin-bottom:2px;">🕐 ' + esc(h.at) + ' · ครั้งที่ ' + h.no + (h.by ? ' · โดย ' + esc(h.by) : '') + '</div>' +
@@ -9289,6 +9323,9 @@
     if (state.esignResultLinks) {
       html += renderEsignResultModal();
     }
+    if (state.esignStatusDocumentId) {
+      html += renderEsignStatusModal();
+    }
     if (state.cancelLetterModalTarget) {
       html += renderCancelLetterModal();
     }
@@ -9567,6 +9604,44 @@
     '</div>';
   }
 
+  var ESIGN_STATUS_LABELS = {
+    draft: 'ร่าง', sent: 'รอลงลายมือชื่อ', completed: 'เซ็นครบแล้ว', voided: 'ยกเลิก',
+    pending: 'รอคิว', viewed: 'เปิดดูแล้ว', signed: 'เซ็นแล้ว', declined: 'ปฏิเสธ'
+  };
+  function renderEsignStatusModal() {
+    var body;
+    if (state.esignStatusLoading) {
+      body = '<div style="padding:30px 0; text-align:center; color:#8d93a0; font-size:13px;">⏳ กำลังเช็คสถานะ...</div>';
+    } else if (!state.esignStatusData || state.esignStatusData.error) {
+      body = '<div style="padding:20px 0; text-align:center; color:#e03131; font-size:13px;">' + esc((state.esignStatusData && state.esignStatusData.error) || 'ไม่พบข้อมูล') + '</div>';
+    } else {
+      var doc = state.esignStatusData.document;
+      var signers = state.esignStatusData.signers || [];
+      var statusColor = doc.status === 'completed' ? '#16a34a' : (doc.status === 'voided' ? '#e03131' : '#f0630f');
+      body = '<div style="margin-bottom:14px;">' +
+        '<span style="background:' + statusColor + '1a; color:' + statusColor + '; padding:4px 12px; border-radius:20px; font-size:12px; font-weight:700;">' + esc(ESIGN_STATUS_LABELS[doc.status] || doc.status) + '</span>' +
+        '</div>' +
+        signers.map(function (s) {
+          var sColor = s.status === 'signed' ? '#16a34a' : (s.status === 'declined' ? '#e03131' : '#8d93a0');
+          return '<div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #f1f3f5; font-size:12.5px;">' +
+            '<div><div style="font-weight:600; color:#212529;">' + esc(s.name) + '</div><div style="color:#8d93a0; font-size:11px;">' + esc(s.email) + '</div></div>' +
+            '<span style="color:' + sColor + '; font-weight:600;">' + esc(ESIGN_STATUS_LABELS[s.status] || s.status) + '</span>' +
+          '</div>';
+        }).join('') +
+        (doc.status === 'completed' && state.esignStatusData.downloadUrl
+          ? '<div style="margin-top:16px;"><a href="' + esc(state.esignStatusData.downloadUrl) + '" target="_blank" rel="noopener" style="display:block; text-align:center; background:linear-gradient(135deg,#16a34a,#0f7a36); color:#fff; padding:11px; border-radius:10px; font-size:13.5px; font-weight:600; text-decoration:none;">⬇ ดาวน์โหลดเอกสารฉบับสมบูรณ์</a></div>'
+          : '<div style="margin-top:14px; font-size:11.5px; color:#8d93a0;">ยังไม่เสร็จสมบูรณ์ — จะมีปุ่มดาวน์โหลดเมื่อทุกคนลงลายมือชื่อครบแล้ว</div>');
+    }
+    return '<div style="position:fixed; inset:0; z-index:9999; background:rgba(33,37,41,0.35); display:flex; align-items:center; justify-content:center; padding:20px;">' +
+      '<div style="max-width:440px; width:100%; max-height:90vh; overflow-y:auto; background:#fff; border-radius:20px; padding:26px; box-shadow:0 24px 60px rgba(33,37,41,0.3);">' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:17px; color:#212529; margin-bottom:14px;">📋 สถานะการลงลายมือชื่อ</div>' +
+        body +
+        '<div style="display:flex; justify-content:flex-end; margin-top:16px;">' +
+          '<div data-action="closeEsignStatusModal" style="padding:11px 20px; border-radius:10px; color:#6b7280; font-size:13.5px; font-weight:600; cursor:pointer;">ปิด</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
   function renderEsignResultModal() {
     var links = state.esignResultLinks || [];
     var rows = links.map(function (s) {
@@ -10437,6 +10512,8 @@
         case 'removeEsignField': removeEsignField(Number(t.getAttribute('data-idx'))); break;
         case 'copyEsignLink': copyEsignLink(t.getAttribute('data-url')); break;
         case 'closeEsignResultModal': closeEsignResultModal(); break;
+        case 'checkEsignStatus': checkEsignStatus(t.getAttribute('data-document-id')); break;
+        case 'closeEsignStatusModal': closeEsignStatusModal(); break;
         case 'addEsignSigner': addEsignSigner(); break;
         case 'removeEsignSigner': removeEsignSigner(Number(t.getAttribute('data-idx'))); break;
         case 'esignPageClick': {
