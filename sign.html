@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ลงลายมือชื่ออิเล็กทรอนิกส์ - บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด</title>
+<link href="https://fonts.googleapis.com/css2?family=Prompt:wght@500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+  :root { --orange-1:#f7823b; --orange-2:#f0630f; --green:#16a34a; --red:#dc2626; --border:#e9ecef; --bg:#f6f7f9; --ink:#212529; }
+  * { box-sizing: border-box; }
+  body { font-family: 'Noto Sans Thai', sans-serif; margin:0; background:var(--bg); color:var(--ink); }
+  header { background:#fff; border-bottom:1px solid var(--border); padding:18px 24px; }
+  header h1 { font-family:'Prompt',sans-serif; font-weight:700; font-size:16px; margin:0; color:var(--ink); }
+  main { max-width:900px; margin:20px auto; padding:0 16px 60px; }
+  .card { background:#fff; border:1px solid var(--border); border-radius:10px; padding:20px; margin-bottom:16px; }
+  .msg { text-align:center; padding:60px 20px; }
+  .msg.error { color:var(--red); }
+  .msg.success { color:var(--green); }
+  .page-wrap { position:relative; margin:0 auto 16px; border:1px solid var(--border); }
+  .page-wrap canvas.pdf-page { display:block; width:100%; height:auto; }
+  .field-box {
+    position:absolute; border:2px dashed var(--orange-2); background:rgba(247,130,59,0.1);
+    display:flex; align-items:center; justify-content:center; font-size:11px; color:var(--orange-2); cursor:pointer;
+    border-radius:4px;
+  }
+  .field-box.filled { border-style:solid; background:rgba(22,163,74,0.08); border-color:var(--green); color:var(--green); }
+  .field-box img { max-width:100%; max-height:100%; }
+  .consent-box { background:#fffbeb; border:1px solid #fde68a; border-radius:8px; padding:14px; font-size:13px; line-height:1.6; margin-bottom:14px; }
+  label.chk { display:flex; align-items:flex-start; gap:8px; font-size:13px; cursor:pointer; }
+  .actions { display:flex; gap:10px; margin-top:16px; }
+  button { border:none; border-radius:20px; padding:12px 20px; font-size:14px; font-weight:600; cursor:pointer; font-family:'Noto Sans Thai',sans-serif; }
+  button.primary { background:linear-gradient(135deg,var(--orange-1),var(--orange-2)); color:#fff; flex:1; box-shadow:0 4px 12px rgba(247,130,59,0.3); }
+  button.primary:disabled { background:#c9ccd1; box-shadow:none; cursor:not-allowed; }
+  button.decline { background:#fff; color:var(--red); border:1px solid var(--red); }
+  .sig-modal { position:fixed; inset:0; background:rgba(0,0,0,.5); display:flex; align-items:center; justify-content:center; z-index:50; }
+  .sig-panel { background:#fff; border-radius:10px; padding:20px; width:min(480px, 92vw); }
+  .sig-panel canvas { border:1px solid var(--border); border-radius:6px; width:100%; height:200px; touch-action:none; background:#fff; }
+  .sig-panel .row { display:flex; gap:10px; margin-top:12px; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:12px; font-size:11px; background:#e5e7eb; color:#374151; }
+</style>
+</head>
+<body>
+<header><h1>✍️ ระบบลงลายมือชื่ออิเล็กทรอนิกส์ — บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด</h1></header>
+<main id="app">
+  <div class="msg">กำลังโหลดเอกสาร...</div>
+</main>
+
+<script>
+// ==== ตั้งค่า: ใส่ URL ของ Supabase Edge Functions โปรเจกต์คุณตรงนี้ ====
+const EDGE_BASE = "https://mddtfcganbuxzfendgfi.supabase.co/functions/v1";
+const GET_URL = `${EDGE_BASE}/esign-get`;
+const SIGN_URL = `${EDGE_BASE}/esign-sign`;
+// =======================================================================
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+const app = document.getElementById("app");
+const params = new URLSearchParams(location.search);
+const token = params.get("token");
+
+let signatureDataUrl = null; // ลายเซ็นเดียวกันถูกใช้ในทุกกรอบลายเซ็น/ลายเซ็นกำกับของผู้เซ็นคนนี้
+let sessionData = null;
+
+function renderError(message) {
+  app.innerHTML = `<div class="msg error">${message}</div>`;
+}
+
+async function boot() {
+  if (!token) return renderError("ลิงก์ไม่ถูกต้อง (ไม่พบ token)");
+  let res, data;
+  try {
+    res = await fetch(`${GET_URL}?token=${encodeURIComponent(token)}`);
+    data = await res.json();
+  } catch (e) {
+    return renderError("เชื่อมต่อระบบไม่สำเร็จ กรุณาลองใหม่ภายหลัง");
+  }
+  if (!res.ok) return renderError(data.error || "ไม่สามารถเปิดเอกสารได้");
+
+  sessionData = data;
+
+  if (data.alreadySigned) {
+    app.innerHTML = `<div class="msg success">ท่านได้ลงลายมือชื่อในเอกสารนี้เรียบร้อยแล้ว<br/>สำเนาเอกสารฉบับสมบูรณ์จะถูกส่งไปยังอีเมลของท่านเมื่อทุกฝ่ายเซ็นครบ</div>`;
+    return;
+  }
+
+  await renderDocument(data);
+}
+
+async function renderDocument(data) {
+  app.innerHTML = `
+    <div class="card">
+      <div><span class="badge">${data.documentStatus === "completed" ? "เซ็นครบแล้ว" : "รอลงลายมือชื่อ"}</span></div>
+      <h2 style="margin:8px 0 4px;">${data.documentTitle}</h2>
+      <p style="color:#6b7280;font-size:13px;margin:0;">ผู้เซ็น: ${data.signerName}</p>
+    </div>
+    <div id="pages"></div>
+    <div class="card">
+      <div class="consent-box">${data.consentStatement}</div>
+      <label class="chk">
+        <input type="checkbox" id="consentChk" />
+        <span>ข้าพเจ้าอ่านและยอมรับข้อความยินยอมข้างต้น และยืนยันจะลงลายมือชื่ออิเล็กทรอนิกส์ในเอกสารนี้</span>
+      </label>
+      <div class="actions">
+        <button class="decline" id="declineBtn">ปฏิเสธการเซ็น</button>
+        <button class="primary" id="submitBtn" disabled>ยืนยันการลงลายมือชื่อ</button>
+      </div>
+    </div>
+  `;
+
+  const pdf = await pdfjsLib.getDocument(data.fileUrl).promise;
+  const pagesEl = document.getElementById("pages");
+  const fieldsByPage = {};
+  for (const f of data.fields) {
+    (fieldsByPage[f.page_number] ??= []).push(f);
+  }
+
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
+    const viewport = page.getViewport({ scale: 1.4 });
+    const canvas = document.createElement("canvas");
+    canvas.className = "pdf-page";
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    const ctx = canvas.getContext("2d");
+    await page.render({ canvasContext: ctx, viewport }).promise;
+
+    const wrap = document.createElement("div");
+    wrap.className = "page-wrap";
+    wrap.style.aspectRatio = `${viewport.width} / ${viewport.height}`;
+    wrap.appendChild(canvas);
+
+    for (const field of fieldsByPage[pageNum] ?? []) {
+      const box = document.createElement("div");
+      box.className = "field-box";
+      box.style.left = (field.x * 100) + "%";
+      box.style.width = (field.width * 100) + "%";
+      // field.y เป็นระยะจาก "ล่าง" ของหน้า (แบบ PDF) ต้องกลับด้านเพื่อวางบนหน้าเว็บ (จากบน)
+      box.style.top = ((1 - field.y - field.height) * 100) + "%";
+      box.style.height = (field.height * 100) + "%";
+
+      if (field.field_type === "signature" || field.field_type === "initial") {
+        box.textContent = field.field_type === "signature" ? "คลิกเพื่อลงลายมือชื่อ" : "คลิกเพื่อเซ็นกำกับ";
+        box.addEventListener("click", () => openSignatureModal(box));
+      } else if (field.field_type === "date") {
+        box.textContent = "วันที่ (ระบบเติมให้อัตโนมัติ)";
+        box.classList.add("filled");
+      } else {
+        box.textContent = field.default_value || "ข้อความ";
+        box.classList.add("filled");
+      }
+      wrap.appendChild(box);
+    }
+    pagesEl.appendChild(wrap);
+  }
+
+  document.getElementById("declineBtn").addEventListener("click", onDecline);
+  document.getElementById("consentChk").addEventListener("change", updateSubmitState);
+  document.getElementById("submitBtn").addEventListener("click", onSubmit);
+}
+
+function updateSubmitState() {
+  const consentOk = document.getElementById("consentChk").checked;
+  document.getElementById("submitBtn").disabled = !(consentOk && signatureDataUrl);
+}
+
+function openSignatureModal(targetBox) {
+  const modal = document.createElement("div");
+  modal.className = "sig-modal";
+  modal.innerHTML = `
+    <div class="sig-panel">
+      <h3 style="margin-top:0;">วาดลายเซ็นของท่าน</h3>
+      <canvas id="sigCanvas"></canvas>
+      <p style="font-size:12px;color:#6b7280;">ลายเซ็นนี้จะถูกใช้กับทุกจุดที่ท่านต้องเซ็นในเอกสารนี้</p>
+      <div class="row">
+        <button id="clearSig" style="flex:1;background:#e5e7eb;">ล้าง</button>
+        <button id="saveSig" class="primary" style="flex:1;">ใช้ลายเซ็นนี้</button>
+      </div>
+      <div class="row"><button id="cancelSig" style="flex:1;background:#fff;border:1px solid var(--border);">ยกเลิก</button></div>
+    </div>`;
+  document.body.appendChild(modal);
+
+  const canvas = modal.querySelector("#sigCanvas");
+  // clientWidth อาจยังเป็น 0 ถ้าอ่านทันทีก่อนเบราว์เซอร์คำนวณ layout เสร็จ (โดยเฉพาะ modal ที่เพิ่ง
+  // ต่อเข้า DOM) — กันไว้ด้วยค่าตั้งต้นสำรอง เพื่อไม่ให้ canvas มีขนาด 0 จนวาดอะไรไม่ได้เลย
+  const cssW = canvas.clientWidth || Math.min(440, window.innerWidth - 80);
+  const cssH = canvas.clientHeight || 200;
+  canvas.width = cssW * 2;
+  canvas.height = cssH * 2;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(2, 2);
+  ctx.lineWidth = 2;
+  ctx.lineCap = "round";
+  ctx.strokeStyle = "#111827";
+  let drawing = false;
+  let hasDrawn = false;
+
+  const pos = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const p = e.touches ? e.touches[0] : e;
+    return { x: (p.clientX - rect.left), y: (p.clientY - rect.top) };
+  };
+  const start = (e) => { drawing = true; const p = pos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); e.preventDefault(); };
+  const move = (e) => { if (!drawing) return; const p = pos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); hasDrawn = true; e.preventDefault(); };
+  const end = () => { drawing = false; };
+
+  canvas.addEventListener("mousedown", start);
+  canvas.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", end);
+  canvas.addEventListener("touchstart", start, { passive: false });
+  canvas.addEventListener("touchmove", move, { passive: false });
+  canvas.addEventListener("touchend", end);
+
+  modal.querySelector("#clearSig").addEventListener("click", () => { ctx.clearRect(0, 0, canvas.width, canvas.height); hasDrawn = false; });
+  modal.querySelector("#cancelSig").addEventListener("click", () => modal.remove());
+  modal.querySelector("#saveSig").addEventListener("click", () => {
+    if (!hasDrawn) {
+      alert("กรุณาวาดลายเซ็นก่อน (ใช้เมาส์ค้างไว้แล้วลาก หรือใช้นิ้วลากบนหน้าจอสัมผัส)");
+      return;
+    }
+    signatureDataUrl = canvas.toDataURL("image/png");
+    document.querySelectorAll(".field-box").forEach((box) => {
+      if (box.textContent.includes("ลงลายมือชื่อ") || box.textContent.includes("เซ็นกำกับ")) {
+        box.innerHTML = `<img src="${signatureDataUrl}" />`;
+        box.classList.add("filled");
+      }
+    });
+    modal.remove();
+    updateSubmitState();
+  });
+}
+
+async function onSubmit() {
+  const btn = document.getElementById("submitBtn");
+  btn.disabled = true;
+  btn.textContent = "กำลังบันทึก...";
+  try {
+    const res = await fetch(SIGN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        token,
+        action: "sign",
+        consentAccepted: true,
+        signatureImageBase64: signatureDataUrl,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "เกิดข้อผิดพลาด");
+    app.innerHTML = `<div class="msg success">ลงลายมือชื่อสำเร็จ<br/>${data.documentCompleted ? "เอกสารครบทุกฝ่ายแล้ว สำเนาฉบับสมบูรณ์จะถูกส่งไปยังอีเมลของท่าน" : "ระบบได้บันทึกลายมือชื่อของท่านแล้ว รอผู้เกี่ยวข้องท่านอื่นลงลายมือชื่อต่อไป"}</div>`;
+  } catch (e) {
+    alert(e.message);
+    btn.disabled = false;
+    btn.textContent = "ยืนยันการลงลายมือชื่อ";
+  }
+}
+
+async function onDecline() {
+  if (!confirm("ยืนยันปฏิเสธการลงลายมือชื่อในเอกสารนี้ใช่หรือไม่?")) return;
+  const reason = prompt("เหตุผล (ถ้ามี)") || null;
+  try {
+    const res = await fetch(SIGN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, action: "decline", declinedReason: reason }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "เกิดข้อผิดพลาด");
+    app.innerHTML = `<div class="msg">ท่านได้ปฏิเสธการลงลายมือชื่อในเอกสารนี้แล้ว</div>`;
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+boot();
+</script>
+</body>
+</html>

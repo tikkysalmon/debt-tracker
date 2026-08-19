@@ -975,6 +975,11 @@
 
   var CLOUD_BUCKET = 'app-data';
   var CLOUD_FILE = IS_OLD_DATASET ? 'state-old.json' : 'state.json';
+
+  // ระบบเซ็นเอกสารออนไลน์ (e-Sign) — โมดูลแยก, Edge Functions อยู่บนโปรเจกต์ Supabase จริงตัวเดียวกับ
+  // ระบบติดตามหนี้แล้ว (mddtfcganbuxzfendgfi) ยืนยันตัวตนพนักงานผ่าน staff_users อัตโนมัติ
+  var ESIGN_EDGE_BASE = 'https://mddtfcganbuxzfendgfi.supabase.co/functions/v1';
+  var ESIGN_COMPANY_NAME = 'บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด';
   function initCloud() {
     if (!CLOUD_ENABLED) return false;
     if (!window.supabase || !window.supabase.createClient) { cloudStatus = 'offline'; return false; }
@@ -1752,6 +1757,7 @@
     letterIssuing: null, // "orderId|main" or "orderId|accessory" currently being generated, or null — disables the button mid-generate
     uploadMsgLetterhead: '',
     emailModalTarget: null, emailModalTrack: '', emailModalTo: '', emailModalLetterNo: null, emailModalSending: false,
+    esignModalTarget: null, esignModalTo: '', esignModalName: '', esignModalLetterNo: null, esignModalSending: false,
     // หนังสือบอกเลิกสัญญาเช่าซื้อ (2026-08-10) — same PDF-issuance/ครั้งที่-versioning pattern as
     // จดหมายทวงถามหนี้ above, but whole-order (not track-split) and with a fill-in form first, since
     // this document's per-case terms (เหตุผล/ทรัพย์สินคืน/คืนเงินหรือไม่/ยกเลิกเรียกเก็บหรือไม่ ฯลฯ)
@@ -4509,6 +4515,93 @@
         render();
       });
   }
+  // ---------- ส่งหนังสือบอกเลิกสัญญาให้ลงลายมือชื่ออิเล็กทรอนิกส์ (e-Sign) ----------
+  // ไม่ต้องดาวน์โหลด-อัปโหลดไฟล์ใหม่: ดึง PDF ตัวเดียวกับที่ confirmIssueCancelLetter อัปโหลดไว้แล้ว
+  // ใน CLOUD_BUCKET กลับมาเป็น base64 แล้วส่งเข้า esign-create ตรงๆ — ตำแหน่งกรอบลายเซ็น/วันที่ด้านล่าง
+  // ประมาณจากเลย์เอาต์ของ buildCancelLetterHtml (บล็อกลงชื่อ "ผู้เช่าซื้อ" ฝั่งขวา ค่อนไปทางล่างของหน้า
+  // แรก) — จดหมายที่มีเนื้อหายาวผิดปกติ (เหตุผล/รายการอุปกรณ์ยาวมาก) อาจดันตำแหน่งจริงคลาดเคลื่อนได้บ้าง
+  function openSendEsignModal(orderId) {
+    var order = state.orders.find(function (o) { return o.orderId === orderId; });
+    if (!order) return;
+    var history = (order.cancelLetterHistory || []).slice().sort(function (a, b) { return b.no - a.no; });
+    if (!history.length) { window.alert('ยังไม่เคยออกหนังสือบอกเลิกสัญญาให้ SO นี้ — กรุณาออกเอกสารก่อน แล้วจึงส่งให้เซ็นออนไลน์ได้'); return; }
+    state.esignModalTarget = orderId;
+    state.esignModalTo = order.email || '';
+    state.esignModalName = order.customerName || '';
+    state.esignModalLetterNo = history[0].no;
+    render();
+  }
+  function closeSendEsignModal() {
+    state.esignModalTarget = null;
+    render();
+  }
+  function blobToBase64(blob) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () { resolve(String(reader.result).split(',')[1] || ''); };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }
+  function confirmSendEsign() {
+    if (!state.esignModalTarget || state.esignModalSending) return;
+    var orderId = state.esignModalTarget;
+    var order = state.orders.find(function (o) { return o.orderId === orderId; });
+    if (!order) return;
+    var to = (state.esignModalTo || '').trim();
+    var name = (state.esignModalName || '').trim();
+    if (!to) { window.alert('กรุณากรอกอีเมลผู้รับ'); return; }
+    if (!name) { window.alert('กรุณากรอกชื่อผู้เซ็น'); return; }
+    var entry = (order.cancelLetterHistory || []).find(function (h) { return h.no === state.esignModalLetterNo; });
+    if (!entry) { window.alert('ไม่พบหนังสือครั้งที่เลือก'); return; }
+    if (!db) { window.alert('ยังไม่ได้เชื่อมต่อฐานข้อมูลกลาง'); return; }
+    state.esignModalSending = true;
+    render();
+    db.storage.from(CLOUD_BUCKET).download(storagePathFromValue(entry.url))
+      .then(function (res) {
+        if (res.error || !res.data) throw (res.error || new Error('โหลดไฟล์ PDF ต้นฉบับไม่สำเร็จ'));
+        return blobToBase64(res.data);
+      })
+      .then(function (base64) {
+        return fetch(ESIGN_EDGE_BASE + '/esign-create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + currentAccessToken },
+          body: JSON.stringify({
+            title: 'หนังสือบอกเลิกสัญญาเช่าซื้อ - เลขที่ ' + orderId + ' (ครั้งที่ ' + entry.no + ')',
+            sourceType: 'termination_notice',
+            sourceRef: orderId,
+            companyName: ESIGN_COMPANY_NAME,
+            signingMode: 'parallel',
+            fileName: 'cancel-letter-' + orderId + '-' + entry.no + '.pdf',
+            fileBase64: base64,
+            signers: [{ name: name, email: to, role: 'ผู้เช่าซื้อ', signOrder: 1 }],
+            fields: [
+              { signerIndex: 0, fieldType: 'signature', pageNumber: 1, x: 0.55, y: 0.16, width: 0.32, height: 0.05 },
+              { signerIndex: 0, fieldType: 'date', pageNumber: 1, x: 0.55, y: 0.115, width: 0.3, height: 0.04 }
+            ]
+          })
+        });
+      })
+      .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+      .then(function (r) {
+        state.esignModalSending = false;
+        if (!r.ok || !r.data || r.data.error) {
+          window.alert('ส่งลิงก์เซ็นออนไลน์ไม่สำเร็จ: ' + (r.data && r.data.error ? r.data.error : 'unknown error'));
+          render();
+          return;
+        }
+        var esignHistory = (order.esignHistory || []).concat([{ at: nowTimestamp(), by: currentActorName(), to: to, letterNo: entry.no, documentId: r.data.documentId }]);
+        updateOrderField(orderId, 'esignHistory', esignHistory);
+        state.esignModalTarget = null;
+        render();
+        window.alert('ส่งลิงก์เซ็นออนไลน์สำเร็จ (ครั้งที่ ' + entry.no + ') — ลูกค้าจะได้รับอีเมลลิงก์สำหรับลงลายมือชื่อ');
+      })
+      .catch(function (err) {
+        state.esignModalSending = false;
+        window.alert('เกิดข้อผิดพลาดขณะส่งให้เซ็นออนไลน์: ' + (err && err.message ? err.message : String(err)));
+        render();
+      });
+  }
   // Marks a single งวด as cross-checked against the reference CRM (or un-marks it) — a manual QA
   // step staff run monthly per ครบกำหนด month, per user request 2026-07-30: without this, a
   // customer still overdue next month gets re-verified from scratch instead of just checking the
@@ -5538,12 +5631,23 @@
   // between main/accessory entries above it.
   function renderCancelLetterCard(ord) {
     var history = ord.cancelLetterHistory || [];
+    var esignHistory = ord.esignHistory || [];
     var body =
-      '<div><button data-action="openCancelLetterModal" data-order="' + esc(ord.orderId) + '" title="ออกหนังสือบอกเลิกสัญญาเช่าซื้อ (PDF)" style="border:1px solid rgba(179,38,30,0.35); background:#fff; color:#b3261e; padding:6px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:pointer; white-space:nowrap;">📄 ออกเอกสารหนังสือยกเลิก</button></div>' +
+      '<div style="display:flex; gap:8px; flex-wrap:wrap;">' +
+        '<button data-action="openCancelLetterModal" data-order="' + esc(ord.orderId) + '" title="ออกหนังสือบอกเลิกสัญญาเช่าซื้อ (PDF)" style="border:1px solid rgba(179,38,30,0.35); background:#fff; color:#b3261e; padding:6px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:pointer; white-space:nowrap;">📄 ออกเอกสารหนังสือยกเลิก</button>' +
+        (history.length
+          ? '<button data-action="openSendEsign" data-order="' + esc(ord.orderId) + '" title="ส่งลิงก์ให้ลูกค้าลงลายมือชื่ออิเล็กทรอนิกส์ทางอีเมล" style="border:none; background:linear-gradient(135deg,#f7823b,#f0630f); color:#fff; padding:6px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:pointer; white-space:nowrap; box-shadow:0 4px 12px rgba(247,130,59,0.3);">🖋️ ส่งให้เซ็นออนไลน์</button>'
+          : '') +
+      '</div>' +
       trackingHistoryList(history, function (h) {
+        var esignSent = esignHistory.filter(function (e) { return e.letterNo === h.no; });
+        var esignBadge = esignSent.length
+          ? '<div style="margin-top:4px; color:#f0630f; font-weight:600;">🖋️ ส่งให้เซ็นออนไลน์แล้ว ' + esignSent.length + ' ครั้ง (ล่าสุด ' + esc(esignSent[esignSent.length - 1].at) + ')</div>'
+          : '';
         return '<div style="background:rgba(179,38,30,0.05); border:1px solid rgba(179,38,30,0.12); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#212529;">' +
           '<div style="font-weight:700; color:#b3261e; margin-bottom:2px;">🕐 ' + esc(h.at) + ' · ครั้งที่ ' + h.no + (h.by ? ' · โดย ' + esc(h.by) : '') + '</div>' +
           '<div style="color:#6b7280;"><span data-action="downloadLetterPdf" data-path="' + esc(h.url) + '" style="color:#f7823b; font-weight:600; cursor:pointer;">⬇ ดาวน์โหลด</span> · <span data-action="deleteCancelLetterHistory" data-order="' + esc(ord.orderId) + '" data-no="' + h.no + '" title="ลบประวัตินี้ — ใช้เฉพาะกรณีทดสอบ/ออกผิดพลาด" style="color:#e03131; font-weight:600; cursor:pointer;">🗑 ลบ</span></div>' +
+          esignBadge +
         '</div>';
       });
     return trackingCard('#b3261e', '📄', 'หนังสือบอกเลิกสัญญาเช่าซื้อ', history.length, body);
@@ -9027,6 +9131,9 @@
     if (state.emailModalTarget) {
       html += renderSendEmailModal();
     }
+    if (state.esignModalTarget) {
+      html += renderSendEsignModal();
+    }
     if (state.cancelLetterModalTarget) {
       html += renderCancelLetterModal();
     }
@@ -9200,6 +9307,44 @@
         '<div style="display:flex; justify-content:flex-end; gap:10px;">' +
           '<div data-action="closeSendEmailModal" style="padding:11px 20px; border-radius:10px; color:#6b7280; font-size:13.5px; font-weight:600; cursor:pointer;">ยกเลิก</div>' +
           '<div data-action="confirmSendEmail" style="background:' + (state.emailModalSending ? '#8d93a0' : 'linear-gradient(135deg,#2563eb,#1d4ed8)') + '; color:#fff; padding:11px 22px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer;">' + (state.emailModalSending ? '⏳ กำลังส่ง...' : '📤 ส่งอีเมล') + '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function renderSendEsignModal() {
+    var orderId = state.esignModalTarget;
+    var order = state.orders.find(function (o) { return o.orderId === orderId; });
+    if (!order) { state.esignModalTarget = null; return ''; }
+    var history = (order.cancelLetterHistory || []).slice().sort(function (a, b) { return b.no - a.no; });
+    var options = history.map(function (h) {
+      return '<option value="' + h.no + '"' + (h.no === state.esignModalLetterNo ? ' selected' : '') + '>ครั้งที่ ' + h.no + ' · ' + esc(h.at) + '</option>';
+    }).join('');
+    var esignHistory = order.esignHistory || [];
+    var esignHistoryHtml = '';
+    if (esignHistory.length) {
+      esignHistoryHtml = '<div style="font-size:12px; color:#6b7280; font-weight:600; margin-bottom:8px;">🖋️ ประวัติการส่ง (' + esignHistory.length + ' ครั้ง)</div>' +
+        '<div style="display:flex; flex-direction:column; gap:6px; margin-bottom:16px; max-height:140px; overflow-y:auto;">' +
+        esignHistory.slice().reverse().map(function (h) {
+          return '<div style="background:rgba(247,130,59,0.06); border:1px solid rgba(247,130,59,0.18); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#212529;">' + esc(h.at) + ' · ' + esc(h.to) + ' · ครั้งที่ ' + h.letterNo + (h.by ? ' · โดย ' + esc(h.by) : '') + '</div>';
+        }).join('') +
+        '</div>';
+    }
+    return '<div style="position:fixed; inset:0; z-index:9999; background:rgba(33,37,41,0.35); display:flex; align-items:center; justify-content:center; padding:20px;">' +
+      '<div style="max-width:460px; width:100%; max-height:90vh; overflow-y:auto; background:#fff; border-radius:20px; padding:26px 26px 22px; box-shadow:0 24px 60px rgba(33,37,41,0.3);">' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#212529; margin-bottom:6px;">🖋️ ส่งให้ลงลายมือชื่ออิเล็กทรอนิกส์</div>' +
+        '<div style="font-size:12px; color:#8d93a0; margin-bottom:18px;">ลูกค้าจะได้รับอีเมลลิงก์ให้เปิดดูและลงลายมือชื่อในหนังสือฉบับนี้ออนไลน์ ไม่ต้องพิมพ์/เซ็นกระดาษ</div>' +
+        esignHistoryHtml +
+        '<div style="font-size:12px; color:#6b7280; font-weight:600; margin-bottom:6px;">ชื่อผู้เซ็น</div>' +
+        '<input type="text" value="' + esc(state.esignModalName) + '" data-action="esignModalName" placeholder="ชื่อ-นามสกุลลูกค้า" style="width:100%; box-sizing:border-box; padding:10px 14px; border-radius:10px; border:1px solid rgba(247,130,59,0.3); background:#fafafa; font-size:14px; color:#212529; outline:none; margin-bottom:14px;" />' +
+        '<div style="font-size:12px; color:#6b7280; font-weight:600; margin-bottom:6px;">อีเมลผู้รับ</div>' +
+        '<input type="email" value="' + esc(state.esignModalTo) + '" data-action="esignModalTo" placeholder="กรอกอีเมลลูกค้า" style="width:100%; box-sizing:border-box; padding:10px 14px; border-radius:10px; border:1px solid rgba(247,130,59,0.3); background:#fafafa; font-size:14px; color:#212529; outline:none; margin-bottom:14px;" />' +
+        '<div style="font-size:12px; color:#6b7280; font-weight:600; margin-bottom:6px;">หนังสือฉบับที่จะส่งให้เซ็น (ครั้งที่)</div>' +
+        '<select data-action="esignModalLetterNo" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid rgba(247,130,59,0.3); background:#fff; font-size:13.5px; color:#212529; outline:none; margin-bottom:8px;">' + options + '</select>' +
+        '<div style="font-size:11px; color:#8d93a0; margin-bottom:20px;">ตำแหน่งกรอบลายเซ็นเป็นค่าประมาณตามรูปแบบหนังสือมาตรฐาน หากเนื้อหายาวผิดปกติควรเปิดตรวจสอบก่อนส่งจริง</div>' +
+        '<div style="display:flex; justify-content:flex-end; gap:10px;">' +
+          '<div data-action="closeSendEsignModal" style="padding:11px 20px; border-radius:10px; color:#6b7280; font-size:13.5px; font-weight:600; cursor:pointer;">ยกเลิก</div>' +
+          '<div data-action="confirmSendEsign" style="background:' + (state.esignModalSending ? '#8d93a0' : 'linear-gradient(135deg,#f7823b,#f0630f)') + '; color:#fff; padding:11px 22px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer;">' + (state.esignModalSending ? '⏳ กำลังส่ง...' : '🖋️ ส่งให้เซ็น') + '</div>' +
         '</div>' +
       '</div>' +
     '</div>';
@@ -10043,6 +10188,9 @@
         case 'openSendEmail': openSendEmailModal(t.getAttribute('data-order'), t.getAttribute('data-track')); break;
         case 'closeSendEmailModal': closeSendEmailModal(); break;
         case 'confirmSendEmail': confirmSendEmail(); break;
+        case 'openSendEsign': openSendEsignModal(t.getAttribute('data-order')); break;
+        case 'closeSendEsignModal': closeSendEsignModal(); break;
+        case 'confirmSendEsign': confirmSendEsign(); break;
         case 'saveCallLog': saveCallLog(); break;
         case 'loginSubmit': handleLogin(); break;
         case 'newStaffUser': openNewStaffUser(); break;
@@ -10167,6 +10315,9 @@
         case 'smsModalPhone': state.smsModalPhone = t.value; break;
         case 'emailModalTo': state.emailModalTo = t.value; break;
         case 'emailModalLetterNo': state.emailModalLetterNo = Number(t.value); break;
+        case 'esignModalTo': state.esignModalTo = t.value; break;
+        case 'esignModalName': state.esignModalName = t.value; break;
+        case 'esignModalLetterNo': state.esignModalLetterNo = Number(t.value); break;
         case 'smsModalDraft': state.smsModalDraft = t.value; break;
         case 'smsModalTemplate': selectSmsTemplate(t.value); break;
         case 'smsTemplateName': updateSmsTemplateField(t.getAttribute('data-tpl'), 'name', t.value); break;
