@@ -230,9 +230,31 @@ function openSignatureModal(targetBox) {
   modal.querySelector("#clearSig").addEventListener("click", () => { ctx.clearRect(0, 0, canvas.width, canvas.height); hasDrawn = false; });
   modal.querySelector("#cancelSig").addEventListener("click", () => modal.remove());
 
+  // ลบพื้นหลังสีอ่อน (กระดาษ/แสงแฟลช ฯลฯ) ออกจากรูปที่เพิ่งวาดลง canvas ทั้งหมด ให้เหลือแค่ลายเซ็น
+  // จริง — ทำแบบ soft threshold (ไล่โทนความโปร่งใส ไม่ใช่ตัดขาดเป็นขอบคม) กันขอบลายเซ็นแหว่ง/มีรอยหยัก
+  // ทำงานบน getImageData/putImageData ซึ่งอ้างอิงพิกเซลจริงของ canvas เสมอ ไม่ขึ้นกับ ctx.scale ที่ตั้งไว้
+  // จึงประมวลผลทั้ง canvas.width/height (พิกเซลจริง) ได้เลยโดยไม่ต้องแปลงพิกัด
+  function stripLightBackground() {
+    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imgData.data;
+    const THRESHOLD = 195; // สว่างกว่านี้ถือว่าเป็นพื้นหลัง (ปรับได้ถ้าลายเซ็นจางไป/พื้นหลังไม่หมด)
+    const RANGE = 45; // ช่วงไล่โทนก่อนถึง threshold
+    for (let i = 0; i < data.length; i += 4) {
+      const brightness = (data[i] + data[i + 1] + data[i + 2]) / 3;
+      if (brightness >= THRESHOLD + RANGE) {
+        data[i + 3] = 0;
+      } else if (brightness > THRESHOLD) {
+        data[i + 3] = Math.round(data[i + 3] * (1 - (brightness - THRESHOLD) / RANGE));
+      }
+    }
+    ctx.putImageData(imgData, 0, 0);
+  }
+
   // วาดรูปลายเซ็น (จากไฟล์อัปโหลด หรือจากลายเซ็นที่บันทึกไว้ในเครื่อง) ลงบน canvas แบบคงสัดส่วนเดิม
   // (contain) กึ่งกลาง — ใช้ร่วมกันทั้ง 2 ทาง เพื่อให้ path ที่เหลือ (บันทึก/ตรวจสอบ hasDrawn) เหมือนกัน
-  const drawDataUrlToCanvas = (dataUrl) => new Promise((resolve) => {
+  // removeBackground: ใช้เฉพาะตอนอัปโหลดไฟล์ใหม่เท่านั้น (ลายเซ็นที่บันทึกไว้แล้วผ่านการลบมาแล้วครั้ง
+  // ที่บันทึก ไม่ต้องทำซ้ำ)
+  const drawDataUrlToCanvas = (dataUrl, removeBackground) => new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -240,6 +262,7 @@ function openSignatureModal(targetBox) {
       const drawW = img.width * scale;
       const drawH = img.height * scale;
       ctx.drawImage(img, (cssW - drawW) / 2, (cssH - drawH) / 2, drawW, drawH);
+      if (removeBackground) stripLightBackground();
       hasDrawn = true;
       resolve();
     };
@@ -266,7 +289,7 @@ function openSignatureModal(targetBox) {
     const file = fileInput.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => drawDataUrlToCanvas(reader.result);
+    reader.onload = () => drawDataUrlToCanvas(reader.result, true);
     reader.readAsDataURL(file);
     fileInput.value = "";
   });
