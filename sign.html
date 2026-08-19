@@ -169,6 +169,10 @@ function updateSubmitState() {
 
 function openSignatureModal(targetBox) {
   const savedSignature = localStorage.getItem(SAVED_SIGNATURE_KEY);
+  // จำกัดเฉพาะฝั่งพนักงาน/บริษัทให้แนบรูปลายเซ็นได้ (เหมาะกับคนที่เซ็นซ้ำๆ ทุกฉบับ) — ฝั่งลูกค้า
+  // (ลูกหนี้/ผู้ค้ำ) ต้องวาดสดหรือให้ระบบพิมพ์ชื่อให้เท่านั้น เพื่อไม่ให้แนบรูปใดๆ มาแอบอ้างเป็นลายเซ็นได้
+  // แยกจาก role ที่กำหนดตอนสร้างคำขอ (ต้องมีคำว่า "พนักงาน" ถึงจะถือว่าเป็นฝั่งบริษัท)
+  const isStaffSigner = /พนักงาน/.test((sessionData && sessionData.signerRole) || "");
   const modal = document.createElement("div");
   modal.className = "sig-modal";
   modal.innerHTML = `
@@ -179,9 +183,9 @@ function openSignatureModal(targetBox) {
       ${savedSignature ? '<p style="font-size:11.5px;color:#0ca678;margin:0 0 8px;">✓ ใช้ลายเซ็นที่บันทึกไว้จากครั้งก่อนบนเครื่องนี้ — <span id="clearSavedSig" style="text-decoration:underline;cursor:pointer;">ลบลายเซ็นที่บันทึกไว้</span></p>' : ''}
       <div class="row">
         <button id="clearSig" style="flex:1;background:#e5e7eb;">ล้าง</button>
-        <button id="uploadSigBtn" style="flex:1;background:#e5e7eb;">📁 อัปโหลดรูปภาพแทน</button>
+        ${isStaffSigner ? '<button id="uploadSigBtn" style="flex:1;background:#e5e7eb;">📁 อัปโหลดรูปภาพแทน</button>' : ''}
       </div>
-      <input type="file" id="sigFileInput" accept="image/*" style="display:none;" />
+      ${isStaffSigner ? '<input type="file" id="sigFileInput" accept="image/*" style="display:none;" />' : ''}
       <div style="border-top:1px dashed var(--border);margin-top:14px;padding-top:12px;">
         <p style="font-size:12px;color:#6b7280;margin:0 0 6px;">หรือให้ระบบออกแบบลายเซ็นจากชื่อของท่าน</p>
         <div class="row" style="margin-top:0;">
@@ -282,17 +286,19 @@ function openSignatureModal(targetBox) {
   }
 
   // อัปโหลดรูปลายเซ็นที่มีอยู่แล้ว (เช่น ถ่ายรูป/สแกนลายเซ็นจริงไว้) แทนการวาดใหม่ทุกครั้ง —
-  // เหมาะกับพนักงานที่ต้องเซ็นเอกสารซ้ำๆ บ่อย
+  // เหมาะกับพนักงานที่ต้องเซ็นเอกสารซ้ำๆ บ่อย (ฝั่งลูกค้าไม่มีปุ่มนี้ ดู isStaffSigner ด้านบน)
   const fileInput = modal.querySelector("#sigFileInput");
-  modal.querySelector("#uploadSigBtn").addEventListener("click", () => fileInput.click());
-  fileInput.addEventListener("change", () => {
-    const file = fileInput.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => drawDataUrlToCanvas(reader.result, true);
-    reader.readAsDataURL(file);
-    fileInput.value = "";
-  });
+  if (fileInput) {
+    modal.querySelector("#uploadSigBtn").addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => drawDataUrlToCanvas(reader.result, true);
+      reader.readAsDataURL(file);
+      fileInput.value = "";
+    });
+  }
 
   // ให้ระบบ "ออกแบบ" ลายเซ็นจากชื่อที่พิมพ์ — เขียนชื่อด้วยฟอนต์ลายมือ (Charmonman รองรับภาษาไทย,
   // Dancing Script สำรองกรณีมีอักษรละติน) ต้องรอฟอนต์โหลดเสร็จก่อนวาดลง canvas จริง ไม่งั้น browser
