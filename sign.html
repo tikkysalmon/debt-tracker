@@ -171,8 +171,10 @@ function openSignatureModal(targetBox) {
   const savedSignature = localStorage.getItem(SAVED_SIGNATURE_KEY);
   // จำกัดเฉพาะฝั่งพนักงาน/บริษัทให้แนบรูปลายเซ็นได้ (เหมาะกับคนที่เซ็นซ้ำๆ ทุกฉบับ) — ฝั่งลูกค้า
   // (ลูกหนี้/ผู้ค้ำ) ต้องวาดสดหรือให้ระบบพิมพ์ชื่อให้เท่านั้น เพื่อไม่ให้แนบรูปใดๆ มาแอบอ้างเป็นลายเซ็นได้
-  // แยกจาก role ที่กำหนดตอนสร้างคำขอ (ต้องมีคำว่า "พนักงาน" ถึงจะถือว่าเป็นฝั่งบริษัท)
-  const isStaffSigner = /พนักงาน/.test((sessionData && sessionData.signerRole) || "");
+  // เช็คทั้งชื่อและบทบาท เพราะ preset ที่ตั้งไว้ใส่คำว่า "พนักงาน" ในชื่อ ("พนักงานฝ่ายเร่งรัดหนี้สิน")
+  // ไม่ใช่ในบทบาท (role ใส่เป็น "ผู้แทนผู้ให้เช่าซื้อ" แทน)
+  const staffCheckText = ((sessionData && sessionData.signerName) || "") + " " + ((sessionData && sessionData.signerRole) || "");
+  const isStaffSigner = /พนักงาน/.test(staffCheckText);
   const modal = document.createElement("div");
   modal.className = "sig-modal";
   modal.innerHTML = `
