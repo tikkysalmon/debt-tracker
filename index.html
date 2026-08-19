@@ -981,6 +981,10 @@
   // ระบบติดตามหนี้แล้ว (mddtfcganbuxzfendgfi) ยืนยันตัวตนพนักงานผ่าน staff_users อัตโนมัติ
   var ESIGN_EDGE_BASE = 'https://mddtfcganbuxzfendgfi.supabase.co/functions/v1';
   var ESIGN_COMPANY_NAME = 'บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด';
+  // ส่งอีเมลผ่าน /api/send-esign-email (Vercel) แทนการให้ esign-create ส่งเองฝั่ง Supabase —
+  // เส้นทางเดิมขึ้น "Delivered" ใน Thaibulksms dashboard จริง แต่ไม่เคยไปถึง Gmail เลย (หาไม่เจอแม้
+  // ใน All Mail/Spam) จึงเปลี่ยนมาใช้ path เดียวกับจดหมายทวงหนี้ที่พิสูจน์แล้วว่าส่งถึงจริง (2026-08-19)
+  var ESIGN_EMAIL_TEMPLATE_ID = 'b3b0238c-e858-4742-9e63-28b2bf69c668';
   var esignModalPdfBase64 = null; // cache ของไฟล์ PDF ที่กำลังเตรียมส่งเซ็น (base64) — ไม่ใส่ใน state
   // เพราะข้อมูลใหญ่และไม่จำเป็นต้องกระตุ้น re-render เอง
   var esignPdfjsWorkerReady = false;
@@ -4701,21 +4705,41 @@
         signers: signers.map(function (s) { return { name: s.name, email: s.email, role: s.role, signOrder: s.signOrder }; }),
         fields: state.esignModalFields.map(function (f) {
           return { signerIndex: f.signerIndex, fieldType: f.fieldType, pageNumber: f.pageNumber, x: f.x, y: f.y, width: f.width, height: f.height };
-        })
+        }),
+        skipEmail: true // ส่งอีเมลเชิญเองผ่าน /api/send-esign-email ด้านล่างแทน (ดูเหตุผลที่ ESIGN_EMAIL_TEMPLATE_ID)
       })
     })
       .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
       .then(function (r) {
-        state.esignModalSending = false;
         if (!r.ok || !r.data || r.data.error) {
+          state.esignModalSending = false;
           window.alert('ส่งลิงก์เซ็นออนไลน์ไม่สำเร็จ: ' + (r.data && r.data.error ? r.data.error : 'unknown error'));
           render();
-          return;
+          throw new Error('__handled__'); // ตัดไม่ให้ไหลต่อไปโหมด email-sending ด้านล่าง
         }
+        var docTitle = 'หนังสือบอกเลิกสัญญาเช่าซื้อ - เลขที่ ' + orderId + ' (ครั้งที่ ' + entry.no + ')';
+        return Promise.all((r.data.signers || []).map(function (s) {
+          return fetch('/api/send-esign-email', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              to: s.email,
+              templateUuid: ESIGN_EMAIL_TEMPLATE_ID,
+              subject: 'กรุณาลงลายมือชื่อ: ' + docTitle,
+              customerName: s.name,
+              orderId: orderId,
+              actionUrl: s.signUrl
+            })
+          }).then(function (res) { return res.json().then(function (data) { return { name: s.name, email: s.email, ok: res.ok, data: data }; }); });
+        })).then(function (emailResults) { return { documentId: r.data.documentId, emailResults: emailResults }; });
+      })
+      .then(function (r) {
+        state.esignModalSending = false;
+        var failedEmails = (r.emailResults || []).filter(function (e) { return !e.ok || (e.data && e.data.error); });
         var esignHistory = (order.esignHistory || []).concat([{
           at: nowTimestamp(), by: currentActorName(),
           to: signers.map(function (s) { return s.name + ' <' + s.email + '>'; }).join(', '),
-          letterNo: entry.no, documentId: r.data.documentId
+          letterNo: entry.no, documentId: r.documentId
         }]);
         updateOrderField(orderId, 'esignHistory', esignHistory);
         state.esignModalTarget = null;
@@ -4724,20 +4748,16 @@
         state.esignModalPageImages = null;
         esignModalPdfBase64 = null;
         render();
-        // เอกสารสร้างสำเร็จเสมอถึงจุดนี้ แต่การส่งอีเมลเชิญเซ็นอาจล้มเหลวแยกต่างหากได้ (เช่น
-        // ปัญหาฝั่งผู้ให้บริการอีเมล) — เช็ค emailSent/emailError ต่อผู้เซ็นแล้วแจ้งตรงๆ แทนการบอกว่า
-        // "สำเร็จ" เฉยๆ ทั้งที่ลูกค้าอาจไม่ได้รับอีเมลจริง
-        var failedSigners = (r.data.signers || []).filter(function (s) { return s.emailSent === false; });
-        if (failedSigners.length) {
+        if (failedEmails.length) {
           window.alert('สร้างเอกสารสำเร็จ แต่ส่งอีเมลไม่สำเร็จสำหรับ: ' +
-            failedSigners.map(function (s) { return s.name + ' (' + s.email + ')'; }).join(', ') +
-            '\n\nสาเหตุ: ' + (failedSigners[0].emailError || 'ไม่ทราบสาเหตุ') +
-            '\n\nลิงก์เซ็นยังใช้งานได้ปกติ — ส่งให้ลูกค้าเองทางช่องทางอื่นได้ที่: ' + (failedSigners[0].signUrl || '-'));
+            failedEmails.map(function (e) { return e.name + ' (' + e.email + ')'; }).join(', ') +
+            '\n\nสาเหตุ: ' + ((failedEmails[0].data && failedEmails[0].data.error) || 'ไม่ทราบสาเหตุ'));
         } else {
           window.alert('ส่งลิงก์เซ็นออนไลน์สำเร็จ (ครั้งที่ ' + entry.no + ') — ผู้เซ็นทุกคนจะได้รับอีเมลลิงก์สำหรับลงลายมือชื่อ');
         }
       })
       .catch(function (err) {
+        if (err && err.message === '__handled__') return; // ขึ้น alert และ render() ไปแล้วในขั้นตอนก่อนหน้า
         state.esignModalSending = false;
         window.alert('เกิดข้อผิดพลาดขณะส่งให้เซ็นออนไลน์: ' + (err && err.message ? err.message : String(err)));
         render();
