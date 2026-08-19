@@ -1778,7 +1778,7 @@
     esignStatusDocumentId: null, esignStatusLoading: false, esignStatusData: null,
     // ผู้เซ็นหลายคนต่อเอกสารได้ (เช่น ลูกหนี้ + ผู้ค้ำ) — signers: [{name,email,role,signOrder}]
     esignModalSigners: [], esignModalActiveSignerIndex: 0,
-    esignModalNewSignerName: '', esignModalNewSignerEmail: '', esignModalNewSignerRole: '', esignModalNewSignerOrder: '1',
+    esignModalNewSignerName: '', esignModalNewSignerRole: '', esignModalNewSignerOrder: '1',
     // ตัวอย่าง PDF ให้พนักงานวางกรอบลายเซ็นเองก่อนส่ง (แทนตำแหน่งเดา) — pageImages เป็น PNG dataURL
     // ต่อหน้า (เรนเดอร์ครั้งเดียวตอนเปิด modal แล้ว cache ไว้เป็นข้อมูล ไม่ใช่ canvas ที่มีชีวิต เพราะ
     // render() ของแอปนี้สร้าง DOM ใหม่จาก string ทุกครั้งที่ state เปลี่ยน — canvas จริงจะหายไปทันที)
@@ -4566,7 +4566,6 @@
       : [];
     state.esignModalActiveSignerIndex = 0;
     state.esignModalNewSignerName = '';
-    state.esignModalNewSignerEmail = '';
     state.esignModalNewSignerRole = '';
     state.esignModalNewSignerOrder = '1';
     state.esignModalFields = [];
@@ -4583,15 +4582,24 @@
     esignModalPdfBase64 = null;
     render();
   }
+  // รายชื่อผู้เซ็นที่ใช้ประจำ (เช่น ทีมที่ต้องเซ็นกำกับทุกฉบับ) — กดปุ่มเดียวเพิ่มได้เลย ไม่ต้องพิมพ์ใหม่
+  // ทุกครั้ง ไม่มีอีเมลเพราะไม่ได้ใช้ส่งอีเมลอัตโนมัติแล้ว (เปลี่ยนเป็นคัดลอกลิงก์ไปส่งเอง)
+  var ESIGN_SIGNER_PRESETS = [
+    { name: 'พนักงานฝ่ายเร่งรัดหนี้สิน', role: 'ผู้แทนผู้ให้เช่าซื้อ' },
+  ];
+  function addEsignSignerPreset(idx) {
+    var preset = ESIGN_SIGNER_PRESETS[idx];
+    if (!preset) return;
+    state.esignModalSigners.push({ name: preset.name, email: '', role: preset.role, signOrder: 1 });
+    render();
+  }
   function addEsignSigner() {
     var name = (state.esignModalNewSignerName || '').trim();
-    var email = (state.esignModalNewSignerEmail || '').trim();
     var role = (state.esignModalNewSignerRole || '').trim();
     var order = parseInt(state.esignModalNewSignerOrder, 10) || 1;
-    if (!name || !email) { window.alert('กรอกชื่อและอีเมลผู้เซ็น'); return; }
-    state.esignModalSigners.push({ name: name, email: email, role: role, signOrder: order });
+    if (!name) { window.alert('กรอกชื่อผู้เซ็น'); return; }
+    state.esignModalSigners.push({ name: name, email: '', role: role, signOrder: order });
     state.esignModalNewSignerName = '';
-    state.esignModalNewSignerEmail = '';
     state.esignModalNewSignerRole = '';
     render();
   }
@@ -4726,7 +4734,7 @@
         }
         var esignHistory = (order.esignHistory || []).concat([{
           at: nowTimestamp(), by: currentActorName(),
-          to: signers.map(function (s) { return s.name + ' <' + s.email + '>'; }).join(', '),
+          to: signers.map(function (s) { return s.email ? s.name + ' <' + s.email + '>' : s.name; }).join(', '),
           letterNo: entry.no, documentId: r.data.documentId
         }]);
         updateOrderField(orderId, 'esignHistory', esignHistory);
@@ -9555,18 +9563,19 @@
       ? '<table style="width:100%; border-collapse:collapse; font-size:12.5px; margin-bottom:14px;">' +
           '<thead><tr>' +
             '<th style="text-align:left; padding:5px 6px; color:#8d93a0; font-weight:600; font-size:11px; border-bottom:1.5px solid #e9ecef;">ชื่อ</th>' +
-            '<th style="text-align:left; padding:5px 6px; color:#8d93a0; font-weight:600; font-size:11px; border-bottom:1.5px solid #e9ecef;">อีเมล</th>' +
             '<th style="text-align:left; padding:5px 6px; color:#8d93a0; font-weight:600; font-size:11px; border-bottom:1.5px solid #e9ecef;">บทบาท</th>' +
             '<th style="border-bottom:1.5px solid #e9ecef;"></th>' +
           '</tr></thead><tbody>' +
           state.esignModalSigners.map(function (s, idx) {
             return '<tr><td style="padding:6px; border-bottom:1px solid #f1f3f5;">' + esc(s.name) + '</td>' +
-              '<td style="padding:6px; border-bottom:1px solid #f1f3f5;">' + esc(s.email) + '</td>' +
               '<td style="padding:6px; border-bottom:1px solid #f1f3f5;">' + esc(s.role || '-') + '</td>' +
               '<td style="padding:6px; border-bottom:1px solid #f1f3f5; text-align:right;"><span data-action="removeEsignSigner" data-idx="' + idx + '" style="color:#e03131; font-weight:600; cursor:pointer;">ลบ</span></td></tr>';
           }).join('') +
           '</tbody></table>'
       : '';
+    var presetButtonsHtml = ESIGN_SIGNER_PRESETS.map(function (p, idx) {
+      return '<div data-action="addEsignSignerPreset" data-idx="' + idx + '" style="padding:6px 14px; border-radius:20px; font-size:12px; font-weight:600; cursor:pointer; background:#fff; color:#f0630f; border:1px solid rgba(247,130,59,0.4); white-space:nowrap;">+ ' + esc(p.name) + '</div>';
+    }).join('');
     var signerOptions = state.esignModalSigners.map(function (s, idx) {
       return '<option value="' + idx + '"' + (idx === state.esignModalActiveSignerIndex ? ' selected' : '') + '>' + esc(s.name) + '</option>';
     }).join('');
@@ -9576,12 +9585,12 @@
         '<div style="font-size:12px; color:#8d93a0; margin-bottom:18px;">ระบบจะสร้างลิงก์เซ็นเฉพาะของแต่ละคนให้ — คัดลอกไปส่งเองผ่าน LINE/SMS/บอกด้วยวาจาได้เลย ไม่ต้องพิมพ์/เซ็นกระดาษ</div>' +
         esignHistoryHtml +
         '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:14px; color:#212529; margin-bottom:4px;">👥 เพิ่มชื่อที่ต้องเซ็น</div>' +
-        '<div style="font-size:11.5px; color:#8d93a0; margin-bottom:10px;">ใส่ชื่อและอีเมลของทุกคนที่ต้องลงลายมือชื่อในเอกสารนี้ (เช่น ลูกหนี้ ผู้ค้ำประกัน)</div>' +
+        '<div style="font-size:11.5px; color:#8d93a0; margin-bottom:10px;">ใส่ชื่อของทุกคนที่ต้องลงลายมือชื่อในเอกสารนี้ (เช่น ลูกหนี้ ผู้ค้ำประกัน) — ไม่ต้องมีอีเมลก็เพิ่มได้</div>' +
+        (presetButtonsHtml ? '<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">' + presetButtonsHtml + '</div>' : '') +
         signerRowsHtml +
         '<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:18px; align-items:flex-end;">' +
-          '<div style="flex:1; min-width:140px;"><div style="font-size:11px; color:#6b7280; font-weight:600; margin-bottom:4px;">ชื่อ-นามสกุล</div><input type="text" value="' + esc(state.esignModalNewSignerName) + '" data-action="esignNewSignerName" placeholder="เช่น สมชาย ใจดี" style="width:100%; box-sizing:border-box; padding:9px 11px; border-radius:9px; border:1px solid rgba(247,130,59,0.3); background:#fafafa; font-size:13.5px; color:#212529; outline:none;" /></div>' +
-          '<div style="flex:1; min-width:160px;"><div style="font-size:11px; color:#6b7280; font-weight:600; margin-bottom:4px;">อีเมล</div><input type="email" value="' + esc(state.esignModalNewSignerEmail) + '" data-action="esignNewSignerEmail" placeholder="name@email.com" style="width:100%; box-sizing:border-box; padding:9px 11px; border-radius:9px; border:1px solid rgba(247,130,59,0.3); background:#fafafa; font-size:13.5px; color:#212529; outline:none;" /></div>' +
-          '<div style="flex:1; min-width:110px;"><div style="font-size:11px; color:#6b7280; font-weight:600; margin-bottom:4px;">บทบาท</div><input type="text" value="' + esc(state.esignModalNewSignerRole) + '" data-action="esignNewSignerRole" placeholder="ลูกหนี้ / ผู้ค้ำ" style="width:100%; box-sizing:border-box; padding:9px 11px; border-radius:9px; border:1px solid rgba(247,130,59,0.3); background:#fafafa; font-size:13.5px; color:#212529; outline:none;" /></div>' +
+          '<div style="flex:1; min-width:160px;"><div style="font-size:11px; color:#6b7280; font-weight:600; margin-bottom:4px;">ชื่อ-นามสกุล</div><input type="text" value="' + esc(state.esignModalNewSignerName) + '" data-action="esignNewSignerName" placeholder="เช่น สมชาย ใจดี" style="width:100%; box-sizing:border-box; padding:9px 11px; border-radius:9px; border:1px solid rgba(247,130,59,0.3); background:#fafafa; font-size:13.5px; color:#212529; outline:none;" /></div>' +
+          '<div style="flex:1; min-width:140px;"><div style="font-size:11px; color:#6b7280; font-weight:600; margin-bottom:4px;">บทบาท</div><input type="text" value="' + esc(state.esignModalNewSignerRole) + '" data-action="esignNewSignerRole" placeholder="ลูกหนี้ / ผู้ค้ำ" style="width:100%; box-sizing:border-box; padding:9px 11px; border-radius:9px; border:1px solid rgba(247,130,59,0.3); background:#fafafa; font-size:13.5px; color:#212529; outline:none;" /></div>' +
           '<div data-action="addEsignSigner" style="background:linear-gradient(135deg,#f7823b,#f0630f); color:#fff; padding:9px 18px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:pointer; white-space:nowrap;">+ เพิ่ม</div>' +
         '</div>' +
         '<div style="font-size:12px; color:#6b7280; font-weight:600; margin-bottom:6px;">หนังสือฉบับที่จะส่งให้เซ็น (ครั้งที่)</div>' +
@@ -9623,7 +9632,7 @@
         signers.map(function (s) {
           var sColor = s.status === 'signed' ? '#f0630f' : (s.status === 'declined' ? '#e03131' : '#8d93a0');
           return '<div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #f1f3f5; font-size:12.5px;">' +
-            '<div><div style="font-weight:600; color:#212529;">' + esc(s.name) + '</div><div style="color:#8d93a0; font-size:11px;">' + esc(s.email) + '</div></div>' +
+            '<div><div style="font-weight:600; color:#212529;">' + esc(s.name) + '</div>' + (s.email ? '<div style="color:#8d93a0; font-size:11px;">' + esc(s.email) + '</div>' : '') + '</div>' +
             '<span style="color:' + sColor + '; font-weight:600;">' + esc(ESIGN_STATUS_LABELS[s.status] || s.status) + '</span>' +
           '</div>';
         }).join('') +
@@ -9646,7 +9655,7 @@
     var rows = links.map(function (s) {
       return '<div style="background:rgba(247,130,59,0.05); border:1px solid rgba(247,130,59,0.18); border-radius:10px; padding:10px 12px; margin-bottom:8px;">' +
         '<div style="font-weight:700; font-size:13px; color:#212529; margin-bottom:2px;">' + esc(s.name) + '</div>' +
-        '<div style="font-size:11.5px; color:#8d93a0; margin-bottom:6px;">' + esc(s.email) + '</div>' +
+        (s.email ? '<div style="font-size:11.5px; color:#8d93a0; margin-bottom:6px;">' + esc(s.email) + '</div>' : '') +
         '<div style="display:flex; gap:8px; align-items:center;">' +
           '<input readonly value="' + esc(s.signUrl) + '" onclick="this.select();" style="flex:1; box-sizing:border-box; padding:8px 10px; border-radius:8px; border:1px solid #e9ecef; background:#fff; font-size:11.5px; color:#495057;" />' +
           '<div data-action="copyEsignLink" data-url="' + esc(s.signUrl) + '" style="background:linear-gradient(135deg,#f7823b,#f0630f); color:#fff; padding:8px 14px; border-radius:8px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;">📋 คัดลอก</div>' +
@@ -10514,6 +10523,7 @@
         case 'checkEsignStatus': checkEsignStatus(t.getAttribute('data-document-id')); break;
         case 'closeEsignStatusModal': closeEsignStatusModal(); break;
         case 'addEsignSigner': addEsignSigner(); break;
+        case 'addEsignSignerPreset': addEsignSignerPreset(Number(t.getAttribute('data-idx'))); break;
         case 'removeEsignSigner': removeEsignSigner(Number(t.getAttribute('data-idx'))); break;
         case 'esignPageClick': {
           var pageNum = Number(t.getAttribute('data-page'));
@@ -10649,7 +10659,6 @@
         case 'emailModalLetterNo': state.emailModalLetterNo = Number(t.value); break;
         case 'esignModalLetterNo': state.esignModalLetterNo = Number(t.value); loadEsignPdfPreview(state.esignModalTarget, state.esignModalLetterNo); break;
         case 'esignNewSignerName': state.esignModalNewSignerName = t.value; break;
-        case 'esignNewSignerEmail': state.esignModalNewSignerEmail = t.value; break;
         case 'esignNewSignerRole': state.esignModalNewSignerRole = t.value; break;
         case 'esignActiveSigner': state.esignModalActiveSignerIndex = Number(t.value); break;
         case 'smsModalDraft': state.smsModalDraft = t.value; break;
