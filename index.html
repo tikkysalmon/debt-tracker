@@ -10,6 +10,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <style>
   html, body { margin: 0; }
   body { font-family:'Noto Sans Thai', sans-serif; }
@@ -980,6 +981,14 @@
   // ระบบติดตามหนี้แล้ว (mddtfcganbuxzfendgfi) ยืนยันตัวตนพนักงานผ่าน staff_users อัตโนมัติ
   var ESIGN_EDGE_BASE = 'https://mddtfcganbuxzfendgfi.supabase.co/functions/v1';
   var ESIGN_COMPANY_NAME = 'บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด';
+  var esignModalPdfBase64 = null; // cache ของไฟล์ PDF ที่กำลังเตรียมส่งเซ็น (base64) — ไม่ใส่ใน state
+  // เพราะข้อมูลใหญ่และไม่จำเป็นต้องกระตุ้น re-render เอง
+  var esignPdfjsWorkerReady = false;
+  function ensureEsignPdfjsWorker() {
+    if (esignPdfjsWorkerReady || !window.pdfjsLib) return;
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    esignPdfjsWorkerReady = true;
+  }
   function initCloud() {
     if (!CLOUD_ENABLED) return false;
     if (!window.supabase || !window.supabase.createClient) { cloudStatus = 'offline'; return false; }
@@ -1758,6 +1767,11 @@
     uploadMsgLetterhead: '',
     emailModalTarget: null, emailModalTrack: '', emailModalTo: '', emailModalLetterNo: null, emailModalSending: false,
     esignModalTarget: null, esignModalTo: '', esignModalName: '', esignModalLetterNo: null, esignModalSending: false,
+    // ตัวอย่าง PDF ให้พนักงานวางกรอบลายเซ็นเองก่อนส่ง (แทนตำแหน่งเดา) — pageImages เป็น PNG dataURL
+    // ต่อหน้า (เรนเดอร์ครั้งเดียวตอนเปิด modal แล้ว cache ไว้เป็นข้อมูล ไม่ใช่ canvas ที่มีชีวิต เพราะ
+    // render() ของแอปนี้สร้าง DOM ใหม่จาก string ทุกครั้งที่ state เปลี่ยน — canvas จริงจะหายไปทันที)
+    esignModalPageImages: null, esignModalPageSizes: null, esignModalPdfLoading: false,
+    esignModalFields: [], esignModalActiveFieldType: 'signature',
     // หนังสือบอกเลิกสัญญาเช่าซื้อ (2026-08-10) — same PDF-issuance/ครั้งที่-versioning pattern as
     // จดหมายทวงถามหนี้ above, but whole-order (not track-split) and with a fill-in form first, since
     // this document's per-case terms (เหตุผล/ทรัพย์สินคืน/คืนเงินหรือไม่/ยกเลิกเรียกเก็บหรือไม่ ฯลฯ)
@@ -4517,9 +4531,16 @@
   }
   // ---------- ส่งหนังสือบอกเลิกสัญญาให้ลงลายมือชื่ออิเล็กทรอนิกส์ (e-Sign) ----------
   // ไม่ต้องดาวน์โหลด-อัปโหลดไฟล์ใหม่: ดึง PDF ตัวเดียวกับที่ confirmIssueCancelLetter อัปโหลดไว้แล้ว
-  // ใน CLOUD_BUCKET กลับมาเป็น base64 แล้วส่งเข้า esign-create ตรงๆ — ตำแหน่งกรอบลายเซ็น/วันที่ด้านล่าง
-  // ประมาณจากเลย์เอาต์ของ buildCancelLetterHtml (บล็อกลงชื่อ "ผู้เช่าซื้อ" ฝั่งขวา ค่อนไปทางล่างของหน้า
-  // แรก) — จดหมายที่มีเนื้อหายาวผิดปกติ (เหตุผล/รายการอุปกรณ์ยาวมาก) อาจดันตำแหน่งจริงคลาดเคลื่อนได้บ้าง
+  // ใน CLOUD_BUCKET กลับมาเป็น base64 แล้วเรนเดอร์ตัวอย่างด้วย pdf.js ให้พนักงานคลิกวางกรอบลายเซ็นเอง
+  // ก่อนส่งจริง (ไม่เดาตำแหน่งอัตโนมัติ เพราะเนื้อหาจดหมายยาวไม่เท่ากันทุกฉบับ ตำแหน่งจริงขยับได้)
+  function blobToBase64(blob) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () { resolve(String(reader.result).split(',')[1] || ''); };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }
   function openSendEsignModal(orderId) {
     var order = state.orders.find(function (o) { return o.orderId === orderId; });
     if (!order) return;
@@ -4529,19 +4550,88 @@
     state.esignModalTo = order.email || '';
     state.esignModalName = order.customerName || '';
     state.esignModalLetterNo = history[0].no;
+    state.esignModalFields = [];
+    state.esignModalActiveFieldType = 'signature';
     render();
+    loadEsignPdfPreview(orderId, history[0].no);
   }
   function closeSendEsignModal() {
     state.esignModalTarget = null;
+    state.esignModalFields = [];
+    state.esignModalPageImages = null;
+    state.esignModalPageSizes = null;
+    esignModalPdfBase64 = null;
     render();
   }
-  function blobToBase64(blob) {
-    return new Promise(function (resolve, reject) {
-      var reader = new FileReader();
-      reader.onload = function () { resolve(String(reader.result).split(',')[1] || ''); };
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
+  function loadEsignPdfPreview(orderId, letterNo) {
+    var order = state.orders.find(function (o) { return o.orderId === orderId; });
+    var entry = order && (order.cancelLetterHistory || []).find(function (h) { return h.no === letterNo; });
+    if (!order || !entry) return;
+    if (!db) { window.alert('ยังไม่ได้เชื่อมต่อฐานข้อมูลกลาง'); return; }
+    state.esignModalPdfLoading = true;
+    state.esignModalPageImages = null;
+    state.esignModalPageSizes = null;
+    state.esignModalFields = [];
+    esignModalPdfBase64 = null;
+    render();
+    db.storage.from(CLOUD_BUCKET).download(storagePathFromValue(entry.url))
+      .then(function (res) {
+        if (res.error || !res.data) throw (res.error || new Error('โหลดไฟล์ PDF ต้นฉบับไม่สำเร็จ'));
+        return blobToBase64(res.data);
+      })
+      .then(function (base64) {
+        esignModalPdfBase64 = base64;
+        ensureEsignPdfjsWorker();
+        var binary = atob(base64);
+        var bytes = new Uint8Array(binary.length);
+        for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return window.pdfjsLib.getDocument({ data: bytes }).promise;
+      })
+      .then(function (pdf) {
+        var images = [], sizes = [];
+        function renderPage(pageNum) {
+          if (pageNum > pdf.numPages) {
+            state.esignModalPageImages = images;
+            state.esignModalPageSizes = sizes;
+            state.esignModalPdfLoading = false;
+            render();
+            return;
+          }
+          pdf.getPage(pageNum).then(function (page) {
+            var viewport = page.getViewport({ scale: 1.3 });
+            var canvas = document.createElement('canvas');
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            page.render({ canvasContext: canvas.getContext('2d'), viewport: viewport }).promise.then(function () {
+              images.push(canvas.toDataURL('image/png'));
+              sizes.push({ width: viewport.width, height: viewport.height });
+              renderPage(pageNum + 1);
+            });
+          });
+        }
+        renderPage(1);
+      })
+      .catch(function (err) {
+        state.esignModalPdfLoading = false;
+        window.alert('โหลดตัวอย่างเอกสารไม่สำเร็จ: ' + (err && err.message ? err.message : String(err)));
+        render();
+      });
+  }
+  // ขนาดกรอบเริ่มต้นต่อชนิด (normalized เทียบขนาดหน้า) — คลิกแล้ววางกึ่งกลางตำแหน่งคลิก
+  var ESIGN_FIELD_SIZE = { signature: [0.28, 0.06], date: [0.2, 0.04] };
+  function addEsignField(pageNum, clickX, clickYTop) {
+    var type = state.esignModalActiveFieldType || 'signature';
+    var wh = ESIGN_FIELD_SIZE[type] || ESIGN_FIELD_SIZE.signature;
+    var w = wh[0], h = wh[1];
+    var x = Math.max(0, Math.min(1 - w, clickX - w / 2));
+    var yTop = Math.max(0, Math.min(1 - h, clickYTop - h / 2));
+    var y = 1 - yTop - h; // แปลงเป็นระยะจากล่างของหน้า (แบบ PDF)
+    state.esignModalFields.push({ fieldType: type, pageNumber: pageNum, x: x, y: y, width: w, height: h });
+    render();
+  }
+  function removeEsignField(idx) {
+    state.esignModalFields.splice(idx, 1);
+    render();
   }
   function confirmSendEsign() {
     if (!state.esignModalTarget || state.esignModalSending) return;
@@ -4554,34 +4644,28 @@
     if (!name) { window.alert('กรุณากรอกชื่อผู้เซ็น'); return; }
     var entry = (order.cancelLetterHistory || []).find(function (h) { return h.no === state.esignModalLetterNo; });
     if (!entry) { window.alert('ไม่พบหนังสือครั้งที่เลือก'); return; }
-    if (!db) { window.alert('ยังไม่ได้เชื่อมต่อฐานข้อมูลกลาง'); return; }
+    if (!esignModalPdfBase64) { window.alert('เอกสารยังโหลดไม่เสร็จ กรุณารอสักครู่แล้วลองใหม่'); return; }
+    var hasSignatureField = state.esignModalFields.some(function (f) { return f.fieldType === 'signature'; });
+    if (!hasSignatureField) { window.alert('กรุณาคลิกวางกรอบลายเซ็นบนเอกสารอย่างน้อย 1 จุดก่อนส่ง'); return; }
     state.esignModalSending = true;
     render();
-    db.storage.from(CLOUD_BUCKET).download(storagePathFromValue(entry.url))
-      .then(function (res) {
-        if (res.error || !res.data) throw (res.error || new Error('โหลดไฟล์ PDF ต้นฉบับไม่สำเร็จ'));
-        return blobToBase64(res.data);
+    fetch(ESIGN_EDGE_BASE + '/esign-create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + currentAccessToken },
+      body: JSON.stringify({
+        title: 'หนังสือบอกเลิกสัญญาเช่าซื้อ - เลขที่ ' + orderId + ' (ครั้งที่ ' + entry.no + ')',
+        sourceType: 'termination_notice',
+        sourceRef: orderId,
+        companyName: ESIGN_COMPANY_NAME,
+        signingMode: 'parallel',
+        fileName: 'cancel-letter-' + orderId + '-' + entry.no + '.pdf',
+        fileBase64: esignModalPdfBase64,
+        signers: [{ name: name, email: to, role: 'ผู้เช่าซื้อ', signOrder: 1 }],
+        fields: state.esignModalFields.map(function (f) {
+          return { signerIndex: 0, fieldType: f.fieldType, pageNumber: f.pageNumber, x: f.x, y: f.y, width: f.width, height: f.height };
+        })
       })
-      .then(function (base64) {
-        return fetch(ESIGN_EDGE_BASE + '/esign-create', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + currentAccessToken },
-          body: JSON.stringify({
-            title: 'หนังสือบอกเลิกสัญญาเช่าซื้อ - เลขที่ ' + orderId + ' (ครั้งที่ ' + entry.no + ')',
-            sourceType: 'termination_notice',
-            sourceRef: orderId,
-            companyName: ESIGN_COMPANY_NAME,
-            signingMode: 'parallel',
-            fileName: 'cancel-letter-' + orderId + '-' + entry.no + '.pdf',
-            fileBase64: base64,
-            signers: [{ name: name, email: to, role: 'ผู้เช่าซื้อ', signOrder: 1 }],
-            fields: [
-              { signerIndex: 0, fieldType: 'signature', pageNumber: 1, x: 0.55, y: 0.16, width: 0.32, height: 0.05 },
-              { signerIndex: 0, fieldType: 'date', pageNumber: 1, x: 0.55, y: 0.115, width: 0.3, height: 0.04 }
-            ]
-          })
-        });
-      })
+    })
       .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
       .then(function (r) {
         state.esignModalSending = false;
@@ -4593,6 +4677,9 @@
         var esignHistory = (order.esignHistory || []).concat([{ at: nowTimestamp(), by: currentActorName(), to: to, letterNo: entry.no, documentId: r.data.documentId }]);
         updateOrderField(orderId, 'esignHistory', esignHistory);
         state.esignModalTarget = null;
+        state.esignModalFields = [];
+        state.esignModalPageImages = null;
+        esignModalPdfBase64 = null;
         render();
         window.alert('ส่งลิงก์เซ็นออนไลน์สำเร็จ (ครั้งที่ ' + entry.no + ') — ลูกค้าจะได้รับอีเมลลิงก์สำหรับลงลายมือชื่อ');
       })
@@ -9312,6 +9399,29 @@
     '</div>';
   }
 
+  function renderEsignFieldBoxesForPage(pageNum) {
+    return state.esignModalFields.map(function (f, idx) {
+      if (f.pageNumber !== pageNum) return '';
+      var label = f.fieldType === 'signature' ? 'ลายเซ็น' : 'วันที่';
+      return '<div data-action="removeEsignField" data-idx="' + idx + '" title="คลิกเพื่อลบกรอบนี้" style="position:absolute; left:' + (f.x * 100) + '%; width:' + (f.width * 100) + '%; top:' + ((1 - f.y - f.height) * 100) + '%; height:' + (f.height * 100) + '%; border:2px solid #f0630f; background:rgba(247,130,59,0.16); border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:10.5px; font-weight:700; color:#f0630f; cursor:pointer;">' + label + ' ✕</div>';
+    }).join('');
+  }
+  function renderEsignPdfPreview() {
+    if (state.esignModalPdfLoading) {
+      return '<div style="padding:36px 20px; text-align:center; color:#8d93a0; font-size:13px; border:1.5px dashed rgba(247,130,59,0.25); border-radius:10px;">⏳ กำลังโหลดตัวอย่างเอกสาร...</div>';
+    }
+    if (!state.esignModalPageImages || !state.esignModalPageImages.length) {
+      return '<div style="padding:36px 20px; text-align:center; color:#8d93a0; font-size:13px; border:1.5px dashed rgba(247,130,59,0.25); border-radius:10px;">ไม่พบตัวอย่างเอกสาร</div>';
+    }
+    return state.esignModalPageImages.map(function (img, i) {
+      var pageNum = i + 1;
+      var size = state.esignModalPageSizes[i];
+      return '<div data-action="esignPageClick" data-page="' + pageNum + '" style="position:relative; border:1px solid rgba(247,130,59,0.25); border-radius:8px; overflow:hidden; margin-bottom:10px; cursor:crosshair; aspect-ratio:' + size.width + '/' + size.height + ';">' +
+        '<img src="' + img + '" style="display:block; width:100%; height:auto; pointer-events:none;" />' +
+        renderEsignFieldBoxesForPage(pageNum) +
+      '</div>';
+    }).join('');
+  }
   function renderSendEsignModal() {
     var orderId = state.esignModalTarget;
     var order = state.orders.find(function (o) { return o.orderId === orderId; });
@@ -9324,24 +9434,41 @@
     var esignHistoryHtml = '';
     if (esignHistory.length) {
       esignHistoryHtml = '<div style="font-size:12px; color:#6b7280; font-weight:600; margin-bottom:8px;">🖋️ ประวัติการส่ง (' + esignHistory.length + ' ครั้ง)</div>' +
-        '<div style="display:flex; flex-direction:column; gap:6px; margin-bottom:16px; max-height:140px; overflow-y:auto;">' +
+        '<div style="display:flex; flex-direction:column; gap:6px; margin-bottom:16px; max-height:120px; overflow-y:auto;">' +
         esignHistory.slice().reverse().map(function (h) {
           return '<div style="background:rgba(247,130,59,0.06); border:1px solid rgba(247,130,59,0.18); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#212529;">' + esc(h.at) + ' · ' + esc(h.to) + ' · ครั้งที่ ' + h.letterNo + (h.by ? ' · โดย ' + esc(h.by) : '') + '</div>';
         }).join('') +
         '</div>';
     }
+    var typeBtn = function (type, label) {
+      var active = state.esignModalActiveFieldType === type;
+      return '<div data-action="esignFieldType" data-type="' + type + '" style="padding:7px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:pointer; ' +
+        (active ? 'background:linear-gradient(135deg,#f7823b,#f0630f); color:#fff;' : 'background:#fff; color:#6b7280; border:1px solid rgba(247,130,59,0.3);') + '">' + label + '</div>';
+    };
     return '<div style="position:fixed; inset:0; z-index:9999; background:rgba(33,37,41,0.35); display:flex; align-items:center; justify-content:center; padding:20px;">' +
-      '<div style="max-width:460px; width:100%; max-height:90vh; overflow-y:auto; background:#fff; border-radius:20px; padding:26px 26px 22px; box-shadow:0 24px 60px rgba(33,37,41,0.3);">' +
+      '<div style="max-width:640px; width:100%; max-height:92vh; overflow-y:auto; background:#fff; border-radius:20px; padding:26px 26px 22px; box-shadow:0 24px 60px rgba(33,37,41,0.3);">' +
         '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#212529; margin-bottom:6px;">🖋️ ส่งให้ลงลายมือชื่ออิเล็กทรอนิกส์</div>' +
         '<div style="font-size:12px; color:#8d93a0; margin-bottom:18px;">ลูกค้าจะได้รับอีเมลลิงก์ให้เปิดดูและลงลายมือชื่อในหนังสือฉบับนี้ออนไลน์ ไม่ต้องพิมพ์/เซ็นกระดาษ</div>' +
         esignHistoryHtml +
-        '<div style="font-size:12px; color:#6b7280; font-weight:600; margin-bottom:6px;">ชื่อผู้เซ็น</div>' +
-        '<input type="text" value="' + esc(state.esignModalName) + '" data-action="esignModalName" placeholder="ชื่อ-นามสกุลลูกค้า" style="width:100%; box-sizing:border-box; padding:10px 14px; border-radius:10px; border:1px solid rgba(247,130,59,0.3); background:#fafafa; font-size:14px; color:#212529; outline:none; margin-bottom:14px;" />' +
-        '<div style="font-size:12px; color:#6b7280; font-weight:600; margin-bottom:6px;">อีเมลผู้รับ</div>' +
-        '<input type="email" value="' + esc(state.esignModalTo) + '" data-action="esignModalTo" placeholder="กรอกอีเมลลูกค้า" style="width:100%; box-sizing:border-box; padding:10px 14px; border-radius:10px; border:1px solid rgba(247,130,59,0.3); background:#fafafa; font-size:14px; color:#212529; outline:none; margin-bottom:14px;" />' +
+        '<div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:14px;">' +
+          '<div style="flex:1; min-width:180px;">' +
+            '<div style="font-size:12px; color:#6b7280; font-weight:600; margin-bottom:6px;">ชื่อผู้เซ็น</div>' +
+            '<input type="text" value="' + esc(state.esignModalName) + '" data-action="esignModalName" placeholder="ชื่อ-นามสกุลลูกค้า" style="width:100%; box-sizing:border-box; padding:10px 14px; border-radius:10px; border:1px solid rgba(247,130,59,0.3); background:#fafafa; font-size:14px; color:#212529; outline:none;" />' +
+          '</div>' +
+          '<div style="flex:1; min-width:180px;">' +
+            '<div style="font-size:12px; color:#6b7280; font-weight:600; margin-bottom:6px;">อีเมลผู้รับ</div>' +
+            '<input type="email" value="' + esc(state.esignModalTo) + '" data-action="esignModalTo" placeholder="กรอกอีเมลลูกค้า" style="width:100%; box-sizing:border-box; padding:10px 14px; border-radius:10px; border:1px solid rgba(247,130,59,0.3); background:#fafafa; font-size:14px; color:#212529; outline:none;" />' +
+          '</div>' +
+        '</div>' +
         '<div style="font-size:12px; color:#6b7280; font-weight:600; margin-bottom:6px;">หนังสือฉบับที่จะส่งให้เซ็น (ครั้งที่)</div>' +
-        '<select data-action="esignModalLetterNo" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid rgba(247,130,59,0.3); background:#fff; font-size:13.5px; color:#212529; outline:none; margin-bottom:8px;">' + options + '</select>' +
-        '<div style="font-size:11px; color:#8d93a0; margin-bottom:20px;">ตำแหน่งกรอบลายเซ็นเป็นค่าประมาณตามรูปแบบหนังสือมาตรฐาน หากเนื้อหายาวผิดปกติควรเปิดตรวจสอบก่อนส่งจริง</div>' +
+        '<select data-action="esignModalLetterNo" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid rgba(247,130,59,0.3); background:#fff; font-size:13.5px; color:#212529; outline:none; margin-bottom:18px;">' + options + '</select>' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:14px; color:#212529; margin-bottom:4px;">📍 วางกรอบลายเซ็นบนเอกสาร</div>' +
+        '<div style="font-size:11.5px; color:#8d93a0; margin-bottom:10px;">เลือกชนิดกรอบ แล้วคลิกตำแหน่งบนเอกสารด้านล่างเพื่อวาง — คลิกกรอบที่วางแล้วเพื่อลบ</div>' +
+        '<div style="display:flex; gap:8px; margin-bottom:12px;">' + typeBtn('signature', '✍️ ลายเซ็น') + typeBtn('date', '📅 วันที่') +
+          (state.esignModalFields.length ? '<div data-action="clearEsignFields" style="padding:7px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:pointer; background:#fff; color:#6b7280; border:1px solid #e9ecef; margin-left:auto;">ล้างกรอบทั้งหมด</div>' : '') +
+        '</div>' +
+        '<div style="margin-bottom:8px; max-height:340px; overflow-y:auto; padding:2px;">' + renderEsignPdfPreview() + '</div>' +
+        '<div style="font-size:11px; color:#8d93a0; margin-bottom:20px;">ต้องวางกรอบ "ลายเซ็น" อย่างน้อย 1 จุดก่อนส่งได้</div>' +
         '<div style="display:flex; justify-content:flex-end; gap:10px;">' +
           '<div data-action="closeSendEsignModal" style="padding:11px 20px; border-radius:10px; color:#6b7280; font-size:13.5px; font-weight:600; cursor:pointer;">ยกเลิก</div>' +
           '<div data-action="confirmSendEsign" style="background:' + (state.esignModalSending ? '#8d93a0' : 'linear-gradient(135deg,#f7823b,#f0630f)') + '; color:#fff; padding:11px 22px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer;">' + (state.esignModalSending ? '⏳ กำลังส่ง...' : '🖋️ ส่งให้เซ็น') + '</div>' +
@@ -10191,6 +10318,17 @@
         case 'openSendEsign': openSendEsignModal(t.getAttribute('data-order')); break;
         case 'closeSendEsignModal': closeSendEsignModal(); break;
         case 'confirmSendEsign': confirmSendEsign(); break;
+        case 'esignFieldType': state.esignModalActiveFieldType = t.getAttribute('data-type'); render(); break;
+        case 'clearEsignFields': state.esignModalFields = []; render(); break;
+        case 'removeEsignField': removeEsignField(Number(t.getAttribute('data-idx'))); break;
+        case 'esignPageClick': {
+          var pageNum = Number(t.getAttribute('data-page'));
+          var pageRect = t.getBoundingClientRect();
+          var clickX = (e.clientX - pageRect.left) / pageRect.width;
+          var clickYTop = (e.clientY - pageRect.top) / pageRect.height;
+          addEsignField(pageNum, clickX, clickYTop);
+          break;
+        }
         case 'saveCallLog': saveCallLog(); break;
         case 'loginSubmit': handleLogin(); break;
         case 'newStaffUser': openNewStaffUser(); break;
@@ -10317,7 +10455,7 @@
         case 'emailModalLetterNo': state.emailModalLetterNo = Number(t.value); break;
         case 'esignModalTo': state.esignModalTo = t.value; break;
         case 'esignModalName': state.esignModalName = t.value; break;
-        case 'esignModalLetterNo': state.esignModalLetterNo = Number(t.value); break;
+        case 'esignModalLetterNo': state.esignModalLetterNo = Number(t.value); loadEsignPdfPreview(state.esignModalTarget, state.esignModalLetterNo); break;
         case 'smsModalDraft': state.smsModalDraft = t.value; break;
         case 'smsModalTemplate': selectSmsTemplate(t.value); break;
         case 'smsTemplateName': updateSmsTemplateField(t.getAttribute('data-tpl'), 'name', t.value); break;
