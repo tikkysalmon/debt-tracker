@@ -985,9 +985,9 @@
   // เส้นทางเดิมขึ้น "Delivered" ใน Thaibulksms dashboard จริง แต่ไม่เคยไปถึง Gmail เลย (หาไม่เจอแม้
   // ใน All Mail/Spam) จึงเปลี่ยนมาใช้ path เดียวกับจดหมายทวงหนี้ที่พิสูจน์แล้วว่าส่งถึงจริง (2026-08-19)
   var ESIGN_EMAIL_TEMPLATE_ID = 'b3b0238c-e858-4742-9e63-28b2bf69c668';
-  // ปิดปุ่ม "ส่งให้เซ็นออนไลน์" ไว้ก่อนชั่วคราว (2026-08-19) — ปัญหาการส่งอีเมลจริงยังไม่นิ่ง
-  // (ThaiBulk รายงาน "Delivered" แต่อีเมลไม่เข้าถึงผู้รับจริง) เปิดกลับเป็น true เมื่อทดสอบผ่านแล้ว
-  var ESIGN_FEATURE_ENABLED = false;
+  // เปิดใช้งานอีกครั้ง (2026-08-19) — เปลี่ยนจากส่งอีเมลอัตโนมัติ (ยังมีปัญหาความเสถียรกับ ThaiBulk/
+  // Gmail อยู่) มาเป็นสร้างลิงก์ให้พนักงานคัดลอกส่งเองแทน จึงไม่ติดปัญหาอีเมลอีกต่อไป
+  var ESIGN_FEATURE_ENABLED = true;
   var esignModalPdfBase64 = null; // cache ของไฟล์ PDF ที่กำลังเตรียมส่งเซ็น (base64) — ไม่ใส่ใน state
   // เพราะข้อมูลใหญ่และไม่จำเป็นต้องกระตุ้น re-render เอง
   var esignPdfjsWorkerReady = false;
@@ -1774,6 +1774,7 @@
     uploadMsgLetterhead: '',
     emailModalTarget: null, emailModalTrack: '', emailModalTo: '', emailModalLetterNo: null, emailModalSending: false,
     esignModalTarget: null, esignModalLetterNo: null, esignModalSending: false,
+    esignResultLinks: null, // [{name, email, signUrl}] — โชว์หลังสร้างเอกสารสำเร็จ ให้พนักงานคัดลอกส่งเอง
     // ผู้เซ็นหลายคนต่อเอกสารได้ (เช่น ลูกหนี้ + ผู้ค้ำ) — signers: [{name,email,role,signOrder}]
     esignModalSigners: [], esignModalActiveSignerIndex: 0,
     esignModalNewSignerName: '', esignModalNewSignerEmail: '', esignModalNewSignerRole: '', esignModalNewSignerOrder: '1',
@@ -4695,6 +4696,8 @@
     }
     state.esignModalSending = true;
     render();
+    // skipEmail เสมอตอนนี้: ปัญหาความเสถียรของอีเมล (ThaiBulk/Gmail) ยังไม่คลี่คลาย — สร้างลิงก์แล้ว
+    // โชว์ให้พนักงานคัดลอกไปส่งเองผ่านช่องทางอื่น (LINE/SMS/บอกด้วยวาจา) แทนการพึ่งอีเมลอัตโนมัติ
     fetch(ESIGN_EDGE_BASE + '/esign-create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + currentAccessToken },
@@ -4710,40 +4713,21 @@
         fields: state.esignModalFields.map(function (f) {
           return { signerIndex: f.signerIndex, fieldType: f.fieldType, pageNumber: f.pageNumber, x: f.x, y: f.y, width: f.width, height: f.height };
         }),
-        skipEmail: true // ส่งอีเมลเชิญเองผ่าน /api/send-esign-email ด้านล่างแทน (ดูเหตุผลที่ ESIGN_EMAIL_TEMPLATE_ID)
+        skipEmail: true
       })
     })
       .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
       .then(function (r) {
-        if (!r.ok || !r.data || r.data.error) {
-          state.esignModalSending = false;
-          window.alert('ส่งลิงก์เซ็นออนไลน์ไม่สำเร็จ: ' + (r.data && r.data.error ? r.data.error : 'unknown error'));
-          render();
-          throw new Error('__handled__'); // ตัดไม่ให้ไหลต่อไปโหมด email-sending ด้านล่าง
-        }
-        var docTitle = 'หนังสือบอกเลิกสัญญาเช่าซื้อ - เลขที่ ' + orderId + ' (ครั้งที่ ' + entry.no + ')';
-        return Promise.all((r.data.signers || []).map(function (s) {
-          return fetch('/api/send-esign-email', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              to: s.email,
-              templateUuid: ESIGN_EMAIL_TEMPLATE_ID,
-              subject: 'กรุณาลงลายมือชื่อ: ' + docTitle,
-              customerName: s.name,
-              orderId: orderId,
-              actionUrl: s.signUrl
-            })
-          }).then(function (res) { return res.json().then(function (data) { return { name: s.name, email: s.email, ok: res.ok, data: data }; }); });
-        })).then(function (emailResults) { return { documentId: r.data.documentId, emailResults: emailResults }; });
-      })
-      .then(function (r) {
         state.esignModalSending = false;
-        var failedEmails = (r.emailResults || []).filter(function (e) { return !e.ok || (e.data && e.data.error); });
+        if (!r.ok || !r.data || r.data.error) {
+          window.alert('สร้างลิงก์เซ็นออนไลน์ไม่สำเร็จ: ' + (r.data && r.data.error ? r.data.error : 'unknown error'));
+          render();
+          return;
+        }
         var esignHistory = (order.esignHistory || []).concat([{
           at: nowTimestamp(), by: currentActorName(),
           to: signers.map(function (s) { return s.name + ' <' + s.email + '>'; }).join(', '),
-          letterNo: entry.no, documentId: r.documentId
+          letterNo: entry.no, documentId: r.data.documentId
         }]);
         updateOrderField(orderId, 'esignHistory', esignHistory);
         state.esignModalTarget = null;
@@ -4751,21 +4735,24 @@
         state.esignModalFields = [];
         state.esignModalPageImages = null;
         esignModalPdfBase64 = null;
+        state.esignResultLinks = (r.data.signers || []).map(function (s) { return { name: s.name, email: s.email, signUrl: s.signUrl }; });
         render();
-        if (failedEmails.length) {
-          window.alert('สร้างเอกสารสำเร็จ แต่ส่งอีเมลไม่สำเร็จสำหรับ: ' +
-            failedEmails.map(function (e) { return e.name + ' (' + e.email + ')'; }).join(', ') +
-            '\n\nสาเหตุ: ' + ((failedEmails[0].data && failedEmails[0].data.error) || 'ไม่ทราบสาเหตุ'));
-        } else {
-          window.alert('ส่งลิงก์เซ็นออนไลน์สำเร็จ (ครั้งที่ ' + entry.no + ') — ผู้เซ็นทุกคนจะได้รับอีเมลลิงก์สำหรับลงลายมือชื่อ');
-        }
       })
       .catch(function (err) {
-        if (err && err.message === '__handled__') return; // ขึ้น alert และ render() ไปแล้วในขั้นตอนก่อนหน้า
         state.esignModalSending = false;
-        window.alert('เกิดข้อผิดพลาดขณะส่งให้เซ็นออนไลน์: ' + (err && err.message ? err.message : String(err)));
+        window.alert('เกิดข้อผิดพลาดขณะสร้างลิงก์เซ็นออนไลน์: ' + (err && err.message ? err.message : String(err)));
         render();
       });
+  }
+  function copyEsignLink(url) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(function () { /* no-op — ปุ่มเปลี่ยนข้อความเองผ่าน CSS :active ไม่ได้ในสตริงนี้ */ });
+    }
+    window.alert('คัดลอกลิงก์แล้ว — นำไปวางส่งให้ลูกค้าทาง LINE/SMS หรือช่องทางอื่นได้เลย');
+  }
+  function closeEsignResultModal() {
+    state.esignResultLinks = null;
+    render();
   }
   // Marks a single งวด as cross-checked against the reference CRM (or un-marks it) — a manual QA
   // step staff run monthly per ครบกำหนด month, per user request 2026-07-30: without this, a
@@ -9299,6 +9286,9 @@
     if (state.esignModalTarget) {
       html += renderSendEsignModal();
     }
+    if (state.esignResultLinks) {
+      html += renderEsignResultModal();
+    }
     if (state.cancelLetterModalTarget) {
       html += renderCancelLetterModal();
     }
@@ -9547,7 +9537,7 @@
     return '<div style="position:fixed; inset:0; z-index:9999; background:rgba(33,37,41,0.35); display:flex; align-items:center; justify-content:center; padding:20px;">' +
       '<div style="max-width:640px; width:100%; max-height:92vh; overflow-y:auto; background:#fff; border-radius:20px; padding:26px 26px 22px; box-shadow:0 24px 60px rgba(33,37,41,0.3);">' +
         '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#212529; margin-bottom:6px;">🖋️ ส่งให้ลงลายมือชื่ออิเล็กทรอนิกส์</div>' +
-        '<div style="font-size:12px; color:#8d93a0; margin-bottom:18px;">ผู้เซ็นแต่ละคนจะได้รับอีเมลลิงก์ของตัวเองให้เปิดดูและลงลายมือชื่อในหนังสือฉบับนี้ออนไลน์ ไม่ต้องพิมพ์/เซ็นกระดาษ</div>' +
+        '<div style="font-size:12px; color:#8d93a0; margin-bottom:18px;">ระบบจะสร้างลิงก์เซ็นเฉพาะของแต่ละคนให้ — คัดลอกไปส่งเองผ่าน LINE/SMS/บอกด้วยวาจาได้เลย ไม่ต้องพิมพ์/เซ็นกระดาษ</div>' +
         esignHistoryHtml +
         '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:14px; color:#212529; margin-bottom:4px;">👥 เพิ่มชื่อที่ต้องเซ็น</div>' +
         '<div style="font-size:11.5px; color:#8d93a0; margin-bottom:10px;">ใส่ชื่อและอีเมลของทุกคนที่ต้องลงลายมือชื่อในเอกสารนี้ (เช่น ลูกหนี้ ผู้ค้ำประกัน)</div>' +
@@ -9571,7 +9561,31 @@
         '<div style="font-size:11px; color:#8d93a0; margin-bottom:20px;">ทุกคนที่เพิ่มไว้ต้องมีกรอบ "ลายเซ็น" อย่างน้อย 1 จุดก่อนส่งได้</div>' +
         '<div style="display:flex; justify-content:flex-end; gap:10px;">' +
           '<div data-action="closeSendEsignModal" style="padding:11px 20px; border-radius:10px; color:#6b7280; font-size:13.5px; font-weight:600; cursor:pointer;">ยกเลิก</div>' +
-          '<div data-action="confirmSendEsign" style="background:' + (state.esignModalSending ? '#8d93a0' : 'linear-gradient(135deg,#f7823b,#f0630f)') + '; color:#fff; padding:11px 22px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer;">' + (state.esignModalSending ? '⏳ กำลังส่ง...' : '🖋️ ส่งให้เซ็น') + '</div>' +
+          '<div data-action="confirmSendEsign" style="background:' + (state.esignModalSending ? '#8d93a0' : 'linear-gradient(135deg,#f7823b,#f0630f)') + '; color:#fff; padding:11px 22px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer;">' + (state.esignModalSending ? '⏳ กำลังสร้างลิงก์...' : '🔗 สร้างลิงก์เซ็น') + '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function renderEsignResultModal() {
+    var links = state.esignResultLinks || [];
+    var rows = links.map(function (s) {
+      return '<div style="background:rgba(247,130,59,0.05); border:1px solid rgba(247,130,59,0.18); border-radius:10px; padding:10px 12px; margin-bottom:8px;">' +
+        '<div style="font-weight:700; font-size:13px; color:#212529; margin-bottom:2px;">' + esc(s.name) + '</div>' +
+        '<div style="font-size:11.5px; color:#8d93a0; margin-bottom:6px;">' + esc(s.email) + '</div>' +
+        '<div style="display:flex; gap:8px; align-items:center;">' +
+          '<input readonly value="' + esc(s.signUrl) + '" onclick="this.select();" style="flex:1; box-sizing:border-box; padding:8px 10px; border-radius:8px; border:1px solid #e9ecef; background:#fff; font-size:11.5px; color:#495057;" />' +
+          '<div data-action="copyEsignLink" data-url="' + esc(s.signUrl) + '" style="background:linear-gradient(135deg,#f7823b,#f0630f); color:#fff; padding:8px 14px; border-radius:8px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;">📋 คัดลอก</div>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+    return '<div style="position:fixed; inset:0; z-index:9999; background:rgba(33,37,41,0.35); display:flex; align-items:center; justify-content:center; padding:20px;">' +
+      '<div style="max-width:520px; width:100%; max-height:90vh; overflow-y:auto; background:#fff; border-radius:20px; padding:26px; box-shadow:0 24px 60px rgba(33,37,41,0.3);">' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#212529; margin-bottom:6px;">🔗 สร้างลิงก์เซ็นสำเร็จ</div>' +
+        '<div style="font-size:12px; color:#8d93a0; margin-bottom:18px;">คัดลอกลิงก์ของแต่ละคนไปส่งเองผ่าน LINE/SMS/บอกด้วยวาจาได้เลย</div>' +
+        rows +
+        '<div style="display:flex; justify-content:flex-end; margin-top:14px;">' +
+          '<div data-action="closeEsignResultModal" style="background:linear-gradient(135deg,#f7823b,#f0630f); color:#fff; padding:11px 22px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer;">เสร็จสิ้น</div>' +
         '</div>' +
       '</div>' +
     '</div>';
@@ -10421,6 +10435,8 @@
         case 'esignFieldType': state.esignModalActiveFieldType = t.getAttribute('data-type'); render(); break;
         case 'clearEsignFields': state.esignModalFields = []; render(); break;
         case 'removeEsignField': removeEsignField(Number(t.getAttribute('data-idx'))); break;
+        case 'copyEsignLink': copyEsignLink(t.getAttribute('data-url')); break;
+        case 'closeEsignResultModal': closeEsignResultModal(); break;
         case 'addEsignSigner': addEsignSigner(); break;
         case 'removeEsignSigner': removeEsignSigner(Number(t.getAttribute('data-idx'))); break;
         case 'esignPageClick': {
