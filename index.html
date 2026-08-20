@@ -9523,6 +9523,7 @@
       return '<div data-action="noopEsignField" data-drag-field="true" data-idx="' + idx + '" title="ลากเพื่อย้ายตำแหน่ง" style="position:absolute; left:' + (f.x * 100) + '%; width:' + (f.width * 100) + '%; top:' + ((1 - f.y - f.height) * 100) + '%; height:' + (f.height * 100) + '%; border:2px solid #f0630f; background:rgba(247,130,59,0.16); border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700; color:#f0630f; cursor:move; text-align:center; padding:2px 16px; overflow:hidden;">' +
         label +
         '<span data-action="removeEsignField" data-idx="' + idx + '" title="ลบกรอบนี้" style="position:absolute; top:-2px; right:-2px; width:16px; height:16px; line-height:16px; background:#f0630f; color:#fff; border-radius:50%; font-size:10px; cursor:pointer;">✕</span>' +
+        '<span data-resize-field="true" data-idx="' + idx + '" title="ลากเพื่อย่อ/ขยาย" style="position:absolute; bottom:-4px; right:-4px; width:13px; height:13px; background:#fff; border:2px solid #f0630f; border-radius:50%; cursor:nwse-resize;"></span>' +
       '</div>';
     }).join('');
   }
@@ -10356,7 +10357,7 @@
     // ทำให้กรอบที่กำลังลากหลุดจากการอ้างอิงกลางคัน) แล้วค่อยบันทึกตำแหน่งจริงลง state ตอนปล่อยมือ
     function startEsignFieldDrag(e) {
       var t = e.target.closest('[data-drag-field]');
-      if (!t || e.target.closest('[data-action="removeEsignField"]')) return;
+      if (!t || e.target.closest('[data-action="removeEsignField"]') || e.target.closest('[data-resize-field]')) return;
       var idx = Number(t.getAttribute('data-idx'));
       var field = state.esignModalFields[idx];
       var wrap = t.parentElement;
@@ -10399,6 +10400,61 @@
     }
     app.addEventListener('mousedown', startEsignFieldDrag);
     app.addEventListener('touchstart', startEsignFieldDrag, { passive: false });
+
+    // ย่อ/ขยายกรอบลายเซ็น/วันที่ ผ่านจุดจับที่มุมล่างขวา — มุมบนซ้ายของกรอบ (left/screen-top) ต้อง
+    // อยู่นิ่งระหว่างย่อขยาย (พฤติกรรมมาตรฐาน) ในระบบพิกัดนี้ที่ y วัดจาก "ล่าง" ของหน้าแบบ PDF การ
+    // รักษา screen-top ให้คงที่ขณะ height เปลี่ยน ต้องคำนวณ y ใหม่ทุกครั้งจาก topPct ที่ตรึงไว้ (T0)
+    // ส่วน x ไม่ต้องแตะเลยเพราะ left ไม่ขึ้นกับ width ในระบบพิกัดนี้อยู่แล้ว
+    var MIN_FIELD_SIZE = 0.03;
+    function startEsignFieldResize(e) {
+      var handle = e.target.closest('[data-resize-field]');
+      if (!handle) return;
+      var idx = Number(handle.getAttribute('data-idx'));
+      var field = state.esignModalFields[idx];
+      var box = handle.closest('[data-drag-field]');
+      var wrap = box && box.parentElement;
+      if (!field || !box || !wrap) return;
+      e.preventDefault();
+      e.stopPropagation();
+      var wrapRect = wrap.getBoundingClientRect();
+      var startPoint = e.touches ? e.touches[0] : e;
+      var startX = startPoint.clientX, startY = startPoint.clientY;
+      var L0 = field.x; // screen-left — คงที่ตลอดการย่อ/ขยาย
+      var T0 = 1 - field.y - field.height; // screen-top — คงที่ตลอดการย่อ/ขยาย
+      var startWidthPct = field.width, startHeightPct = field.height;
+      var latestWidthPct = startWidthPct, latestHeightPct = startHeightPct;
+      var resized = false;
+
+      function onMove(ev) {
+        var p = ev.touches ? ev.touches[0] : ev;
+        var dxPct = (p.clientX - startX) / wrapRect.width;
+        var dyPct = (p.clientY - startY) / wrapRect.height;
+        latestWidthPct = Math.max(MIN_FIELD_SIZE, Math.min(1 - L0, startWidthPct + dxPct));
+        latestHeightPct = Math.max(MIN_FIELD_SIZE, Math.min(1 - T0, startHeightPct + dyPct));
+        box.style.width = (latestWidthPct * 100) + '%';
+        box.style.height = (latestHeightPct * 100) + '%';
+        resized = true;
+        if (ev.cancelable) ev.preventDefault();
+      }
+      function onEnd() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onEnd);
+        document.removeEventListener('touchmove', onMove);
+        document.removeEventListener('touchend', onEnd);
+        if (resized) {
+          field.width = latestWidthPct;
+          field.height = latestHeightPct;
+          field.y = 1 - T0 - latestHeightPct;
+          render();
+        }
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onEnd);
+      document.addEventListener('touchmove', onMove, { passive: false });
+      document.addEventListener('touchend', onEnd);
+    }
+    app.addEventListener('mousedown', startEsignFieldResize);
+    app.addEventListener('touchstart', startEsignFieldResize, { passive: false });
 
     app.addEventListener('click', function (e) {
       // Close an open multi-select filter dropdown (สถานะการชำระ/ประเภทการซื้อ) on any click
