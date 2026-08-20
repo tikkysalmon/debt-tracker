@@ -168,13 +168,16 @@ function updateSubmitState() {
 }
 
 function openSignatureModal(targetBox) {
-  const savedSignature = localStorage.getItem(SAVED_SIGNATURE_KEY);
   // จำกัดเฉพาะฝั่งพนักงาน/บริษัทให้แนบรูปลายเซ็นได้ (เหมาะกับคนที่เซ็นซ้ำๆ ทุกฉบับ) — ฝั่งลูกค้า
   // (ลูกหนี้/ผู้ค้ำ) ต้องวาดสดหรือให้ระบบพิมพ์ชื่อให้เท่านั้น เพื่อไม่ให้แนบรูปใดๆ มาแอบอ้างเป็นลายเซ็นได้
   // เช็คทั้งชื่อและบทบาท เพราะ preset ที่ตั้งไว้ใส่คำว่า "พนักงาน" ในชื่อ ("พนักงานฝ่ายเร่งรัดหนี้สิน")
   // ไม่ใช่ในบทบาท (role ใส่เป็น "ผู้แทนผู้ให้เช่าซื้อ" แทน)
   const staffCheckText = ((sessionData && sessionData.signerName) || "") + " " + ((sessionData && sessionData.signerRole) || "");
   const isStaffSigner = /พนักงาน/.test(staffCheckText);
+  // จำ/โหลดลายเซ็นที่บันทึกไว้ในเครื่องนี้เฉพาะฝั่งพนักงานเท่านั้น (ใช้เครื่องเดิมเซ็นซ้ำทุกวัน) —
+  // ฝั่งลูกค้าต้องไม่จำและไม่โหลดลายเซ็นที่เคยบันทึกไว้เด็ดขาด ป้องกันกรณีลูกค้าเซ็นบนเครื่อง/เบราว์เซอร์
+  // เดียวกับที่พนักงานใช้ (หรือลูกค้าคนอื่นเคยเซ็น) แล้วลายเซ็นของคนก่อนหน้าติดมาให้ใช้ซ้ำโดยไม่ตั้งใจ
+  const savedSignature = isStaffSigner ? localStorage.getItem(SAVED_SIGNATURE_KEY) : null;
   const modal = document.createElement("div");
   modal.className = "sig-modal";
   modal.innerHTML = `
@@ -330,7 +333,10 @@ function openSignatureModal(targetBox) {
       return;
     }
     signatureDataUrl = canvas.toDataURL("image/png");
-    try { localStorage.setItem(SAVED_SIGNATURE_KEY, signatureDataUrl); } catch (e) { /* เต็มโควต้า/ปิด storage — ไม่ใช่เรื่องคอขวด ข้ามได้ */ }
+    // บันทึกไว้ใช้ซ้ำเฉพาะฝั่งพนักงานเท่านั้น (ดูเหตุผลตอนต้นฟังก์ชัน openSignatureModal)
+    if (isStaffSigner) {
+      try { localStorage.setItem(SAVED_SIGNATURE_KEY, signatureDataUrl); } catch (e) { /* เต็มโควต้า/ปิด storage — ไม่ใช่เรื่องคอขวด ข้ามได้ */ }
+    }
     document.querySelectorAll(".field-box").forEach((box) => {
       if (box.textContent.includes("ลงลายมือชื่อ") || box.textContent.includes("เซ็นกำกับ")) {
         box.innerHTML = `<img src="${signatureDataUrl}" />`;
