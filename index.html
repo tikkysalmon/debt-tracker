@@ -923,6 +923,30 @@
     try { window.localStorage.removeItem(STORAGE_KEY); } catch (e) {}
     appliedPaymentKeys = {};
   }
+  // Waits for a real, confirmed cloud save (2026-08-20) — needed ONLY for ตัดจำหน่ายหนี้สูญ's submit/
+  // approve/reject/hold/sign actions, which are the one place in this app where an edit immediately
+  // hands out a link (writeoff-review.html) that a NO-LOGIN visitor opens by reading state.json
+  // straight off Supabase — bypassing the normal "edit now, staff clicks 💾 บันทึกการเปลี่ยนแปลง
+  // whenever convenient" flow every other edit in this app relies on (see commitChanges's comment).
+  // Root-caused 2026-08-20: a real submitted batch showed "ไม่พบเอกสารนี้" on the review page because
+  // the batch only existed in this browser's local state — nothing had triggered cloudSaveNow yet.
+  // Polls cloudSaveInFlight/cloudSavePending/cloudDirty (module vars, not on state) rather than
+  // threading a callback through cloudSaveNow's own async machinery, which has no promise to hook.
+  function waitForCloudSaveSettled(timeoutMs) {
+    return new Promise(function (resolve, reject) {
+      var deadline = Date.now() + (timeoutMs || 25000);
+      function check() {
+        if (!cloudSaveInFlight && !cloudSavePending) {
+          if (cloudDirty) reject(new Error('บันทึกขึ้นฐานข้อมูลกลางไม่สำเร็จ — ' + (cloudErrorDetail || 'ไม่ทราบสาเหตุ')));
+          else resolve();
+          return;
+        }
+        if (Date.now() > deadline) { reject(new Error('บันทึกขึ้นฐานข้อมูลกลางใช้เวลานานเกินไป')); return; }
+        setTimeout(check, 400);
+      }
+      check();
+    });
+  }
   // Manual-save entry point — the only place any edit (งวด/order fields, customer name/id, notes,
   // ตรวจสอบ CRM) actually reaches localStorage/cloud now. Every edit function just flips
   // hasUnsavedChanges and re-renders; this is what a staff member's บันทึก click calls.
@@ -1780,7 +1804,7 @@
     postponeTarget: null, postponeDate: '', postponeReason: '', postponeLateFee: 0, postponeUnlockFee: 0,
     restructureTarget: null, restructureType: '', restructureOldBalance: '', restructureNewCount: '',
     restructureNewAmount: '', restructureDate: '', restructureApprover: '', restructureEvidence: '',
-    writeoffSelected: {}, writeoffSubmitting: false, writeoffSigning: false, writeoffCandidatePage: 1,
+    writeoffSelected: {}, writeoffSubmitting: false, writeoffSigning: false, writeoffDeciding: false, writeoffCandidatePage: 1,
     noteModalTarget: null, noteModalDraft: '',
     smsTemplates: (persisted && Array.isArray(persisted.smsTemplates) && persisted.smsTemplates.length) ? persisted.smsTemplates : DEFAULT_SMS_TEMPLATES,
     smsModalTarget: null, smsModalPhone: '', smsModalTemplateId: '', smsModalDraft: '', smsModalManaging: false, smsModalSending: false,
@@ -4788,6 +4812,7 @@
     state.writeoffSubmitting = true;
     render();
     var container;
+    var pdfCreated = false;
     getLetterheadBlobUrl()
       .then(function (letterheadSrc) {
         container = document.createElement('div');
@@ -4832,30 +4857,48 @@
           return Object.assign({}, o, { writeoffHistory: (o.writeoffHistory || []).concat([myEntry]) });
         });
         state.writeoffSelected = {};
-        state.writeoffSubmitting = false;
         state.hasUnsavedChanges = true;
         if (container.parentNode) document.body.removeChild(container);
+        pdfCreated = true;
+        // Force the real cloud save now instead of waiting for a staff member to click 💾
+        // บันทึกการเปลี่ยนแปลง — this is the one action in the app that immediately hands out a
+        // link (writeoff-review.html) a NO-LOGIN visitor opens by reading state.json straight off
+        // Supabase, so the batch MUST actually be on the server before that link is any good.
+        // Root-caused 2026-08-20: a real submission showed "ไม่พบเอกสารนี้" because nothing had
+        // triggered a save yet — see waitForCloudSaveSettled.
+        commitChanges();
         render();
-        // Auto-copy right after creation so staff can paste-send immediately without hunting for
-        // the "คัดลอกลิงก์" button on the batch card below — window.alert (not the flash-checkmark
-        // used elsewhere) since there's no button element here to flash against.
-        copyWriteoffLinksSilently(path, batchId).then(function () {
-          window.alert('สร้างเอกสารสำเร็จ และคัดลอกลิงก์ไว้ในคลิปบอร์ดแล้ว — วางส่งให้ผู้บริหารได้เลย');
+        return waitForCloudSaveSettled(25000);
+      })
+      .then(function () {
+        state.writeoffSubmitting = false;
+        render();
+        // Auto-copy right after the save is confirmed so staff can paste-send immediately without
+        // hunting for the "คัดลอกลิงก์" button on the batch card below — window.alert (not the
+        // flash-checkmark used elsewhere) since there's no button element here to flash against.
+        return copyWriteoffLinksSilently(null, batchId).then(function () {
+          window.alert('สร้างเอกสารสำเร็จ บันทึกขึ้นฐานข้อมูลกลางเรียบร้อยแล้ว และคัดลอกลิงก์ไว้ในคลิปบอร์ดแล้ว — วางส่งให้ผู้บริหารได้เลย');
         }).catch(function (err) {
-          window.alert('สร้างเอกสารสำเร็จ — แต่คัดลอกลิงก์ไม่สำเร็จ: ' + (err && err.message || 'ไม่ทราบสาเหตุ'));
+          window.alert('สร้างเอกสารสำเร็จและบันทึกแล้ว — แต่คัดลอกลิงก์ไม่สำเร็จ: ' + (err && err.message || 'ไม่ทราบสาเหตุ') + ' — เลื่อนลงไปกด "คัดลอกลิงก์" ที่รายการด้านล่างแทน');
         });
       })
       .catch(function (err) {
         state.writeoffSubmitting = false;
         if (container && container.parentNode) document.body.removeChild(container);
-        window.alert('สร้างเอกสารไม่สำเร็จ: ' + (err && err.message || err));
         render();
+        // pdfCreated distinguishes the two genuinely different failure points — a PDF/upload
+        // failure (before it flips true) means nothing was created at all; a failure after it
+        // means the document exists but the save-to-cloud step (or the auto-copy) is what broke.
+        window.alert(pdfCreated
+          ? 'สร้างเอกสารสำเร็จแต่บันทึกขึ้นฐานข้อมูลกลางไม่สำเร็จ: ' + (err && err.message || err) + ' — กรุณากด 💾 บันทึกการเปลี่ยนแปลง แล้วลองคัดลอกลิงก์จากรายการด้านล่างอีกครั้ง'
+          : 'สร้างเอกสารไม่สำเร็จ: ' + (err && err.message || err));
       });
   }
   // อนุมัติ / ไม่อนุมัติ / รอพิจารณา — mutates the batch's single writeoffHistory entry in place
   // (unlike letterHistory/postponeHistory, a batch is one evolving ticket through its lifecycle, not
   // a new append per event) so "the latest entry" always reflects the batch's current true state.
   function decideWriteoffBatch(batchId, decision, reason) {
+    if (state.writeoffDeciding) return;
     if (decision === 'reject' && !(reason || '').trim()) { window.alert('กรุณาระบุเหตุผลที่ไม่อนุมัติ'); return; }
     var approver = currentActorName();
     var decidedAt = nowTimestamp();
@@ -4873,7 +4916,21 @@
       return Object.assign({}, o, { writeoffHistory: hist.slice(0, -1).concat([updated]) });
     });
     state.hasUnsavedChanges = true;
+    // Force the save now (see waitForCloudSaveSettled's comment on confirmSubmitWriteoffBatch) — a
+    // staff member deciding in-app must be just as reliably persisted as the anonymous flow's own
+    // writes (api/writeoff-action.js writes straight to Supabase, no client-side unsaved-changes
+    // concept at all), otherwise the exec's own link could show stale status after a staff decision.
+    state.writeoffDeciding = true;
+    commitChanges();
     render();
+    waitForCloudSaveSettled(25000).then(function () {
+      state.writeoffDeciding = false;
+      render();
+    }).catch(function (err) {
+      state.writeoffDeciding = false;
+      render();
+      window.alert('บันทึกขึ้นฐานข้อมูลกลางไม่สำเร็จ: ' + (err && err.message || err) + ' — กรุณากด 💾 บันทึกการเปลี่ยนแปลง แล้วลองอีกครั้ง');
+    });
   }
   function promptRejectWriteoffBatch(batchId) {
     var reason = window.prompt('เหตุผลที่ไม่อนุมัติ (จำเป็นต้องระบุ)', '');
@@ -4900,6 +4957,7 @@
     if (!db || !window.html2canvas || !(window.jspdf && window.jspdf.jsPDF)) { window.alert('ไม่พร้อมสร้างเอกสาร กรุณาลองใหม่'); return; }
     state.writeoffSigning = true;
     render();
+    var signedOk = false;
     var totalAmountRaw = orders.reduce(function (s, o) {
       var hist = o.writeoffHistory || [];
       return s + toNumber(hist[hist.length - 1].amountRaw);
@@ -4950,17 +5008,28 @@
           var updated = Object.assign({}, latest, { status: 'signed', signedAt: signedAt, signedBy: signer.trim() });
           return Object.assign({}, o, { writeoffHistory: hist.slice(0, -1).concat([updated]) });
         });
-        state.writeoffSigning = false;
         state.hasUnsavedChanges = true;
         if (container.parentNode) document.body.removeChild(container);
-        window.alert('เซ็นเอกสารตัดจำหน่ายหนี้สูญสำเร็จ (' + orders.length + ' ราย)');
+        signedOk = true;
+        // Force the save now — same reasoning as confirmSubmitWriteoffBatch/decideWriteoffBatch
+        // (see waitForCloudSaveSettled's comment): the sign action must be reliably on the server,
+        // not left for a staff member to remember to click 💾 later.
+        commitChanges();
         render();
+        return waitForCloudSaveSettled(25000);
+      })
+      .then(function () {
+        state.writeoffSigning = false;
+        render();
+        window.alert('เซ็นเอกสารตัดจำหน่ายหนี้สูญสำเร็จ และบันทึกขึ้นฐานข้อมูลกลางเรียบร้อยแล้ว (' + orders.length + ' ราย)');
       })
       .catch(function (err) {
         state.writeoffSigning = false;
         if (container && container.parentNode) document.body.removeChild(container);
-        window.alert('เซ็นเอกสารไม่สำเร็จ: ' + (err && err.message || err));
         render();
+        window.alert(signedOk
+          ? 'เซ็นเอกสารสำเร็จแต่บันทึกขึ้นฐานข้อมูลกลางไม่สำเร็จ: ' + (err && err.message || err) + ' — กรุณากด 💾 บันทึกการเปลี่ยนแปลง แล้วลองอีกครั้ง'
+          : 'เซ็นเอกสารไม่สำเร็จ: ' + (err && err.message || err));
       });
   }
   // ---------- ส่งเมลล์จดหมายทวงถามหนี้ (Thaibulksms Email API) ----------
