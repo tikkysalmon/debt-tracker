@@ -9517,7 +9517,13 @@
       var signer = state.esignModalSigners[f.signerIndex];
       var typeLabel = f.fieldType === 'signature' ? 'ลายเซ็น' : 'วันที่';
       var label = (signer ? esc(signer.name) + ' · ' : '') + typeLabel;
-      return '<div data-action="removeEsignField" data-idx="' + idx + '" title="คลิกเพื่อลบกรอบนี้" style="position:absolute; left:' + (f.x * 100) + '%; width:' + (f.width * 100) + '%; top:' + ((1 - f.y - f.height) * 100) + '%; height:' + (f.height * 100) + '%; border:2px solid #f0630f; background:rgba(247,130,59,0.16); border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700; color:#f0630f; cursor:pointer; text-align:center; padding:2px; overflow:hidden;">' + label + ' ✕</div>';
+      // data-action="noopEsignField" ที่กล่องนอกกันไม่ให้คลิกทะลุไปโดน data-action="esignPageClick"
+      // ของ .page-wrap ที่ครอบอยู่ (ซึ่งจะเผลอสร้างกรอบใหม่ซ้อนทับ) — closest() หา data-action ที่ใกล้
+      // ที่สุดเจอกล่องนี้ก่อนเสมอ ตัวลากย้ายตำแหน่งทำผ่าน mousedown/touchstart แยกต่างหาก (ดู initEvents)
+      return '<div data-action="noopEsignField" data-drag-field="true" data-idx="' + idx + '" title="ลากเพื่อย้ายตำแหน่ง" style="position:absolute; left:' + (f.x * 100) + '%; width:' + (f.width * 100) + '%; top:' + ((1 - f.y - f.height) * 100) + '%; height:' + (f.height * 100) + '%; border:2px solid #f0630f; background:rgba(247,130,59,0.16); border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700; color:#f0630f; cursor:move; text-align:center; padding:2px 16px; overflow:hidden;">' +
+        label +
+        '<span data-action="removeEsignField" data-idx="' + idx + '" title="ลบกรอบนี้" style="position:absolute; top:-2px; right:-2px; width:16px; height:16px; line-height:16px; background:#f0630f; color:#fff; border-radius:50%; font-size:10px; cursor:pointer;">✕</span>' +
+      '</div>';
     }).join('');
   }
   function renderEsignPdfPreview() {
@@ -10343,6 +10349,56 @@
   // ---------- Event delegation ----------
   function initEvents() {
     var app = document.getElementById('app');
+
+    // ลากกรอบลายเซ็น/วันที่ที่วางไว้แล้วไปวางตำแหน่งใหม่ — แยกจาก click dispatch เพราะต้องตาม
+    // ตำแหน่งเมาส์/นิ้วต่อเนื่องระหว่างลาก ไม่ใช่ action ครั้งเดียวจบแบบ click ทั่วไป จึงจัดการ DOM
+    // ตรงๆ ระหว่างลาก (ไม่เรียก render() จนกว่าจะปล่อย เพราะ render() รื้อสร้าง DOM ใหม่ทุกครั้งจะ
+    // ทำให้กรอบที่กำลังลากหลุดจากการอ้างอิงกลางคัน) แล้วค่อยบันทึกตำแหน่งจริงลง state ตอนปล่อยมือ
+    function startEsignFieldDrag(e) {
+      var t = e.target.closest('[data-drag-field]');
+      if (!t || e.target.closest('[data-action="removeEsignField"]')) return;
+      var idx = Number(t.getAttribute('data-idx'));
+      var field = state.esignModalFields[idx];
+      var wrap = t.parentElement;
+      if (!field || !wrap) return;
+      e.preventDefault();
+      var wrapRect = wrap.getBoundingClientRect();
+      var startPoint = e.touches ? e.touches[0] : e;
+      var startX = startPoint.clientX, startY = startPoint.clientY;
+      var startLeftPct = field.x;
+      var startTopPct = 1 - field.y - field.height;
+      var latestLeftPct = startLeftPct, latestTopPct = startTopPct;
+      var moved = false;
+
+      function onMove(ev) {
+        var p = ev.touches ? ev.touches[0] : ev;
+        var dxPct = (p.clientX - startX) / wrapRect.width;
+        var dyPct = (p.clientY - startY) / wrapRect.height;
+        latestLeftPct = Math.max(0, Math.min(1 - field.width, startLeftPct + dxPct));
+        latestTopPct = Math.max(0, Math.min(1 - field.height, startTopPct + dyPct));
+        t.style.left = (latestLeftPct * 100) + '%';
+        t.style.top = (latestTopPct * 100) + '%';
+        moved = true;
+        if (ev.cancelable) ev.preventDefault();
+      }
+      function onEnd() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onEnd);
+        document.removeEventListener('touchmove', onMove);
+        document.removeEventListener('touchend', onEnd);
+        if (moved) {
+          field.x = latestLeftPct;
+          field.y = 1 - latestTopPct - field.height;
+          render();
+        }
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onEnd);
+      document.addEventListener('touchmove', onMove, { passive: false });
+      document.addEventListener('touchend', onEnd);
+    }
+    app.addEventListener('mousedown', startEsignFieldDrag);
+    app.addEventListener('touchstart', startEsignFieldDrag, { passive: false });
 
     app.addEventListener('click', function (e) {
       // Close an open multi-select filter dropdown (สถานะการชำระ/ประเภทการซื้อ) on any click
