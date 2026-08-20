@@ -84,6 +84,15 @@
   // from ever mixing.
   var DATASET_ID = /[?&]dataset=old\b/.test(window.location.search) ? 'old' : 'current';
   var IS_OLD_DATASET = DATASET_ID === 'old';
+  // Deep-link straight into a specific ตัดจำหน่ายหนี้สูญ batch's approval screen (2026-08-20) — the
+  // URL sent via LINE push (see notifyWriteoffBatch) carries ?writeoff={batchId}; landing here jumps
+  // the initial view straight to Report (still gated behind normal admin login — see renderReport)
+  // and pins that batch to the top of the "รอพิจารณา" list with a highlight, so the exec never has to
+  // hunt for it. Read once at load, same pattern as DATASET_ID above.
+  var WRITEOFF_DEEPLINK_BATCH = (function () {
+    var m = /[?&]writeoff=([^&]+)/.exec(window.location.search);
+    return m ? decodeURIComponent(m[1]) : '';
+  })();
 
   // Bump this string on every deploy (see checkForNewBuild below) — a browser tab left open all
   // day keeps running whatever JS it loaded at page-load time forever; without this, a staff
@@ -385,6 +394,16 @@
     ta.select();
     try { document.execCommand('copy'); } catch (e) {}
     document.body.removeChild(ta);
+  }
+  // Cryptographically-random token (2026-08-20) — used for ตัดจำหน่ายหนี้สูญ batch IDs specifically
+  // because that link is now approvable with NO LOGIN at all (see writeoff-review.html/api/writeoff-
+  // action.js) — a sequential/timestamp-based ID would be guessable/enumerable by anyone, letting a
+  // stranger approve real financial write-offs just by trying nearby IDs. window.crypto.getRandomValues
+  // (not Math.random) is the browser's actual CSPRNG — 16 bytes = 128 bits, unguessable in practice.
+  function generateSecureToken(byteLen) {
+    var bytes = new Uint8Array(byteLen || 16);
+    (window.crypto || window.msCrypto).getRandomValues(bytes);
+    return Array.prototype.map.call(bytes, function (b) { return b.toString(16).padStart(2, '0'); }).join('');
   }
   function fmtMoney(n) {
     var v = Number(n || 0);
@@ -1696,7 +1715,8 @@
     customerDetailReturnView: null,
     lockImportSystem: 'Soti',
     lockImportMode: 'Normal',
-    view: 'dashboard',
+    view: WRITEOFF_DEEPLINK_BATCH ? 'report' : 'dashboard',
+    writeoffDeepLinkBatch: WRITEOFF_DEEPLINK_BATCH,
     showCancelledDetail: false,
     showMultiOrderDetail: false,
     showSoldDetail: false,
@@ -1737,10 +1757,13 @@
     editingCustomerId: false, customerIdDraft: '',
     editingOrderIdFor: null, orderIdDraft: '',
     postponeTarget: null, postponeDate: '', postponeReason: '', postponeLateFee: 0, postponeUnlockFee: 0,
+    restructureTarget: null, restructureType: '', restructureOldBalance: '', restructureNewCount: '',
+    restructureNewAmount: '', restructureDate: '', restructureApprover: '', restructureEvidence: '',
+    writeoffSelected: {}, writeoffSubmitting: false, writeoffSigning: false, writeoffCandidatePage: 1,
     noteModalTarget: null, noteModalDraft: '',
     smsTemplates: (persisted && Array.isArray(persisted.smsTemplates) && persisted.smsTemplates.length) ? persisted.smsTemplates : DEFAULT_SMS_TEMPLATES,
     smsModalTarget: null, smsModalPhone: '', smsModalTemplateId: '', smsModalDraft: '', smsModalManaging: false, smsModalSending: false,
-    callDraft: '',
+    callDraft: '', callResultDraft: '', callPtpDateDraft: '', callPtpAmountDraft: '',
     trackingOrderId: '', trackingTrack: '',
     // การแจ้งเตือน page (2026-08-10) — which summary group (templateId) is currently expanded to
     // show its full row list; null = every group collapsed, just the summary cards. See
@@ -3020,10 +3043,86 @@
       };
     }
 
+    // PTP (Promise-to-Pay) summary (2026-08-20) — counts calls with result==='ptp' made THIS calendar
+    // month (by call date), classified by outcome using the same "fulfilled = payment on/after call
+    // date" rule as computePendingPtpReminders. อัตรารักษาสัญญา is fulfilled / (fulfilled+broken) —
+    // promises not yet due are excluded from the rate (undecided, not a failure).
+    var ptpNow = new Date();
+    var ptpMonthPrefix = ptpNow.getFullYear() + '-' + String(ptpNow.getMonth() + 1).padStart(2, '0');
+    var ptpTodayStr = ptpMonthPrefix + '-' + String(ptpNow.getDate()).padStart(2, '0');
+    var ptpFulfilled = 0, ptpBroken = 0, ptpPending = 0;
+    active.forEach(function (o) {
+      var allInsts = (o.installments || []).concat(o.accessoryInstallments || []);
+      (o.callHistory || []).forEach(function (h) {
+        if (h.result !== 'ptp' || !h.ptpDate) return;
+        var callDateIso = dmyToIso(h.at);
+        if (!callDateIso || callDateIso.slice(0, 7) !== ptpMonthPrefix) return;
+        var fulfilled = allInsts.some(function (i) { return i.paidDate && i.paidDate >= callDateIso; });
+        if (fulfilled) ptpFulfilled++;
+        else if (ptpTodayStr > h.ptpDate) ptpBroken++;
+        else ptpPending++;
+      });
+    });
+    var ptpDecided = ptpFulfilled + ptpBroken;
+    var ptpSummary = {
+      total: ptpFulfilled + ptpBroken + ptpPending,
+      fulfilled: ptpFulfilled, broken: ptpBroken, pending: ptpPending,
+      ratePct: ptpDecided > 0 ? (ptpFulfilled / ptpDecided * 100) : null
+    };
+
+    // แบบบันทึกข้อตกลงปรับโครงสร้างหนี้ summary (2026-08-20) — agreements AGREED this calendar month
+    // (by agreedDate, not the log timestamp), scoped to `active` orders same as everything else here.
+    var restructureCountsByType = {};
+    var restructureTotalCount = 0, restructureTotalAmount = 0;
+    active.forEach(function (o) {
+      (o.restructureHistory || []).concat(o.accessoryRestructureHistory || []).forEach(function (h) {
+        if (!h.agreedDate || h.agreedDate.slice(0, 7) !== ptpMonthPrefix) return;
+        restructureTotalCount++;
+        restructureTotalAmount += toNumber(h.oldBalance);
+        var tKey = h.type || 'other';
+        restructureCountsByType[tKey] = (restructureCountsByType[tKey] || 0) + 1;
+      });
+    });
+    var restructureSummary = {
+      totalCount: restructureTotalCount, totalAmountDisp: fmtMoney(restructureTotalAmount),
+      extendCount: restructureCountsByType.extend || 0, reduceCount: restructureCountsByType.reduce_once || 0
+    };
+
+    // Risk scoring — DPD (days past due) buckets (2026-08-20) — a finer breakdown than the 3-level
+    // เกรด A/B/หนี้สงสัยจะสูญ. Per order, uses the SAME "ค้างชำระจริงๆ" definition as trueOverdueInsts
+    // elsewhere (STATUS_GROUP_META's ค้างชำระ group) and buckets by the MOST overdue งวด on that order
+    // (main+accessory combined) — an order with even one very late งวด belongs in the late bucket
+    // regardless of its other, more current งวด. Orders with no currently-overdue งวด are excluded
+    // (this is specifically a "how late are the late ones" view, not a full portfolio census).
+    var DPD_BUCKETS = [
+      { key: 'd1_30', label: '1–30 วัน', color: '#0ca678', bg: 'rgba(12,166,120,0.08)', min: 1, max: 30 },
+      { key: 'd31_60', label: '31–60 วัน', color: '#f7823b', bg: 'rgba(247,130,59,0.08)', min: 31, max: 60 },
+      { key: 'd61_90', label: '61–90 วัน', color: '#e8590c', bg: 'rgba(232,89,12,0.08)', min: 61, max: 90 },
+      { key: 'd90_plus', label: '90 วัน+', color: '#e03131', bg: 'rgba(224,49,49,0.08)', min: 91, max: Infinity }
+    ];
+    var dpdCounts = { d1_30: 0, d31_60: 0, d61_90: 0, d90_plus: 0 };
+    active.forEach(function (o) {
+      var allInsts = (o.installments || []).concat(o.accessoryInstallments || []);
+      var maxDpd = 0;
+      allInsts.forEach(function (i) {
+        if (STATUS_TO_GROUP[i.effectiveStatus] !== 'ค้างชำระ') return;
+        if (Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0)) <= 0.005) return;
+        var d = dueDiffDays(i);
+        if (d != null && d > maxDpd) maxDpd = d;
+      });
+      if (maxDpd <= 0) return;
+      var bucket = DPD_BUCKETS.find(function (b) { return maxDpd >= b.min && maxDpd <= b.max; });
+      if (bucket) dpdCounts[bucket.key]++;
+    });
+    var dpdTotal = dpdCounts.d1_30 + dpdCounts.d31_60 + dpdCounts.d61_90 + dpdCounts.d90_plus;
+    var dpdSummary = DPD_BUCKETS.map(function (b) {
+      return { key: b.key, label: b.label, color: b.color, bg: b.bg, count: dpdCounts[b.key], pct: dpdTotal > 0 ? (dpdCounts[b.key] / dpdTotal * 100) : 0 };
+    });
+
     return {
       seg1: seg1, seg2: seg2, seg3: seg3,
       calledCount: calledCount,
-      seg5: seg5, seg6: seg6,
+      seg5: seg5, seg6: seg6, ptpSummary: ptpSummary, restructureSummary: restructureSummary, dpdSummary: dpdSummary,
       smsStatusSegs: smsStatusSegs, letterStatusSegs: letterStatusSegs,
       dailyRows: dailyRows, rangeFrom: rangeFrom, rangeTo: rangeTo,
       customerDataRows: customerDataRows, custHasFilter: custHasFilter,
@@ -3245,6 +3344,9 @@
     var report = state.view === 'report' ? computeReport(computedOrders) : null;
     var allSmsReminders = computePendingSmsReminders(computedOrders);
     var allLetterReminders = computePendingLetterReminders(computedOrders);
+    var allPtpReminders = computePendingPtpReminders(computedOrders);
+    var writeoffCandidates = computeWriteoffCandidates(computedOrders);
+    var writeoffPendingBatches = writeoffPendingBatchesGrouped(computedOrders);
 
     return {
       computedOrders: computedOrders,
@@ -3273,6 +3375,9 @@
       legalActionBlockedSmsReminders: allSmsReminders.filter(function (r) { return r.legalBlocked; }),
       pendingLetterReminders: allLetterReminders.filter(function (r) { return !r.legalBlocked; }),
       legalActionBlockedLetterReminders: allLetterReminders.filter(function (r) { return r.legalBlocked; }),
+      pendingPtpReminders: allPtpReminders,
+      writeoffCandidates: writeoffCandidates,
+      writeoffPendingBatches: writeoffPendingBatches,
       dashboard: dashboard,
       report: report
     };
@@ -3400,7 +3505,7 @@
     // admin navigates back to the Report page, since nothing else ever clears it.
     state.reportDrilldownSeg = null; state.reportDrilldownGroup = null;
     state.reportStatusDrilldownKind = null; state.reportStatusDrilldownKey = null; state.reportStatusDrilldownMonth = null;
-    state.selectedCustomerId = cid; state.customerNoteDraft = ''; state.editingCustomerName = false; state.editingCustomerId = false; state.editingOrderIdFor = null; state.callDraft = ''; state.trackingOrderId = ''; state.trackingTrack = ''; render();
+    state.selectedCustomerId = cid; state.customerNoteDraft = ''; state.editingCustomerName = false; state.editingCustomerId = false; state.editingOrderIdFor = null; state.callDraft = ''; state.callResultDraft = ''; state.callPtpDateDraft = ''; state.callPtpAmountDraft = ''; state.trackingOrderId = ''; state.trackingTrack = ''; render();
   }
   function startEditCustomerName() {
     if (!state.selectedCustomerId || !CV) return;
@@ -3751,18 +3856,44 @@
     var orders = CV.selectedCustomerOrders || [];
     return orders.find(function (o) { return o.contractNo || o.phone || o.shippedAt || o.referenceName || o.referencePhone; }) || orders[0];
   }
+  // Structured call-result disposition codes (2026-08-20, per explicit user request) — replaces the
+  // old free-text-only call log with a standard set of outcomes plus Promise-to-Pay (PTP) tracking.
+  // 'ptp' is the only code that requires a follow-up date; every other code stays a plain disposition.
+  var CALL_RESULT_OPTIONS = [
+    { key: 'ptp', label: 'ติดต่อได้ - รับปากจะจ่าย' },
+    { key: 'reschedule', label: 'ติดต่อได้ - ขอเลื่อน' },
+    { key: 'refuse', label: 'ติดต่อได้ - ปฏิเสธจ่าย' },
+    { key: 'dispute', label: 'ติดต่อได้ - โต้แย้งยอดหนี้' },
+    { key: 'busy', label: 'ติดต่อไม่ได้ - สายไม่ว่าง' },
+    { key: 'unreachable', label: 'ติดต่อไม่ได้ - ปิดเครื่อง/เบอร์ผิด' },
+    { key: 'no_answer', label: 'ติดต่อไม่ได้ - ไม่รับสาย' },
+    { key: 'voicemail', label: 'ฝากข้อความ' }
+  ];
+  var CALL_RESULT_LABELS = {};
+  CALL_RESULT_OPTIONS.forEach(function (o) { CALL_RESULT_LABELS[o.key] = o.label; });
   // Append-only call log (never overwritten — same rule as smsHistory, per user request) so staff
-  // can see every past call attempt/outcome, not just the latest one.
+  // can see every past call attempt/outcome, not just the latest one. `result` is required going
+  // forward; `note` stays free-text but optional now that `result` carries the structured meaning.
+  // Legacy entries saved before this change have no `result` — rendered via CALL_RESULT_LABELS[h.result]
+  // falling back to blank, never crashing on old data.
   function saveCallLog() {
-    var text = (state.callDraft || '').trim();
-    if (!text) return;
+    var result = state.callResultDraft || '';
+    if (!result) { window.alert('กรุณาเลือกผลการโทร'); return; }
+    var note = (state.callDraft || '').trim();
     var contactOrder = pickContactOrder();
     if (!contactOrder) return;
     var order = state.orders.find(function (o) { return o.orderId === contactOrder.orderId; });
     var history = (order && order.callHistory) || [];
-    var entry = { at: nowTimestamp(), by: currentActorName(), note: text };
+    var entry = { at: nowTimestamp(), by: currentActorName(), result: result, note: note };
+    if (result === 'ptp') {
+      var ptpDate = (state.callPtpDateDraft || '').trim();
+      if (!ptpDate) { window.alert('กรุณาระบุวันที่นัดจ่าย'); return; }
+      entry.ptpDate = ptpDate;
+      var ptpAmountNum = toNumber(state.callPtpAmountDraft);
+      entry.ptpAmount = ptpAmountNum > 0 ? ptpAmountNum : null;
+    }
     updateOrderField(contactOrder.orderId, 'callHistory', history.concat([entry]));
-    state.callDraft = '';
+    state.callDraft = ''; state.callResultDraft = ''; state.callPtpDateDraft = ''; state.callPtpAmountDraft = '';
   }
   // ---------- ติดตามหนี้ escalation notification ----------
   // Adds n business days (Sat/Sun skipped only — no Thai public-holiday calendar exists in this
@@ -3883,6 +4014,13 @@
   // see issueLetter) since a letter is a per-track document, not per-installment like SMS.
   var LETTER1_BUSINESS_DAYS_AFTER_SMS3 = SMS_ESCALATION_BUSINESS_DAYS[4];
   var LETTER2_BUSINESS_DAYS_AFTER_LETTER1 = 3;
+  // ฉบับที่ 3 (เรียกคืนสินค้า) — a controlled EXCEPTION, not part of the regular escalation ladder.
+  // Per explicit user policy 2026-08-20: ฉบับที่ 2 is always the final routine letter. ฉบับที่ 3 only
+  // fires when a customer genuinely re-engaged (paid something) after ฉบับที่ 2 was issued, then went
+  // quiet again for 90 CALENDAR days from that last payment. A customer who never paid anything after
+  // ฉบับที่ 2 stays in the original terminal state (no further letters, straight to legal) and is
+  // deliberately NOT covered by this reminder — see computePendingLetterReminders.
+  var LETTER3_CALENDAR_DAYS_AFTER_LAST_PAYMENT = 90;
   function computePendingLetterReminders(computedOrders) {
     var todayNow = new Date();
     var todayStr = todayNow.getFullYear() + '-' + String(todayNow.getMonth() + 1).padStart(2, '0') + '-' + String(todayNow.getDate()).padStart(2, '0');
@@ -3920,18 +4058,60 @@
           letterNo = 2;
           triggerDate = addBusinessDays(dmyToIso(round1.at), LETTER2_BUSINESS_DAYS_AFTER_LETTER1);
         } else {
-          return; // both already issued — ฉบับที่ 3+ has no specified cadence, nothing to recommend
+          var round3 = history.find(function (h) { return h.no === 3; });
+          if (round3) return; // already issued — the exception only ever fires once per track
+          var round2Iso = dmyToIso(round2.at);
+          var lastPaymentAfterRound2 = null;
+          insts.forEach(function (inst) {
+            if (!inst.paidDate || inst.paidDate < round2Iso) return;
+            if (!lastPaymentAfterRound2 || inst.paidDate > lastPaymentAfterRound2) lastPaymentAfterRound2 = inst.paidDate;
+          });
+          if (!lastPaymentAfterRound2) return; // never re-engaged after ฉบับที่ 2 — exception doesn't apply
+          letterNo = 3;
+          triggerDate = addCalendarDays(lastPaymentAfterRound2, LETTER3_CALENDAR_DAYS_AFTER_LAST_PAYMENT);
         }
         if (todayStr < triggerDate) return;
         out.push({
           orderId: o.orderId, track: track, customerId: o.customerId, customerName: o.customerName,
           soDisplay: isAcc ? (o.accessoryOrderId || o.soDisplay) : o.soDisplay,
           letterNo: letterNo, triggerDateIso: triggerDate, dueSinceDisp: fmtDate(triggerDate),
-          legalBlocked: legalBlocked
+          // ฉบับที่ 3 must surface even for legally-tagged customers — the legal tag is exactly WHY
+          // this letter exists, so the general legalBlocked suppression (see renderLegalActionBlockedBanner)
+          // must never hide it. Only letters 1/2 respect the suppression.
+          legalBlocked: letterNo === 3 ? false : legalBlocked
         });
       });
     });
     out.sort(function (a, b) { return a.triggerDateIso < b.triggerDateIso ? -1 : a.triggerDateIso > b.triggerDateIso ? 1 : 0; });
+    return out;
+  }
+  // Promise-to-Pay (PTP) tracking (2026-08-20) — surfaces the customer's latest 'ptp' call-result per
+  // order so staff can see who's overdue on their own promise, not just overdue on the contract.
+  // "Fulfilled" = any installment (main or accessory) recorded a payment on/after the call date itself
+  // (not the promised ptpDate) — an early payment still counts as keeping the promise. Not scoped by
+  // legalBlocked: a customer already flagged ดำเนินคดี is exactly the case this needs to keep watching
+  // (see ฉบับที่ 3's own last-payment anchor above, which reads from the same paidDate data).
+  function computePendingPtpReminders(computedOrders) {
+    var todayNow = new Date();
+    var todayStr = todayNow.getFullYear() + '-' + String(todayNow.getMonth() + 1).padStart(2, '0') + '-' + String(todayNow.getDate()).padStart(2, '0');
+    var out = [];
+    computedOrders.forEach(function (o) {
+      if (o.isCancelled || o.isSold || o.isBillCancelled) return;
+      var ptpEntries = (o.callHistory || []).filter(function (h) { return h.result === 'ptp' && h.ptpDate; });
+      if (!ptpEntries.length) return;
+      var latest = ptpEntries.reduce(function (best, h) { return parseLogTimestamp(h.at) > parseLogTimestamp(best.at) ? h : best; });
+      var callDateIso = dmyToIso(latest.at);
+      var allInsts = (o.installments || []).concat(o.accessoryInstallments || []);
+      var fulfilled = allInsts.some(function (i) { return i.paidDate && i.paidDate >= callDateIso; });
+      if (fulfilled) return;
+      out.push({
+        orderId: o.orderId, customerId: o.customerId, customerName: o.customerName, soDisplay: o.soDisplay,
+        ptpDate: latest.ptpDate, ptpDateDisp: fmtDate(latest.ptpDate), ptpAmount: latest.ptpAmount,
+        ptpAmountDisp: latest.ptpAmount ? fmtMoney(latest.ptpAmount) : '',
+        overdue: todayStr > latest.ptpDate
+      });
+    });
+    out.sort(function (a, b) { return a.ptpDate < b.ptpDate ? -1 : a.ptpDate > b.ptpDate ? 1 : 0; });
     return out;
   }
   // ---------- จดหมายทวงถามหนี้ (PDF) ----------
@@ -4074,6 +4254,15 @@
     var isAcc = track === 'accessory';
     var order = state.orders.find(function (o) { return o.orderId === orderId; });
     if (!order) return;
+    // ฉบับที่ 3 (เรียกคืนสินค้า) content is still pending sign-off (2026-08-20) — buildLetterHtml only
+    // has the ครั้งที่ 1/2 payment-demand wording, which would be legally WRONG for ฉบับที่ 3 (asks for
+    // return of goods, not payment, and declares no further contact). Block issuance here rather than
+    // silently generating the wrong document — remove this guard once the approved template is wired
+    // into buildLetterHtml as its own letterNo === 3 branch.
+    if (letterNo === 3) {
+      window.alert('เนื้อหาจดหมายฉบับที่ 3 (เรียกคืนสินค้า) ยังไม่ได้ขึ้นระบบจริง — รอการอนุมัติเนื้อหาก่อน');
+      return;
+    }
     var cvOrder = (CV.computedOrders || []).find(function (o) { return o.orderId === orderId; });
     // Uses main/accessoryLateCount (the broader LATE_STATUSES set — ค้างชำระ/เกินกำหนดชำระ/ล็อคเครื่อง/
     // เปลี่ยนภาพพักหน้าจอ/ค้างชำระ ล็อคเครื่องไม่ได้/หนี้สงสัยจะสูญ/ชำระบางส่วน), not overdueCount (the
@@ -4411,6 +4600,337 @@
     if (db && entry.url) {
       db.storage.from(CLOUD_BUCKET).remove([storagePathFromValue(entry.url)]).catch(function () {});
     }
+  }
+  // ---------- ตัดจำหน่ายหนี้สูญ (PDF + อนุมัติ/เซ็นออนไลน์) ----------
+  // Deliberately per-order (writeoffHistory, append-only like postponeHistory/letterHistory) rather
+  // than a new top-level state.writeoffBatches array — cloudSaveNow's 3-way merge only ever persists
+  // the explicit field list it already knows about (orders, customerNotes, customerLegalAction, etc,
+  // see lastServerSnapshot/cloudSaveNow), so a brand-new top-level array would silently never survive
+  // a save/reload. Piggybacking on `orders` reuses the merge logic that already works correctly. A
+  // "batch" is just every order whose LATEST writeoffHistory entry shares the same batchId — grouped
+  // on the fly in writeoffPendingBatchesGrouped, never stored as its own structure.
+  function computeWriteoffCandidates(computedOrders) {
+    return computedOrders.filter(function (o) {
+      if (o.isCancelled || o.isSold || o.isBillCancelled) return false;
+      if ((o.lateCount || 0) < 2) return false; // เกรดหนี้สงสัยจะสูญ, same formula as computeDashboard's gradeBuckets
+      if (!(o.trueOverdueRaw > 0.005)) return false;
+      var hist = o.writeoffHistory || [];
+      var latest = hist.length ? hist[hist.length - 1] : null;
+      // A 'rejected' (or no) latest entry makes the order selectable again for a fresh batch —
+      // 'pending'/'approved'/'signed' means it's already in an active or finished cycle.
+      if (latest && (latest.status === 'pending' || latest.status === 'approved' || latest.status === 'signed')) return false;
+      return true;
+    }).sort(function (a, b) { return b.trueOverdueRaw - a.trueOverdueRaw; });
+  }
+  function writeoffPendingBatchesGrouped(computedOrders) {
+    var byBatch = {};
+    computedOrders.forEach(function (o) {
+      var hist = o.writeoffHistory || [];
+      var latest = hist.length ? hist[hist.length - 1] : null;
+      if (!latest || (latest.status !== 'pending' && latest.status !== 'approved')) return;
+      var b = byBatch[latest.batchId] = byBatch[latest.batchId] || {
+        batchId: latest.batchId, docNo: latest.docNo || latest.batchId, status: latest.status, submittedAt: latest.submittedAt, submittedBy: latest.submittedBy,
+        approver: latest.approver, reason: latest.reason, pdfPath: latest.pdfPath, items: [], totalAmountRaw: 0
+      };
+      b.items.push({ orderId: o.orderId, customerId: o.customerId, customerName: o.customerName, soDisplay: o.soDisplay, overdueCount: latest.overdueCount, amountDisp: latest.amountDisp });
+      b.totalAmountRaw += toNumber(latest.amountRaw);
+    });
+    return Object.keys(byBatch).map(function (k) { return byBatch[k]; })
+      .sort(function (a, b) { return parseLogTimestamp(a.submittedAt) - parseLogTimestamp(b.submittedAt); });
+  }
+  function toggleWriteoffSelect(orderId) {
+    var next = Object.assign({}, state.writeoffSelected);
+    if (next[orderId]) delete next[orderId]; else next[orderId] = true;
+    state.writeoffSelected = next;
+    render();
+  }
+  // Same 794px-A4, Sarabun, letterhead-image pattern as buildLetterHtml/buildCancelLetterHtml — kept
+  // visually consistent with every other document this app issues. `batch.status` drives the sign
+  // block: blank line pre-signature, "✓ เซ็นแล้ว" once signed — same file path both times (see
+  // confirmSignWriteoffBatch), so a link shared before signing shows the latest state automatically.
+  function buildWriteoffHtml(items, batch, letterheadSrc) {
+    var headerHtml = letterheadSrc
+      ? '<img src="' + letterheadSrc + '" style="width:100%; display:block; margin-bottom:18px;" />'
+      : '<div style="font-weight:700; font-size:17px; margin-bottom:6px;">บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด</div><div style="height:2px; background:#1f3a5f; margin-bottom:18px;"></div>';
+    var rowsHtml = items.map(function (it) {
+      return '<tr>' +
+        '<td style="padding:6px 10px; border:1px solid #efece3;">' + esc(it.customerName) + ' · ' + esc(it.soDisplay) + '</td>' +
+        '<td style="padding:6px 10px; border:1px solid #efece3; text-align:right;">' + it.overdueCount + ' งวด</td>' +
+        '<td style="padding:6px 10px; border:1px solid #efece3; text-align:right; font-weight:700;">฿' + esc(it.amountDisp) + '</td>' +
+      '</tr>';
+    }).join('');
+    var signBlock = batch.status === 'signed'
+      ? '<div style="text-align:center; font-size:13px;"><div style="color:#0b7a5b; font-weight:700; margin-bottom:4px;">✓ เซ็นแล้ว</div><div style="border-top:1px solid #1c1b19; padding-top:4px; width:210px;">ผู้อนุมัติและผู้ลงนาม (' + esc(batch.approver || '') + ')</div></div>'
+      : '<div style="text-align:center; font-size:13px;"><div style="height:26px;"></div><div style="border-top:1px solid #1c1b19; padding-top:4px; width:210px;">ผู้อนุมัติและผู้ลงนาม</div></div>';
+    return '<div style="width:794px; box-sizing:border-box; padding:42px 55px; background:#ffffff; font-family:\'Sarabun\',\'Noto Sans Thai\',\'Leelawadee UI\',sans-serif; color:#1c1b19; font-size:14px; line-height:1.55;">' +
+      headerHtml +
+      '<div style="display:flex; justify-content:space-between; font-size:12.5px; color:#5b5750; margin-bottom:18px;">' +
+        '<div>เลขที่เอกสาร: ' + esc(batch.docNo || batch.id) + '</div>' +
+        '<div>วันที่เสนอ: ' + esc(fmtDate(batch.submittedAtIso)) + '</div>' +
+      '</div>' +
+      '<div style="text-align:center; font-size:16px; font-weight:700; margin-bottom:3px;">หนังสืออนุมัติตัดจำหน่ายหนี้สูญ</div>' +
+      (batch.status === 'signed'
+        ? '<div style="text-align:center; font-size:12.5px; color:#0b7a5b; margin-bottom:18px;">(ฉบับสมบูรณ์ — เซ็นแล้ว)</div>'
+        : '<div style="text-align:center; font-size:12.5px; color:#5b5750; margin-bottom:18px;">(ฉบับร่าง — ยังไม่มีลายเซ็น)</div>') +
+      '<p style="margin:0 0 12px; text-align:justify;">แผนกบัญชีเร่งรัดหนี้สินขอเสนอตัดจำหน่ายหนี้สูญของลูกหนี้ดังรายชื่อต่อไปนี้ รวม ' + items.length + ' ราย เนื่องจากเป็นหนี้ที่ติดตามทวงถามครบขั้นตอนแล้วแต่ไม่สามารถเรียกเก็บได้</p>' +
+      '<table style="width:100%; border-collapse:collapse; margin:0 0 12px; font-size:13px;">' +
+        '<tr style="background:rgba(31,58,95,0.05);"><th style="padding:6px 10px; border:1px solid #efece3; text-align:left;">ลูกหนี้</th><th style="padding:6px 10px; border:1px solid #efece3;">ค้างมาแล้ว</th><th style="padding:6px 10px; border:1px solid #efece3;">ยอดที่ตัดจำหน่าย</th></tr>' +
+        rowsHtml +
+      '</table>' +
+      '<div style="text-align:right; font-weight:700; margin-bottom:24px;">ยอดรวมทั้งสิ้น ฿' + esc(fmtMoney(batch.totalAmountRaw)) + '</div>' +
+      '<div style="display:flex; justify-content:space-between; margin-top:30px;">' +
+        '<div style="text-align:center; font-size:13px;"><div style="height:26px;"></div><div style="border-top:1px solid #1c1b19; padding-top:4px; width:210px;">เสนอโดย (' + esc(batch.submittedBy || '') + ')</div></div>' +
+        signBlock +
+      '</div>' +
+    '</div>';
+  }
+  // ระบบไม่ส่งอัตโนมัติผ่านช่องทางใดๆ (2026-08-20) — สร้างลิงก์ให้แล้วพนักงานคัดลอกไปส่งเองผ่านช่องทาง
+  // ที่สะดวก ลิงก์ที่ได้คือ writeoff-review.html — หน้าแยกต่างหาก ไม่ใช่ส่วนหนึ่งของแอปหลัก (2026-08-20,
+  // เปลี่ยนจากลิงก์ ?writeoff= ที่ยังต้องล็อกอินเข้าแอปก่อน) เปิดได้โดย "ไม่ต้องล็อกอิน" เลย — เหมือน
+  // เวลาลูกค้าเปิดเอกสารหนังสือยกเลิกสัญญา (createSignedUrl แบบเดิม) แต่มีปุ่มอนุมัติ/ไม่อนุมัติ/
+  // รอพิจารณา/เซ็น ให้กดได้ในหน้าเดียวกันเลย — ฝั่งเซิร์ฟเวอร์ (api/writeoff-view.js,
+  // api/writeoff-action.js) ใช้ SERVICE ROLE KEY อ่าน/เขียนข้อมูลแทนการล็อกอิน ต้องตั้งค่า
+  // SUPABASE_SERVICE_ROLE_KEY บน Vercel ก่อนใช้งานได้จริง (ดู lib/writeoff-store.js)
+  // batchId ต้องเป็นรหัสสุ่มเดาไม่ได้ (ดู generateSecureToken) เพราะลิงก์นี้ = สิทธิ์อนุมัติทันที
+  // ไม่มีการยืนยันตัวตนอื่นใดอีก — ใครก็ตามที่ได้ลิงก์ไปกดอนุมัติได้ ผู้ใช้รับทราบความเสี่ยงนี้แล้ว
+  // Returns a Promise so callers can chain their own confirmation — copyTextToClipboard itself is
+  // fire-and-forget (flash-based), fine for a button click but not enough signal for
+  // confirmSubmitWriteoffBatch's auto-copy-on-create.
+  function copyWriteoffLinksSilently(pdfPath, batchId, btnEl) {
+    // window.location.origin is the literal string "null" when this page is opened straight from
+    // disk (file://…/index.html — exactly how this app is normally opened locally, no build/server
+    // step) — copying that would produce a broken "null/writeoff-review.html?..." link. The feature
+    // fundamentally can't work from a local file anyway (writeoff-review.html calls /api/writeoff-view,
+    // a serverless function that only exists once deployed) — reject with a clear reason instead of
+    // silently copying garbage, so confirmSubmitWriteoffBatch's .catch() shows the real cause.
+    if (window.location.protocol === 'file:') {
+      return Promise.reject(new Error('ฟีเจอร์นี้ทดสอบจากไฟล์ในเครื่อง (file://) ไม่ได้ ต้องเปิดจากเว็บที่ deploy แล้ว (เช่น Vercel) เพราะต้องเรียกเซิร์ฟเวอร์'));
+    }
+    var reviewLink = window.location.origin + '/writeoff-review.html?batch=' + encodeURIComponent(batchId);
+    copyTextToClipboard(reviewLink, btnEl || null);
+    return Promise.resolve();
+  }
+  function copyWriteoffLinks(batchId, pdfPath, btnEl) {
+    copyWriteoffLinksSilently(pdfPath, batchId, btnEl).catch(function (err) {
+      window.alert(err.message);
+    });
+  }
+  // เลขที่เอกสารสำหรับเจ้าหน้าที่บัญชีอ้างอิง (2026-08-20) — รูปแบบ ACCyyyymm-xxxx รันต่อเนื่องในแต่ละ
+  // เดือน แยกจาก batchId (รหัสสุ่มเดาไม่ได้ ใช้เป็น URL/สิทธิ์อนุมัติ ดู generateSecureToken) โดย
+  // สิ้นเชิง — เลขนี้แค่ไว้อ่าน/อ้างอิงในเอกสาร ไม่ได้ใช้ยืนยันตัวตนอะไร คำนวณจากการนับเลขที่เอกสารเดิม
+  // ในเดือนเดียวกันที่เจอในข้อมูลปัจจุบัน (ไม่มีตัวนับกลางแยกต่างหาก เพราะ field ใหม่ที่ไม่ได้ฝากไว้ใน
+  // orders จะไม่ถูก sync ขึ้นคลาวด์เลย — บทเรียนเดียวกับที่ทำให้ writeoffHistory ต้องฝากไว้ใน orders).
+  // ช่องโหว่ที่ยอมรับไว้: ถ้าพนักงาน 2 คนกด "ส่งเสนออนุมัติ" พร้อมกันเป๊ะๆ ก่อนฝ่ายใดฝ่ายหนึ่งบันทึกขึ้น
+  // คลาวด์เสร็จ อาจได้เลขที่เอกสารซ้ำกันได้ — ผลกระทบแค่เอกสารอ้างอิงซ้ำเลข ไม่กระทบข้อมูลจริง/การอนุมัติ
+  // (ต่างจาก batchId ซึ่งสุ่มเสมอ ไม่มีทางชนกัน) จึงไม่ได้ใส่กลไกล็อกแบบเดียวกับ api/writeoff-action.js
+  function nextWriteoffDocNo() {
+    var now = new Date();
+    var yyyymm = now.getFullYear() + String(now.getMonth() + 1).padStart(2, '0');
+    var maxSeq = 0;
+    state.orders.forEach(function (o) {
+      (o.writeoffHistory || []).forEach(function (h) {
+        var m = h.docNo && /^ACC(\d{6})-(\d{4})$/.exec(h.docNo);
+        if (m && m[1] === yyyymm) maxSeq = Math.max(maxSeq, Number(m[2]));
+      });
+    });
+    return 'ACC' + yyyymm + '-' + String(maxSeq + 1).padStart(4, '0');
+  }
+  function confirmSubmitWriteoffBatch() {
+    if (state.writeoffSubmitting) return;
+    var candidates = CV.writeoffCandidates || [];
+    var selectedIds = Object.keys(state.writeoffSelected).filter(function (id) { return state.writeoffSelected[id]; });
+    var items = candidates.filter(function (o) { return selectedIds.indexOf(o.orderId) !== -1; });
+    if (!items.length) { window.alert('กรุณาเลือกลูกหนี้อย่างน้อย 1 ราย'); return; }
+    if (!db) { window.alert('ยังไม่ได้เชื่อมต่อฐานข้อมูลกลาง (Supabase) — ไม่สามารถบันทึกไฟล์ PDF ได้'); return; }
+    if (!window.html2canvas || !(window.jspdf && window.jspdf.jsPDF)) { window.alert('ไม่พบไลบรารีสร้าง PDF กรุณาลองรีเฟรชหน้าเว็บ'); return; }
+    var totalAmountRaw = items.reduce(function (s, o) { return s + o.trueOverdueRaw; }, 0);
+    var batchId = 'WO' + generateSecureToken(16);
+    var docNo = nextWriteoffDocNo();
+    var submittedBy = currentActorName();
+    var now = new Date();
+    var submittedAtIso = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+    var batch = { id: batchId, docNo: docNo, submittedBy: submittedBy, submittedAtIso: submittedAtIso, status: 'pending', totalAmountRaw: totalAmountRaw, approver: '' };
+    var docItems = items.map(function (o) {
+      return { orderId: o.orderId, customerName: o.customerName, soDisplay: o.soDisplay, overdueCount: o.lateCount, amountRaw: o.trueOverdueRaw, amountDisp: fmtMoney(o.trueOverdueRaw) };
+    });
+    if (!window.confirm('ยืนยันส่งเสนออนุมัติตัดจำหน่ายหนี้สูญ ' + items.length + ' ราย รวม ฿' + fmtMoney(totalAmountRaw) + ' (เลขที่เอกสาร ' + docNo + ') ?\n\nจะสร้างเอกสาร PDF ให้ทันที — คัดลอกลิงก์ไปส่งผู้บริหารเองในขั้นถัดไป')) return;
+    state.writeoffSubmitting = true;
+    render();
+    var container;
+    getLetterheadBlobUrl()
+      .then(function (letterheadSrc) {
+        container = document.createElement('div');
+        container.style.cssText = 'position:fixed; left:-99999px; top:0; z-index:-1;';
+        container.innerHTML = buildWriteoffHtml(docItems, batch, letterheadSrc);
+        document.body.appendChild(container);
+        var imgEl = container.querySelector('img');
+        return (imgEl && !imgEl.complete) ? new Promise(function (res) { imgEl.onload = res; imgEl.onerror = res; }) : Promise.resolve();
+      })
+      .then(function () { return window.html2canvas(container, { scale: 2, useCORS: true, backgroundColor: '#ffffff' }); })
+      .then(function (canvas) {
+        var pdf = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4' });
+        var pageWidth = 210, pageHeight = 297;
+        var imgData = canvas.toDataURL('image/jpeg', 0.92);
+        var imgHeight = (canvas.height * pageWidth) / canvas.width;
+        var heightLeft = imgHeight, position = 0;
+        pdf.addImage(imgData, 'JPEG', 0, position, pageWidth, imgHeight);
+        heightLeft -= pageHeight;
+        while (heightLeft > 0) {
+          position = heightLeft - imgHeight;
+          pdf.addPage();
+          pdf.addImage(imgData, 'JPEG', 0, position, pageWidth, imgHeight);
+          heightLeft -= pageHeight;
+        }
+        return pdf.output('blob');
+      })
+      .then(function (blob) {
+        var path = 'writeoffs/' + batchId + '.pdf';
+        return db.storage.from(CLOUD_BUCKET).upload(path, blob, { upsert: true, contentType: 'application/pdf', cacheControl: '0' }).then(function (res) {
+          if (res.error) throw res.error;
+          return path;
+        });
+      })
+      .then(function (path) {
+        state.orders = state.orders.map(function (o) {
+          var match = docItems.find(function (it) { return it.orderId === o.orderId; });
+          if (!match) return o;
+          var myEntry = {
+            batchId: batchId, docNo: docNo, submittedAt: nowTimestamp(), submittedBy: submittedBy, status: 'pending', pdfPath: path,
+            amountRaw: match.amountRaw, amountDisp: match.amountDisp, overdueCount: match.overdueCount
+          };
+          return Object.assign({}, o, { writeoffHistory: (o.writeoffHistory || []).concat([myEntry]) });
+        });
+        state.writeoffSelected = {};
+        state.writeoffSubmitting = false;
+        state.hasUnsavedChanges = true;
+        if (container.parentNode) document.body.removeChild(container);
+        render();
+        // Auto-copy right after creation so staff can paste-send immediately without hunting for
+        // the "คัดลอกลิงก์" button on the batch card below — window.alert (not the flash-checkmark
+        // used elsewhere) since there's no button element here to flash against.
+        copyWriteoffLinksSilently(path, batchId).then(function () {
+          window.alert('สร้างเอกสารสำเร็จ และคัดลอกลิงก์ไว้ในคลิปบอร์ดแล้ว — วางส่งให้ผู้บริหารได้เลย');
+        }).catch(function (err) {
+          window.alert('สร้างเอกสารสำเร็จ — แต่คัดลอกลิงก์ไม่สำเร็จ: ' + (err && err.message || 'ไม่ทราบสาเหตุ'));
+        });
+      })
+      .catch(function (err) {
+        state.writeoffSubmitting = false;
+        if (container && container.parentNode) document.body.removeChild(container);
+        window.alert('สร้างเอกสารไม่สำเร็จ: ' + (err && err.message || err));
+        render();
+      });
+  }
+  // อนุมัติ / ไม่อนุมัติ / รอพิจารณา — mutates the batch's single writeoffHistory entry in place
+  // (unlike letterHistory/postponeHistory, a batch is one evolving ticket through its lifecycle, not
+  // a new append per event) so "the latest entry" always reflects the batch's current true state.
+  function decideWriteoffBatch(batchId, decision, reason) {
+    if (decision === 'reject' && !(reason || '').trim()) { window.alert('กรุณาระบุเหตุผลที่ไม่อนุมัติ'); return; }
+    var approver = currentActorName();
+    var decidedAt = nowTimestamp();
+    state.orders = state.orders.map(function (o) {
+      var hist = o.writeoffHistory || [];
+      var latest = hist.length ? hist[hist.length - 1] : null;
+      if (!latest || latest.batchId !== batchId) return o;
+      var updated = Object.assign({}, latest, {
+        status: decision === 'approve' ? 'approved' : decision === 'reject' ? 'rejected' : 'pending',
+        approver: decision === 'approve' ? approver : latest.approver,
+        decidedAt: decision === 'hold' ? latest.decidedAt : decidedAt,
+        reason: decision === 'reject' ? (reason || '').trim() : latest.reason,
+        seenAt: decision === 'hold' ? decidedAt : latest.seenAt
+      });
+      return Object.assign({}, o, { writeoffHistory: hist.slice(0, -1).concat([updated]) });
+    });
+    state.hasUnsavedChanges = true;
+    render();
+  }
+  function promptRejectWriteoffBatch(batchId) {
+    var reason = window.prompt('เหตุผลที่ไม่อนุมัติ (จำเป็นต้องระบุ)', '');
+    if (reason === null) return; // cancelled
+    decideWriteoffBatch(batchId, 'reject', reason);
+  }
+  // เซ็นออนไลน์ — only reachable once approved (see renderWriteoffReviewSection's button gating).
+  // Simplification, per explicit user note this is fine: signer TYPES their name to confirm rather
+  // than drawing a signature/OTP — same window.prompt-based confirmation weight as other irreversible
+  // actions in this app. Regenerates the PDF at the SAME storage path (upsert), so the one link
+  // already sent via LINE always resolves to the current state, draft or signed.
+  function confirmSignWriteoffBatch(batchId) {
+    if (state.writeoffSigning) return;
+    var orders = state.orders.filter(function (o) {
+      var hist = o.writeoffHistory || [];
+      var latest = hist.length ? hist[hist.length - 1] : null;
+      return latest && latest.batchId === batchId;
+    });
+    if (!orders.length) return;
+    var latestEntry = orders[0].writeoffHistory[orders[0].writeoffHistory.length - 1];
+    if (latestEntry.status !== 'approved') { window.alert('ต้องอนุมัติก่อนจึงจะเซ็นได้'); return; }
+    var signer = window.prompt('พิมพ์ชื่อผู้อนุมัติเพื่อยืนยันการเซ็นเอกสาร (ใช้แทนลายเซ็นดิจิทัล)', latestEntry.approver || '');
+    if (!signer || !signer.trim()) return;
+    if (!db || !window.html2canvas || !(window.jspdf && window.jspdf.jsPDF)) { window.alert('ไม่พร้อมสร้างเอกสาร กรุณาลองใหม่'); return; }
+    state.writeoffSigning = true;
+    render();
+    var totalAmountRaw = orders.reduce(function (s, o) {
+      var hist = o.writeoffHistory || [];
+      return s + toNumber(hist[hist.length - 1].amountRaw);
+    }, 0);
+    var docItems = orders.map(function (o) {
+      var e = o.writeoffHistory[o.writeoffHistory.length - 1];
+      return { customerName: o.customerName, soDisplay: o.soDisplay, overdueCount: e.overdueCount, amountDisp: e.amountDisp };
+    });
+    var batch = { id: batchId, docNo: latestEntry.docNo, submittedBy: latestEntry.submittedBy, submittedAtIso: dmyToIso(latestEntry.submittedAt), status: 'signed', totalAmountRaw: totalAmountRaw, approver: signer.trim() };
+    var container;
+    getLetterheadBlobUrl()
+      .then(function (letterheadSrc) {
+        container = document.createElement('div');
+        container.style.cssText = 'position:fixed; left:-99999px; top:0; z-index:-1;';
+        container.innerHTML = buildWriteoffHtml(docItems, batch, letterheadSrc);
+        document.body.appendChild(container);
+        var imgEl = container.querySelector('img');
+        return (imgEl && !imgEl.complete) ? new Promise(function (res) { imgEl.onload = res; imgEl.onerror = res; }) : Promise.resolve();
+      })
+      .then(function () { return window.html2canvas(container, { scale: 2, useCORS: true, backgroundColor: '#ffffff' }); })
+      .then(function (canvas) {
+        var pdf = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4' });
+        var pageWidth = 210, pageHeight = 297;
+        var imgData = canvas.toDataURL('image/jpeg', 0.92);
+        var imgHeight = (canvas.height * pageWidth) / canvas.width;
+        var heightLeft = imgHeight, position = 0;
+        pdf.addImage(imgData, 'JPEG', 0, position, pageWidth, imgHeight);
+        heightLeft -= pageHeight;
+        while (heightLeft > 0) {
+          position = heightLeft - imgHeight;
+          pdf.addPage();
+          pdf.addImage(imgData, 'JPEG', 0, position, pageWidth, imgHeight);
+          heightLeft -= pageHeight;
+        }
+        return pdf.output('blob');
+      })
+      .then(function (blob) {
+        return db.storage.from(CLOUD_BUCKET).upload(latestEntry.pdfPath, blob, { upsert: true, contentType: 'application/pdf', cacheControl: '0' }).then(function (res) {
+          if (res.error) throw res.error;
+        });
+      })
+      .then(function () {
+        var signedAt = nowTimestamp();
+        state.orders = state.orders.map(function (o) {
+          var hist = o.writeoffHistory || [];
+          var latest = hist.length ? hist[hist.length - 1] : null;
+          if (!latest || latest.batchId !== batchId) return o;
+          var updated = Object.assign({}, latest, { status: 'signed', signedAt: signedAt, signedBy: signer.trim() });
+          return Object.assign({}, o, { writeoffHistory: hist.slice(0, -1).concat([updated]) });
+        });
+        state.writeoffSigning = false;
+        state.hasUnsavedChanges = true;
+        if (container.parentNode) document.body.removeChild(container);
+        window.alert('เซ็นเอกสารตัดจำหน่ายหนี้สูญสำเร็จ (' + orders.length + ' ราย)');
+        render();
+      })
+      .catch(function (err) {
+        state.writeoffSigning = false;
+        if (container && container.parentNode) document.body.removeChild(container);
+        window.alert('เซ็นเอกสารไม่สำเร็จ: ' + (err && err.message || err));
+        render();
+      });
   }
   // ---------- ส่งเมลล์จดหมายทวงถามหนี้ (Thaibulksms Email API) ----------
   // Thaibulksms's Email API (confirmed from their official developer PDF, 2026-07-31) is
@@ -5012,6 +5532,66 @@
     state.hasUnsavedChanges = true;
     render();
   }
+  // ---------- แบบบันทึกข้อตกลงปรับโครงสร้างหนี้ (2026-08-20) ----------
+  // Separate from เลื่อนวันครบกำหนด (confirmPostpone, one งวด at a time, no approver/evidence) — this
+  // is for a real renegotiation of the remaining schedule, kept as its own history array so it never
+  // gets mixed up with an ordinary due-date nudge. Applying it reuses setInstallmentCount/
+  // setInstallmentAmount (the same tools staff already use by hand) rather than reimplementing
+  // schedule math — "จำนวนงวดใหม่" means งวดที่เหลือนับจากวันนี้ (not counting งวดที่จ่ายแล้ว), so the
+  // actual count passed to setInstallmentCount is paidCount + newCount, protecting paid history.
+  var RESTRUCTURE_TYPE_LABELS = {
+    extend: 'ยืดงวดผ่อน (ผ่อนใหม่)',
+    reduce_once: 'ลดยอดครั้งเดียว',
+    other: 'อื่นๆ'
+  };
+  function openRestructureModal(orderId, track) {
+    var order = state.orders.find(function (o) { return o.orderId === orderId; });
+    var cvOrder = (CV.computedOrders || []).find(function (o) { return o.orderId === orderId; });
+    if (!order || !cvOrder) return;
+    state.restructureTarget = { orderId: orderId, track: track };
+    state.restructureType = 'extend';
+    var isAcc = track === 'accessory';
+    state.restructureOldBalance = String(isAcc ? (cvOrder.accessoryOutstandingRaw || 0) : (cvOrder.mainOutstandingRaw != null ? cvOrder.mainOutstandingRaw : cvOrder.totalOutstandingRaw || 0));
+    state.restructureNewCount = '';
+    state.restructureNewAmount = '';
+    state.restructureDate = toDateString(new Date());
+    state.restructureApprover = '';
+    state.restructureEvidence = '';
+    render();
+  }
+  function closeRestructureModal() {
+    state.restructureTarget = null;
+    render();
+  }
+  function confirmRestructureAgreement() {
+    if (!state.restructureTarget) return;
+    var orderId = state.restructureTarget.orderId, track = state.restructureTarget.track;
+    var newCount = Math.max(0, Math.round(toNumber(state.restructureNewCount)));
+    var newAmount = toNumber(state.restructureNewAmount);
+    var approver = (state.restructureApprover || '').trim();
+    if (!newCount || !newAmount) { window.alert('กรุณาระบุจำนวนงวดใหม่และยอดผ่อนต่องวดใหม่'); return; }
+    if (!approver) { window.alert('กรุณาระบุผู้อนุมัติ'); return; }
+    var key = trackKey(track);
+    var order = state.orders.find(function (o) { return o.orderId === orderId; });
+    if (!order) return;
+    var paidCount = (order[key] || []).filter(function (i) { return toNumber(i.amountPaid) > 0; }).length;
+    var entry = {
+      at: nowTimestamp(), by: currentActorName(), type: state.restructureType,
+      typeLabel: RESTRUCTURE_TYPE_LABELS[state.restructureType] || state.restructureType,
+      oldBalance: toNumber(state.restructureOldBalance), newCount: newCount, newAmount: newAmount,
+      agreedDate: state.restructureDate, approver: approver, evidence: (state.restructureEvidence || '').trim()
+    };
+    var historyField = track === 'accessory' ? 'accessoryRestructureHistory' : 'restructureHistory';
+    state.orders = state.orders.map(function (o) {
+      if (o.orderId !== orderId) return o;
+      var patch = {}; patch[historyField] = (o[historyField] || []).concat([entry]);
+      return Object.assign({}, o, patch);
+    });
+    state.restructureTarget = null;
+    setInstallmentCount(orderId, track, paidCount + newCount);
+    setInstallmentAmount(orderId, newAmount, track);
+    window.alert('บันทึกข้อตกลงปรับโครงสร้างหนี้แล้ว — ตั้งจำนวนงวด/ยอดต่องวดใหม่ให้อัตโนมัติ แต่งวดใหม่ที่เพิ่มเข้ามายังไม่มีวันครบกำหนด กรุณาตรวจสอบและกรอกวันที่ให้ครบในตารางงวด');
+  }
   // Lets staff fill in orders the source file left with zero installment rows (e.g. missing
   // "ระยะเวลาผ่อน" in the debtor export) — appends one blank editable งวด to the order.
   function addInstallment(orderId, track) {
@@ -5449,15 +6029,33 @@
   // below, which moved to per-order (2026-08-01, see those functions' comment for why).
   function renderCallCard(ord) {
     var callHistory = ord.callHistory || [];
+    var resultOptions = '<option value="">— เลือกผลการโทร —</option>' +
+      CALL_RESULT_OPTIONS.map(function (o) { return '<option value="' + o.key + '"' + (state.callResultDraft === o.key ? ' selected' : '') + '>' + esc(o.label) + '</option>'; }).join('');
+    var isPtp = state.callResultDraft === 'ptp';
+    var inputBase = 'box-sizing:border-box; padding:8px 10px; border-radius:10px; border:1px solid rgba(247,130,59,0.2); background:#fff; font-size:12.5px; color:#212529; outline:none;';
     var callBody =
-      '<div style="display:flex; gap:8px;">' +
-        '<input type="text" value="' + esc(state.callDraft) + '" data-action="callDraft" placeholder="พิมพ์ผลการโทร เช่น รับสาย/ไม่รับสาย/นัดชำระ..." style="flex:1; box-sizing:border-box; padding:8px 10px; border-radius:10px; border:1px solid rgba(247,130,59,0.2); background:#fff; font-size:12.5px; color:#212529; outline:none;" />' +
-        '<button data-action="saveCallLog" style="border:none; background:linear-gradient(135deg,#f36916,#ca7038); color:#fff; padding:8px 14px; border-radius:10px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;">บันทึก</button>' +
+      '<div style="display:flex; flex-direction:column; gap:8px;">' +
+        '<select data-action="callResultDraft" style="' + inputBase + ' width:100%;">' + resultOptions + '</select>' +
+        (isPtp
+          ? '<div style="display:flex; gap:8px;">' +
+              '<input type="date" value="' + esc(state.callPtpDateDraft) + '" data-action="callPtpDateDraft" style="' + inputBase + ' flex:1;" />' +
+              '<input type="number" min="0" step="0.01" value="' + esc(state.callPtpAmountDraft) + '" data-action="callPtpAmountDraft" placeholder="จำนวนที่รับปาก (บาท)" style="' + inputBase + ' flex:1;" />' +
+            '</div>'
+          : '') +
+        '<div style="display:flex; gap:8px;">' +
+          '<input type="text" value="' + esc(state.callDraft) + '" data-action="callDraft" placeholder="บันทึกเพิ่มเติม (ไม่บังคับ)" style="' + inputBase + ' flex:1;" />' +
+          '<button data-action="saveCallLog" style="border:none; background:linear-gradient(135deg,#f36916,#ca7038); color:#fff; padding:8px 14px; border-radius:10px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;">บันทึก</button>' +
+        '</div>' +
       '</div>' +
       trackingHistoryList(callHistory, function (h) {
+        var resultLabel = h.result ? CALL_RESULT_LABELS[h.result] : '';
+        var ptpLine = (h.result === 'ptp' && h.ptpDate)
+          ? '<div style="margin-top:2px; color:#c2650a; font-weight:600;">นัดจ่าย ' + esc(fmtDate(h.ptpDate)) + (h.ptpAmount ? ' · ' + esc(fmtMoney(h.ptpAmount)) + ' บาท' : '') + '</div>'
+          : '';
         return '<div style="background:rgba(243,105,22,0.05); border:1px solid rgba(243,105,22,0.12); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#212529;">' +
-          '<div style="font-weight:700; color:#f36916; margin-bottom:2px;">🕐 ' + esc(h.at) + (h.by ? ' · โดย ' + esc(h.by) : '') + '</div>' +
-          '<div style="color:#6b7280;">' + esc(h.note) + '</div>' +
+          '<div style="font-weight:700; color:#f36916; margin-bottom:2px;">🕐 ' + esc(h.at) + (h.by ? ' · โดย ' + esc(h.by) : '') + (resultLabel ? ' · ' + esc(resultLabel) : '') + '</div>' +
+          ptpLine +
+          (h.note ? '<div style="color:#6b7280; margin-top:2px;">' + esc(h.note) + '</div>' : '') +
         '</div>';
       });
     return trackingCard('#f36916', '📞', 'บันทึกการโทร', callHistory.length, callBody);
@@ -5548,6 +6146,21 @@
       });
     return trackingCard('#b3261e', '📄', 'หนังสือบอกเลิกสัญญาเช่าซื้อ', history.length, body);
   }
+  // แบบบันทึกข้อตกลงปรับโครงสร้างหนี้ (2026-08-20) — track-scoped like renderSmsCard/renderLetterCard
+  // above (installment count/amount are per-track), unlike renderCancelLetterCard which is whole-order.
+  function renderRestructureCard(ord, track) {
+    var history = (track === 'accessory' ? ord.accessoryRestructureHistory : ord.restructureHistory) || [];
+    var body =
+      '<div><button data-action="openRestructureModal" data-order="' + esc(ord.orderId) + '" data-track="' + track + '" title="บันทึกข้อตกลงปรับโครงสร้างหนี้" style="border:1px solid rgba(31,58,95,0.35); background:#fff; color:#1f3a5f; padding:6px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:pointer; white-space:nowrap;">📝 บันทึกข้อตกลงปรับโครงสร้างหนี้</button></div>' +
+      trackingHistoryList(history, function (h) {
+        return '<div style="background:rgba(31,58,95,0.05); border:1px solid rgba(31,58,95,0.12); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#212529;">' +
+          '<div style="font-weight:700; color:#1f3a5f; margin-bottom:2px;">🕐 ' + esc(h.at) + ' · ' + esc(h.typeLabel || h.type) + (h.by ? ' · โดย ' + esc(h.by) : '') + '</div>' +
+          '<div style="color:#6b7280;">งวดใหม่ ' + h.newCount + ' งวด · ฿' + esc(fmtMoney(h.newAmount)) + '/งวด · อนุมัติโดย ' + esc(h.approver) + '</div>' +
+          (h.evidence ? '<div style="color:#6b7280; margin-top:2px;">หลักฐาน: ' + esc(h.evidence) + '</div>' : '') +
+        '</div>';
+      });
+    return trackingCard('#1f3a5f', '📝', 'ข้อตกลงปรับโครงสร้างหนี้', history.length, body);
+  }
   // Back at customer-header level (2026-08-01, reverted from the per-order-card placement above)
   // per explicit user request — but now with a SO picker instead of silently operating on whatever
   // pickContactOrder() happens to return, since smsHistory/letterHistory/emailHistory and the
@@ -5590,7 +6203,7 @@
       '<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px;">' +
         '<div style="font-size:12px; color:#6b7280; font-weight:600; white-space:nowrap;">เลือก SO:</div>' + selectHtml + balanceHtml +
       '</div>' +
-      '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px;">' + renderSmsCard(ord, track) + renderLetterCard(ord, track) + renderCancelLetterCard(ord) + '</div>' +
+      '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px;">' + renderSmsCard(ord, track) + renderLetterCard(ord, track) + renderRestructureCard(ord, track) + renderCancelLetterCard(ord) + '</div>' +
     '</div>';
   }
   // An early full-settlement payment often gets recorded entirely against ONE งวด (e.g. "ยอดชำระ
@@ -7956,13 +8569,139 @@
         : '<div style="font-size:13px; color:#b0b5bd;">ไม่มีลูกหนี้ในช่วงอายุนี้</div>'),
       ' margin-bottom:20px;'
     );
+    // Section 13: PTP (Promise-to-Pay) เดือนนี้ (2026-08-20) — see computeReport's ptpSummary above.
+    var section13 = cardWrap(
+      sectionHeader(13, '🤝', 'Promise-to-Pay (PTP) เดือนนี้') +
+      '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px;">' +
+        statTile('PTP เดือนนี้', r.ptpSummary.total + ' ครั้ง', '#c2650a', 'rgba(194,101,10,0.08)') +
+        statTile('รักษาสัญญาได้', r.ptpSummary.fulfilled + ' ครั้ง', '#0b7a5b', 'rgba(11,122,91,0.08)') +
+        statTile('ผิดนัด', r.ptpSummary.broken + ' ครั้ง', '#b3261e', 'rgba(179,38,30,0.08)') +
+        statTile('อัตรารักษาสัญญา', (r.ptpSummary.ratePct === null ? '—' : r.ptpSummary.ratePct.toFixed(1) + '%'), '#c2650a', 'rgba(194,101,10,0.08)') +
+      '</div>' +
+      (r.ptpSummary.pending ? '<div style="font-size:11.5px; color:#8d93a0; margin-top:10px;">ยังไม่นับ ' + r.ptpSummary.pending + ' ครั้งที่ยังไม่ถึงวันนัด — ไม่รวมในอัตรารักษาสัญญาจนกว่าจะถึงกำหนดจริง</div>' : ''),
+      ' margin-bottom:20px;'
+    );
+    // Section 14: แบบบันทึกข้อตกลงปรับโครงสร้างหนี้ เดือนนี้ (2026-08-20) — see computeReport's
+    // restructureSummary above.
+    var section14 = cardWrap(
+      sectionHeader(14, '📝', 'ปรับโครงสร้างหนี้เดือนนี้') +
+      '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px;">' +
+        statTile('สัญญาที่ปรับ', r.restructureSummary.totalCount + ' สัญญา', '#1f3a5f', 'rgba(31,58,95,0.08)') +
+        statTile('ยอดค้างเดิมรวม', '฿' + r.restructureSummary.totalAmountDisp, '#1f3a5f', 'rgba(31,58,95,0.08)') +
+        statTile('ยืดงวดผ่อน', r.restructureSummary.extendCount + ' สัญญา', '#1f3a5f', 'rgba(31,58,95,0.08)') +
+        statTile('ลดยอดครั้งเดียว', r.restructureSummary.reduceCount + ' สัญญา', '#1f3a5f', 'rgba(31,58,95,0.08)') +
+      '</div>',
+      ' margin-bottom:20px;'
+    );
+    // Section 15: Risk Scoring เชิงลึก — DPD bucket (2026-08-20) — see computeReport's dpdSummary above.
+    var section15 = cardWrap(
+      sectionHeader(15, '📉', 'Risk Scoring เชิงลึก (DPD)') +
+      '<div style="font-size:12px; color:#8d93a0; margin-bottom:14px; margin-top:-8px;">แจกแจงลูกหนี้ตามจำนวนวันค้างจริงของงวดที่ค้างนานที่สุด ละเอียดกว่าเกรด A/B/หนี้สงสัยจะสูญ</div>' +
+      '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px;">' +
+        r.dpdSummary.map(function (b) { return statTile(b.label, b.count + ' ราย', b.color, b.bg, b.pct.toFixed(1) + '%'); }).join('') +
+      '</div>',
+      ' margin-bottom:20px;'
+    );
+    // Section 16: ตัดจำหน่ายหนี้สูญ — เลือกรายการ + ส่งเสนออนุมัติ + อนุมัติ/เซ็นออนไลน์ (2026-08-20).
+    // Unlike sections 1-15 (pure snapshots from computeReport), this reads CV.writeoffCandidates/
+    // writeoffPendingBatches + state.writeoffSelected LIVE — genuinely interactive, not a summary.
+    var wCandidates = CV.writeoffCandidates || [];
+    var wSelectedIds = Object.keys(state.writeoffSelected).filter(function (id) { return state.writeoffSelected[id]; });
+    var wSelectedTotal = wCandidates.filter(function (o) { return wSelectedIds.indexOf(o.orderId) !== -1; }).reduce(function (s, o) { return s + o.trueOverdueRaw; }, 0);
+    // Pagination (2026-08-20, fixed 20/page per explicit user request — no size picker like aging's,
+    // just a flat 20) — same prev/next pattern as section 12's AR aging table.
+    var wPageSize = 20;
+    var wTotalPages = Math.max(1, Math.ceil(wCandidates.length / wPageSize));
+    var wPage = Math.min(Math.max(1, state.writeoffCandidatePage || 1), wTotalPages);
+    state.writeoffCandidatePage = wPage;
+    var wPageStart = (wPage - 1) * wPageSize;
+    var wPageRows = wCandidates.slice(wPageStart, wPageStart + wPageSize);
+    var wCandidateRows = wCandidates.length
+      ? '<div style="overflow-x:auto; border-radius:12px; border:1px solid rgba(247,130,59,0.10);"><table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr style="text-align:left; color:#6b7280; background:rgba(247,130,59,0.06);"><th style="padding:8px 12px;"></th><th style="padding:8px 12px;">ลูกหนี้</th><th style="padding:8px 12px;">วันที่ทำสัญญา</th><th style="padding:8px 12px;">งวดค้าง</th><th style="padding:8px 12px;">ยอดค้าง</th></tr></thead><tbody>' +
+          wPageRows.map(function (o, idx) {
+            var checked = !!state.writeoffSelected[o.orderId];
+            return '<tr style="background:' + (idx % 2 ? 'rgba(247,130,59,0.02)' : 'transparent') + ';">' +
+              '<td style="padding:7px 12px;"><input type="checkbox" data-action="toggleWriteoffSelect" data-order="' + esc(o.orderId) + '"' + (checked ? ' checked' : '') + ' /></td>' +
+              '<td style="padding:7px 12px; color:#212529;">' + esc(o.customerName) + ' · ' + esc(o.soDisplay) + '</td>' +
+              '<td style="padding:7px 12px; color:#6b7280;">' + esc(o.contractDateDisp) + '</td>' +
+              '<td style="padding:7px 12px; color:#6b7280;">' + o.lateCount + ' งวด</td>' +
+              '<td style="padding:7px 12px; font-weight:700; color:#e03131;">฿' + esc(fmtMoney(o.trueOverdueRaw)) + '</td>' +
+            '</tr>';
+          }).join('') +
+        '</tbody></table></div>' +
+        '<div style="display:flex; align-items:center; justify-content:center; gap:16px; padding:14px 4px 0;">' +
+          '<button data-action="prevWriteoffCandidatePage"' + (wPage <= 1 ? ' disabled' : '') + ' style="padding:7px 14px; border-radius:10px; border:1px solid rgba(247,130,59,0.25); background:#fff; color:' + (wPage <= 1 ? '#c9ccd1' : '#f7823b') + '; font-size:12.5px; font-weight:600; cursor:' + (wPage <= 1 ? 'default' : 'pointer') + ';">‹ ก่อนหน้า</button>' +
+          '<span style="font-size:12.5px; color:#6b7280;">หน้า ' + wPage + ' / ' + wTotalPages + ' (แสดง ' + (wPageStart + 1) + '–' + Math.min(wPageStart + wPageSize, wCandidates.length) + ' จาก ' + wCandidates.length + ' รายการ)</span>' +
+          '<button data-action="nextWriteoffCandidatePage"' + (wPage >= wTotalPages ? ' disabled' : '') + ' style="padding:7px 14px; border-radius:10px; border:1px solid rgba(247,130,59,0.25); background:#fff; color:' + (wPage >= wTotalPages ? '#c9ccd1' : '#f7823b') + '; font-size:12.5px; font-weight:600; cursor:' + (wPage >= wTotalPages ? 'default' : 'pointer') + ';">ถัดไป ›</button>' +
+        '</div>'
+      : '<div style="font-size:13px; color:#b0b5bd;">ไม่มีลูกหนี้ที่เข้าเกณฑ์พิจารณาตัดจำหน่ายในขณะนี้</div>';
+    var section16 = cardWrap(
+      sectionHeader(16, '🗑️', 'ตัดจำหน่ายหนี้สูญ — เลือกรายการเสนออนุมัติ') +
+      '<div style="font-size:12px; color:#8d93a0; margin-bottom:12px; margin-top:-8px;">เกณฑ์: เกรดหนี้สงสัยจะสูญ (ค้าง ≥2 งวด) และยังไม่มีชุดเสนออนุมัติที่ยังไม่จบ</div>' +
+      wCandidateRows +
+      (wCandidates.length
+        ? '<div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:14px; flex-wrap:wrap;">' +
+            '<div style="font-size:13px; color:#212529;">เลือกแล้ว ' + wSelectedIds.length + ' ราย · รวม ฿' + esc(fmtMoney(wSelectedTotal)) + '</div>' +
+            '<button data-action="confirmSubmitWriteoffBatch"' + (wSelectedIds.length ? '' : ' disabled') + ' style="border:none; background:' + (wSelectedIds.length ? 'linear-gradient(135deg,#f36916,#ca7038)' : '#c9ccd1') + '; color:#fff; padding:9px 20px; border-radius:20px; font-size:13px; font-weight:600; cursor:' + (wSelectedIds.length ? 'pointer' : 'default') + ';">' + (state.writeoffSubmitting ? '⏳ กำลังสร้างเอกสาร...' : '📤 ส่งเสนออนุมัติ') + '</button>' +
+          '</div>'
+        : ''),
+      ' margin-bottom:20px;'
+    );
+    // Section 17: batches รอพิจารณา/รออนุมัติ — อนุมัติ/ไม่อนุมัติ/รอพิจารณา แล้วเซ็นได้ก็ต่อเมื่ออนุมัติแล้ว.
+    var wBatches = (CV.writeoffPendingBatches || []).slice();
+    // Pin the batch from a ?writeoff= deep link (see WRITEOFF_DEEPLINK_BATCH, notifyWriteoffBatch)
+    // to the top so the exec never has to scroll/hunt for the one they were just sent about.
+    if (state.writeoffDeepLinkBatch) {
+      var dlIdx = wBatches.findIndex(function (b) { return b.batchId === state.writeoffDeepLinkBatch; });
+      if (dlIdx > 0) { var dlBatch = wBatches.splice(dlIdx, 1)[0]; wBatches.unshift(dlBatch); }
+    }
+    var section17 = cardWrap(
+      sectionHeader(17, '📋', 'ตัดจำหน่ายหนี้สูญ — รอพิจารณา/รอเซ็น') +
+      (wBatches.length
+        ? '<div style="display:flex; flex-direction:column; gap:14px;">' +
+            wBatches.map(function (b) {
+              var isDeepLinked = b.batchId === state.writeoffDeepLinkBatch;
+              var statusBadge = b.status === 'approved'
+                ? '<span style="background:rgba(11,122,91,0.10); color:#0b7a5b; font-weight:700; padding:3px 10px; border-radius:20px; font-size:11.5px;">อนุมัติแล้ว · รอเซ็น</span>'
+                : '<span style="background:rgba(194,101,10,0.10); color:#c2650a; font-weight:700; padding:3px 10px; border-radius:20px; font-size:11.5px;">รอพิจารณา</span>';
+              var itemsHtml = b.items.map(function (it) {
+                return '<div style="font-size:12px; color:#6b7280; padding:3px 0;">' + esc(it.customerName) + ' · ' + esc(it.soDisplay) + ' · ' + it.overdueCount + ' งวด · ฿' + esc(it.amountDisp) + '</div>';
+              }).join('');
+              var actionsHtml = b.status === 'approved'
+                ? '<button data-action="confirmSignWriteoffBatch" data-batch="' + esc(b.batchId) + '" style="border:none; background:linear-gradient(135deg,#0ca678,#0b7a5b); color:#fff; padding:8px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:pointer;">' + (state.writeoffSigning ? '⏳ กำลังเซ็น...' : '✍️ เซ็นออนไลน์') + '</button>'
+                : '<div style="display:flex; gap:8px; flex-wrap:wrap;">' +
+                    '<button data-action="approveWriteoffBatch" data-batch="' + esc(b.batchId) + '" style="border:none; background:linear-gradient(135deg,#0ca678,#0b7a5b); color:#fff; padding:8px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:pointer;">✓ อนุมัติ</button>' +
+                    '<button data-action="rejectWriteoffBatch" data-batch="' + esc(b.batchId) + '" style="border:1px solid rgba(224,49,49,0.4); background:#fff; color:#e03131; padding:8px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:pointer;">✗ ไม่อนุมัติ</button>' +
+                    '<button data-action="holdWriteoffBatch" data-batch="' + esc(b.batchId) + '" style="border:1px solid rgba(107,114,128,0.35); background:#fff; color:#6b7280; padding:8px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:pointer;">⏳ รอพิจารณา</button>' +
+                  '</div>';
+              return '<div style="background:' + (isDeepLinked ? 'rgba(247,130,59,0.08)' : 'rgba(247,130,59,0.03)') + '; border:' + (isDeepLinked ? '2px solid #f7823b' : '1px solid rgba(247,130,59,0.14)') + '; border-radius:14px; padding:14px 16px;">' +
+                (isDeepLinked ? '<div style="font-size:11px; font-weight:700; color:#f7823b; margin-bottom:6px;">🔗 เปิดจากลิงก์ที่ส่งให้คุณ</div>' : '') +
+                '<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:8px;">' +
+                  '<div style="font-size:13px; font-weight:700; color:#212529;">' + esc(b.docNo) + ' · ' + b.items.length + ' ราย · ฿' + esc(fmtMoney(b.totalAmountRaw)) + '</div>' +
+                  statusBadge +
+                '</div>' +
+                '<div style="font-size:11.5px; color:#8d93a0; margin-bottom:8px;">เสนอโดย ' + esc(b.submittedBy) + ' · ' + esc(b.submittedAt) + (b.approver ? ' · อนุมัติโดย ' + esc(b.approver) : '') + '</div>' +
+                itemsHtml +
+                '<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-top:10px;">' +
+                  '<div style="display:flex; align-items:center; gap:12px;">' +
+                    '<span data-action="downloadLetterPdf" data-path="' + esc(b.pdfPath) + '" style="color:#f7823b; font-weight:600; font-size:12.5px; cursor:pointer;">⬇ ดาวน์โหลด PDF</span>' +
+                    '<span data-action="copyWriteoffLinks" data-batch="' + esc(b.batchId) + '" data-path="' + esc(b.pdfPath) + '" style="color:#1971c2; font-weight:600; font-size:12.5px; cursor:pointer;">📋 คัดลอกลิงก์</span>' +
+                  '</div>' +
+                  actionsHtml +
+                '</div>' +
+              '</div>';
+            }).join('') +
+          '</div>'
+        : '<div style="font-size:13px; color:#b0b5bd;">ไม่มีชุดเสนออนุมัติที่รอพิจารณาอยู่ในขณะนี้</div>'),
+      ' margin-bottom:20px;'
+    );
     return '<div>' +
       '<div style="display:flex; align-items:center; gap:12px; margin-bottom:4px;">' +
         '<div style="width:38px; height:38px; border-radius:12px; background:linear-gradient(135deg,#f7823b,#f0630f); display:flex; align-items:center; justify-content:center; box-shadow:0 6px 16px rgba(247,130,59,0.3); font-size:18px;">📊</div>' +
         '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:21px; color:#212529;">Report</div>' +
       '</div>' +
       '<div style="font-size:12.5px; color:#8d93a0; margin-bottom:22px; margin-left:50px;">อัปเดตสดทุกครั้งที่ข้อมูลในระบบเปลี่ยนแปลง — เฉพาะผู้ดูแลระบบ (Admin) เท่านั้น</div>' +
-      section123 + section4 + section5 + section6 + section7 + section8 + section9 + section10 + section11 + section12 +
+      section123 + section4 + section5 + section6 + section7 + section8 + section9 + section10 + section11 + section12 + section13 + section14 + section15 + section16 + section17 +
       (state.reportDrilldownSeg ? renderReportDrilldownModal() : '') +
       (state.reportStatusDrilldownKind ? renderStatusDrilldownModal() : '') +
     '</div>';
@@ -8812,6 +9551,30 @@
       '</div>' +
     '</div>';
   }
+  // PTP (Promise-to-Pay) ที่ถึงกำหนด/ผิดนัด (2026-08-20) — see computePendingPtpReminders. Same pure-
+  // notification pattern as the letter section above; a broken promise isn't itself a system action,
+  // it's a cue for staff to call again or escalate manually.
+  function renderPendingPtpSection() {
+    var list = CV.pendingPtpReminders || [];
+    if (!list.length) return '';
+    return '<div style="background:rgba(194,101,10,0.05); border:1px solid rgba(194,101,10,0.2); border-radius:20px; padding:18px 22px; margin-top:8px;">' +
+      '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:15px; color:#c2650a; margin-bottom:4px;">🤝 PTP ที่ถึงกำหนด/ผิดนัด (' + list.length + ' รายการ)</div>' +
+      '<div style="font-size:12.5px; color:#6b7280; margin-bottom:12px;">ลูกค้าที่รับปากจะจ่ายไว้ในบันทึกการโทร แต่ยังไม่พบเงินเข้าหลังวันที่นัด</div>' +
+      '<div style="display:flex; flex-direction:column; gap:8px; max-height:340px; overflow-y:auto;">' +
+        list.map(function (r) {
+          return '<div data-action="selectCustomer" data-cid="' + esc(String(r.customerId || '').trim() + '||' + String(r.customerName || '').trim()) + '" style="cursor:pointer; background:#fff; border:1px solid rgba(194,101,10,0.2); border-radius:12px; padding:10px 14px; font-size:13px; color:#212529;" title="ดูรายละเอียดลูกค้า">' +
+            '<span style="font-weight:700; text-decoration:underline; text-decoration-color:rgba(33,37,41,0.25);">' + esc(r.customerName) + '</span>' +
+            ' <span style="color:#8d93a0;">(' + esc(r.customerId) + ')</span>' +
+            ' · 🔗 ' + esc(r.soDisplay) +
+            ' · นัด ' + esc(r.ptpDateDisp) + (r.ptpAmountDisp ? ' · ' + esc(r.ptpAmountDisp) + ' บาท' : '') +
+            (r.overdue
+              ? ' <span style="color:#b3261e; font-weight:700;">⚠ ผิดนัด</span>'
+              : ' <span style="color:#0b7a5b; font-weight:700;">ยังไม่ถึงกำหนด</span>') +
+          '</div>';
+        }).join('') +
+      '</div>' +
+    '</div>';
+  }
   function renderNotifications() {
     var list = CV.pendingSmsReminders || [];
     var groupsByKey = {};
@@ -8832,6 +9595,7 @@
     if (!list.length) {
       html += '<div style="background:#fff; border:1px solid rgba(247,130,59,0.12); border-radius:16px; padding:40px; text-align:center; color:#8d93a0; font-size:14px;">✅ ไม่มีรายการ SMS ที่ต้องแจ้งเตือนในตอนนี้</div>';
       html += renderPendingLetterSection();
+      html += renderPendingPtpSection();
       return html + '</div>';
     }
     html += '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:14px; margin-bottom:22px;">' +
@@ -8863,6 +9627,7 @@
       '</div>';
     }
     html += renderPendingLetterSection();
+    html += renderPendingPtpSection();
     return html + '</div>';
   }
   // Shared with renderReportDrilldownModal (2026-08-05) — same exact table used in ติดตามหนี้'s
@@ -9017,6 +9782,9 @@
 
     if (state.postponeTarget) {
       html += renderPostponeModal();
+    }
+    if (state.restructureTarget) {
+      html += renderRestructureModal();
     }
     if (state.noteModalTarget) {
       html += renderNoteModal();
@@ -9264,6 +10032,40 @@
         '<div style="display:flex; justify-content:flex-end; gap:10px;">' +
           '<div data-action="closePostpone" style="padding:11px 20px; border-radius:10px; color:#6b7280; font-size:13.5px; font-weight:600; cursor:pointer;">ยกเลิก</div>' +
           '<div data-action="confirmPostpone" style="background:#212529; color:#fff; padding:11px 22px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer;">ยืนยัน</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
+  function renderRestructureModal() {
+    var inputStyle = 'width:100%; box-sizing:border-box; padding:11px 14px; border-radius:10px; border:1px solid rgba(247,130,59,0.25); background:#fafafa; font-size:14px; color:#212529; outline:none; margin-bottom:14px;';
+    var labelStyle = 'font-size:12px; color:#6b7280; margin-bottom:6px;';
+    var typeOptions = Object.keys(RESTRUCTURE_TYPE_LABELS).map(function (k) {
+      return '<option value="' + k + '"' + (state.restructureType === k ? ' selected' : '') + '>' + esc(RESTRUCTURE_TYPE_LABELS[k]) + '</option>';
+    }).join('');
+    return '<div style="position:fixed; inset:0; z-index:9999; background:rgba(33,37,41,0.35); display:flex; align-items:center; justify-content:center; padding:20px; overflow-y:auto;">' +
+      '<div style="max-width:440px; width:100%; background:#fff; border-radius:20px; padding:26px 26px 22px; box-shadow:0 24px 60px rgba(33,37,41,0.3); max-height:90vh; overflow-y:auto;">' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#212529; margin-bottom:4px;">📝 แบบบันทึกข้อตกลงปรับโครงสร้างหนี้</div>' +
+        '<div style="font-size:12px; color:#8d93a0; margin-bottom:16px;">แยกจากการเลื่อนวันครบกำหนดทั่วไป — ใช้เมื่อมีการตกลงเงื่อนไขใหม่จริงจัง เก็บเป็นหลักฐาน</div>' +
+        '<div style="' + labelStyle + '">ประเภทการปรับ</div>' +
+        '<select data-action="restructureType" style="' + inputStyle + '">' + typeOptions + '</select>' +
+        '<div style="' + labelStyle + '">ยอดค้างเดิม ณ วันที่ตกลง (บาท)</div>' +
+        '<input type="text" inputmode="decimal" value="' + esc(state.restructureOldBalance) + '" data-action="restructureOldBalance" style="' + inputStyle + '" />' +
+        '<div style="display:flex; gap:12px;">' +
+          '<div style="flex:1;"><div style="' + labelStyle + '">จำนวนงวดใหม่ (นับจากวันนี้)</div>' +
+            '<input type="number" min="0" step="1" value="' + esc(state.restructureNewCount) + '" data-action="restructureNewCount" style="' + inputStyle + '" /></div>' +
+          '<div style="flex:1;"><div style="' + labelStyle + '">ยอดผ่อนต่องวดใหม่ (บาท)</div>' +
+            '<input type="text" inputmode="decimal" value="' + esc(state.restructureNewAmount) + '" data-action="restructureNewAmount" style="' + inputStyle + '" /></div>' +
+        '</div>' +
+        '<div style="' + labelStyle + '">วันที่ตกลง</div>' +
+        '<input type="date" value="' + esc(state.restructureDate) + '" data-action="restructureDate" style="' + inputStyle + '" />' +
+        '<div style="' + labelStyle + '">ผู้อนุมัติ</div>' +
+        '<input type="text" value="' + esc(state.restructureApprover) + '" data-action="restructureApprover" placeholder="ชื่อหัวหน้า/ผู้บริหารที่อนุมัติ" style="' + inputStyle + '" />' +
+        '<div style="' + labelStyle + '">หลักฐานยืนยันจากลูกค้า (ไม่บังคับ)</div>' +
+        '<input type="text" value="' + esc(state.restructureEvidence) + '" data-action="restructureEvidence" placeholder="เช่น แชท LINE วันที่..., บันทึกเสียงเก็บที่..." style="' + inputStyle.replace('margin-bottom:14px;', 'margin-bottom:20px;') + '" />' +
+        '<div style="font-size:11px; color:#8d93a0; margin:-10px 0 16px;">เมื่อบันทึก ระบบจะตั้งจำนวนงวด/ยอดต่องวดให้อัตโนมัติ — งวดใหม่ที่เพิ่มเข้ามายังไม่มีวันครบกำหนด ต้องกรอกในตารางงวดเองอีกที</div>' +
+        '<div style="display:flex; justify-content:flex-end; gap:10px;">' +
+          '<div data-action="closeRestructureModal" style="padding:11px 20px; border-radius:10px; color:#6b7280; font-size:13.5px; font-weight:600; cursor:pointer;">ยกเลิก</div>' +
+          '<div data-action="confirmRestructureAgreement" style="background:#212529; color:#fff; padding:11px 22px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer;">บันทึกข้อตกลง</div>' +
         '</div>' +
       '</div>' +
     '</div>';
@@ -9994,6 +10796,8 @@
         case 'setAgingBucket': state.reportAgingBucket = t.getAttribute('data-bucket'); state.reportAgingPage = 1; render(); break;
         case 'prevAgingPage': state.reportAgingPage = Math.max(1, (state.reportAgingPage || 1) - 1); render(); break;
         case 'nextAgingPage': state.reportAgingPage = (state.reportAgingPage || 1) + 1; render(); break;
+        case 'prevWriteoffCandidatePage': state.writeoffCandidatePage = Math.max(1, (state.writeoffCandidatePage || 1) - 1); render(); break;
+        case 'nextWriteoffCandidatePage': state.writeoffCandidatePage = (state.writeoffCandidatePage || 1) + 1; render(); break;
         case 'setAgingPageSize': state.reportAgingPageSize = Number(t.value) || 20; state.reportAgingPage = 1; render(); break;
         case 'resetOverride': resetOverride(t.getAttribute('data-order'), Number(t.getAttribute('data-no')), t.getAttribute('data-track')); break;
         case 'addInstallment': addInstallment(t.getAttribute('data-order'), t.getAttribute('data-track')); break;
@@ -10001,6 +10805,9 @@
         case 'openPostpone': openPostpone(t.getAttribute('data-order'), Number(t.getAttribute('data-no')), t.getAttribute('data-track')); break;
         case 'closePostpone': closePostpone(); break;
         case 'confirmPostpone': confirmPostpone(); break;
+        case 'openRestructureModal': openRestructureModal(t.getAttribute('data-order'), t.getAttribute('data-track')); break;
+        case 'closeRestructureModal': closeRestructureModal(); break;
+        case 'confirmRestructureAgreement': confirmRestructureAgreement(); break;
         case 'openNoteModal': openNoteModal(t.getAttribute('data-order'), Number(t.getAttribute('data-no')), t.getAttribute('data-track')); break;
         case 'closeNoteModal': closeNoteModal(); break;
         case 'saveNoteModal': saveNoteModal(); break;
@@ -10056,6 +10863,13 @@
         case 'closeCancelLetterModal': closeCancelLetterModal(); break;
         case 'confirmIssueCancelLetter': confirmIssueCancelLetter(); break;
         case 'deleteCancelLetterHistory': deleteCancelLetterHistory(t.getAttribute('data-order'), Number(t.getAttribute('data-no'))); break;
+        case 'toggleWriteoffSelect': toggleWriteoffSelect(t.getAttribute('data-order')); break;
+        case 'confirmSubmitWriteoffBatch': confirmSubmitWriteoffBatch(); break;
+        case 'approveWriteoffBatch': decideWriteoffBatch(t.getAttribute('data-batch'), 'approve'); break;
+        case 'rejectWriteoffBatch': promptRejectWriteoffBatch(t.getAttribute('data-batch')); break;
+        case 'holdWriteoffBatch': decideWriteoffBatch(t.getAttribute('data-batch'), 'hold'); break;
+        case 'confirmSignWriteoffBatch': confirmSignWriteoffBatch(t.getAttribute('data-batch')); break;
+        case 'copyWriteoffLinks': copyWriteoffLinks(t.getAttribute('data-batch'), t.getAttribute('data-path'), t); break;
         case 'filterStaffStatus': state.userMgmtStatusFilter = t.getAttribute('data-status'); render(); break;
       }
     });
@@ -10142,6 +10956,13 @@
         case 'postponeReason': state.postponeReason = t.value; break;
         case 'postponeLateFee': state.postponeLateFee = toNumber(t.value); break;
         case 'postponeUnlockFee': state.postponeUnlockFee = toNumber(t.value); break;
+        case 'restructureType': state.restructureType = t.value; break;
+        case 'restructureOldBalance': state.restructureOldBalance = t.value; break;
+        case 'restructureNewCount': state.restructureNewCount = t.value; break;
+        case 'restructureNewAmount': state.restructureNewAmount = t.value; break;
+        case 'restructureDate': state.restructureDate = t.value; break;
+        case 'restructureApprover': state.restructureApprover = t.value; break;
+        case 'restructureEvidence': state.restructureEvidence = t.value; break;
         case 'noteModalDraft': state.noteModalDraft = t.value; break;
         case 'setInstallmentAmount': setInstallmentAmount(t.getAttribute('data-order'), toNumber(t.value), t.getAttribute('data-track')); break;
         case 'setInstallmentCount': setInstallmentCount(t.getAttribute('data-order'), t.getAttribute('data-track'), toNumber(t.value)); break;
@@ -10173,6 +10994,9 @@
         case 'smsTemplateBody': updateSmsTemplateField(t.getAttribute('data-tpl'), 'body', t.value); break;
         case 'smsTemplateStage': updateSmsTemplateField(t.getAttribute('data-tpl'), 'stage', t.value ? Number(t.value) : null); break;
         case 'callDraft': state.callDraft = t.value; break;
+        case 'callResultDraft': state.callResultDraft = t.value; render(); break;
+        case 'callPtpDateDraft': state.callPtpDateDraft = t.value; break;
+        case 'callPtpAmountDraft': state.callPtpAmountDraft = t.value; break;
         case 'staffDraftField': if (state.userMgmtDraft) state.userMgmtDraft[t.getAttribute('data-field')] = t.value; break;
         case 'toggleStaffDraftPermission': if (state.userMgmtDraft) { state.userMgmtDraft.permissions[t.getAttribute('data-perm')] = t.checked; } break;
         case 'toggleStaffDraftAdmin': if (state.userMgmtDraft) { state.userMgmtDraft.isAdmin = t.checked; render(); } break;
