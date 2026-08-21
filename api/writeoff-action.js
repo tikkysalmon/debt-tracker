@@ -65,7 +65,12 @@ module.exports = async function handler(req, res) {
         updated = Object.assign({}, cur, { seenAt: nowDisp });
         newStatus = 'pending';
       } else {
-        updated = Object.assign({}, cur, { status: 'signed', signedBy: actorName, signedAt: nowDisp });
+        // signedBy is ALWAYS the approver already recorded on this batch, never body.actorName — the
+        // review page no longer even shows an editable name field at sign time (see
+        // writeoff-review.html's renderDoc, 'approved' branch), but that's only a UI-level lock; this
+        // is the actual enforcement, since nothing stops a direct POST here bypassing the page
+        // entirely. Whoever approved is who signs — a different name would need a fresh approve first.
+        updated = Object.assign({}, cur, { status: 'signed', signedBy: cur.approver || actorName, signedAt: nowDisp });
         newStatus = 'signed';
       }
       return Object.assign({}, o, { writeoffHistory: hist.slice(0, -1).concat([updated]) });

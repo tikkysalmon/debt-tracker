@@ -129,9 +129,15 @@
         '<div class="reason-box" id="reasonBox" style="display:none;"><textarea id="reasonText" placeholder="เหตุผลที่ไม่อนุมัติ (จำเป็นต้องระบุ)"></textarea>' +
           '<div class="btn-row" style="margin-top:8px;"><button class="act reject" id="btnConfirmReject">ยืนยันไม่อนุมัติ</button></div></div>';
     } else if (data.status === 'approved') {
+      // ชื่อผู้เซ็นถูกล็อกให้เป็นชื่อผู้อนุมัติเดิมเสมอ (ไม่ใช่ input ที่พิมพ์แก้ได้) — ป้องกันใครก็ตาม
+      // ที่ถือลิงก์นี้แก้ชื่อเป็นคนอื่นตอนกดเซ็น เพราะจุดประสงค์ของช่องนี้คือ "ยืนยันตัวตนแทนลายเซ็น"
+      // ไม่ใช่ให้พิมพ์ชื่อใครก็ได้ — api/writeoff-action.js เองก็บังคับใช้ approver เดิมฝั่งเซิร์ฟเวอร์
+      // ซ้ำอีกชั้น ไม่เชื่อ actorName จาก client สำหรับ decision 'sign' เลย
       actionsHtml =
         '<div class="result-note good" style="margin-bottom:14px;">อนุมัติแล้วโดย ' + esc(data.approver) + (data.decidedAt ? ' · ' + esc(data.decidedAt) : '') + '</div>' +
-        '<div class="name-field"><label>ชื่อผู้เซ็น (ยืนยันแทนลายเซ็น)</label><input type="text" id="signerName" placeholder="พิมพ์ชื่อของท่าน" value="' + esc(data.approver) + '" /></div>' +
+        '<div class="name-field"><label>ชื่อผู้เซ็น (ยืนยันแทนลายเซ็น)</label>' +
+          '<div style="padding:11px 14px; border-radius:10px; border:1px solid rgba(247,130,59,0.2); background:#f1f3f5; color:#212529; font-size:14px;">' + esc(data.approver) + '</div>' +
+        '</div>' +
         '<button class="act sign" id="btnSign">✍️ เซ็นออนไลน์</button>';
     } else if (data.status === 'rejected') {
       actionsHtml = '<div class="result-note bad">ไม่อนุมัติ' + (data.reason ? ' — เหตุผล: ' + esc(data.reason) : '') + '</div>';
@@ -163,8 +169,13 @@
   }
 
   function submitDecision(decision, reason) {
-    var nameInput = document.getElementById('actorName') || document.getElementById('signerName');
-    var actorName = nameInput ? nameInput.value.trim() : '';
+    // 'sign' has no editable name field any more (see renderDoc's 'approved' branch) — the signer is
+    // always the already-recorded approver, read straight from the loaded doc, never from an input a
+    // link-holder could retype. Server-side (api/writeoff-action.js) enforces the same thing
+    // independently, so this isn't the only line of defense.
+    var actorName = decision === 'sign'
+      ? ((lastData && lastData.approver) || '')
+      : (function () { var el = document.getElementById('actorName'); return el ? el.value.trim() : ''; })();
     if ((decision === 'approve' || decision === 'sign') && !actorName) {
       window.alert('กรุณาพิมพ์ชื่อของท่านก่อน');
       return;
@@ -206,7 +217,7 @@
       submitDecision('reject', reason);
     };
     if (btnSign) btnSign.onclick = function () {
-      if (window.confirm('ยืนยันเซ็นเอกสารตัดจำหน่ายหนี้สูญนี้? การกระทำนี้เป็นขั้นตอนสุดท้าย')) submitDecision('sign');
+      if (window.confirm('ยืนยันเซ็นเอกสารตัดจำหน่ายหนี้สูญนี้ในนาม "' + (lastData.approver || '') + '"? การกระทำนี้เป็นขั้นตอนสุดท้าย')) submitDecision('sign');
     };
   }
 
