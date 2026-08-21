@@ -85,6 +85,16 @@
     if (!isFinite(v)) return '0.00';
     return v.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
+  var THAI_MONTH_ABBR = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+  // data.signedAt arrives as "dd/mm/yyyy HH:MM" (nowTimestamp() in lib/writeoff-store.js, Christian
+  // year) — this only reformats that same string for display (Buddhist year + Thai month + "น."),
+  // same convention as fmtThaiSignedAt in index.html's main app.
+  function fmtThaiSignedAt(dmyHm) {
+    var m = /^(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2})$/.exec(String(dmyHm || ''));
+    if (!m) return dmyHm || '';
+    var day = parseInt(m[1], 10), month = parseInt(m[2], 10), yearBe = parseInt(m[3], 10) + 543;
+    return day + ' ' + (THAI_MONTH_ABBR[month - 1] || m[2]) + ' ' + yearBe + ' ' + m[4] + ':' + m[5] + ' น.';
+  }
   function getBatchId() {
     var m = /[?&]batch=([^&]+)/.exec(window.location.search);
     return m ? decodeURIComponent(m[1]) : '';
@@ -126,7 +136,10 @@
     } else if (data.status === 'rejected') {
       actionsHtml = '<div class="result-note bad">ไม่อนุมัติ' + (data.reason ? ' — เหตุผล: ' + esc(data.reason) : '') + '</div>';
     } else if (data.status === 'signed') {
-      actionsHtml = '<div class="result-note good">เซ็นเสร็จสมบูรณ์โดย ' + esc(data.signedBy) + (data.signedAt ? ' · ' + esc(data.signedAt) : '') + '<br>ตัดจำหน่ายหนี้สูญตามเอกสารนี้เรียบร้อยแล้ว</div>';
+      actionsHtml = '<div class="result-note good">เซ็นเสร็จสมบูรณ์โดย ' + esc(data.signedBy) +
+        '<br>ตัดจำหน่ายหนี้สูญตามเอกสารนี้เรียบร้อยแล้ว' +
+        (data.signedAt ? '<div style="margin-top:6px; font-size:12px; opacity:0.75;">ลงนามเมื่อ: ' + esc(fmtThaiSignedAt(data.signedAt)) + '</div>' : '') +
+        '</div>';
     }
 
     app.innerHTML =
