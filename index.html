@@ -9701,12 +9701,9 @@
       '</div>' +
     '</div>';
 
-    // KPI strip — ยอดค้างชำระ/ยกเลิกสัญญาคืนเครื่อง (ยอดรวมสัญญา/ยอดชำระแล้ว/ยอดคงเหลือสุทธิ
-    // ย้ายขึ้นไปเป็นการ์ดใหญ่ด้านบนแล้ว — per explicit user request 2026-08-26)
-    html += '<div style="display:grid; grid-template-columns:repeat(2,1fr); gap:16px; margin-bottom:24px;">';
-    html += kpiCard('#e03131', '', '1px solid rgba(224,49,49,0.15)', '0 4px 14px rgba(224,49,49,0.06)', 'ยอดค้างชำระ', '#e03131', '฿' + k.overdueDisp, k.overdueCustomerCount + ' ราย · รวมหนี้สงสัยจะสูญ');
-    html += kpiCard('#d6336c', '', '1px solid rgba(214,51,108,0.15)', '0 4px 14px rgba(214,51,108,0.06)', 'ยกเลิกสัญญา คืนเครื่อง', '#d6336c', '฿' + k.cancelledDisp, k.cancelledCount + ' สัญญา');
-    html += '</div>';
+    // ยอดค้างชำระ/ยกเลิกสัญญาคืนเครื่อง KPI cards removed per explicit user request (2026-08-26) —
+    // ค้างชำระ is already shown in the risk bar's legend above; ยกเลิกสัญญาคืนเครื่อง still has its
+    // own detail section further down the page.
 
     // Payment donut + trend
     html += '<div style="display:grid; grid-template-columns:1.1fr 1fr; gap:20px; margin-bottom:24px; align-items:stretch;">';
