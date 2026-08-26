@@ -9693,13 +9693,22 @@
       '</div>' +
     '</div>';
     // 3-series grouped bar chart (ยอดที่ต้องได้รับ / ยอดที่ได้รับจริง / ยอดที่ยังไม่ได้รับ per
-    // due-month), per explicit user request 2026-08-26 — replaces the old single-bar (ค้างชำระ
-    // only) look. ฟ้า/เขียว/แดง palette + the exact value printed above each bar (rotated vertical
-    // to stay compact at 3 bars × up to 12 months) per follow-up request same day.
-    function trendBar(color, heightPct, amountDisp) {
-      return '<div style="position:relative; width:20px; height:' + heightPct + '%;">' +
-        '<div style="position:absolute; bottom:100%; left:50%; margin-bottom:4px; font-size:9.5px; font-weight:700; color:#495057; white-space:nowrap; writing-mode:vertical-rl; transform:translateX(-50%) rotate(180deg); transform-origin:center;">฿' + amountDisp + '</div>' +
-        '<div style="width:100%; height:100%; background:' + color + '; border-radius:5px 5px 2px 2px;"></div>' +
+    // due-month), per explicit user request 2026-08-26. Restyled to match a reference image the
+    // user attached (same day, follow-up) — rounded pill bars with a lighter ghost pill behind for
+    // depth, and a floating circular badge near the top of each bar showing the value (compact
+    // K/M form so it fits the badge — full exact amount still on hover via title). Bars/gaps
+    // widened ("ขยายความกว้างของข้อมูล") vs. the previous narrower version.
+    function fmtCompact(n) {
+      var a = Math.abs(n);
+      if (a >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+      if (a >= 1e3) return (n / 1e3).toFixed(0) + 'K';
+      return String(Math.round(n));
+    }
+    function trendBar(color, colorLight, heightPct, amountDisp, amountRaw) {
+      return '<div title="฿' + amountDisp + '" style="position:relative; width:30px; height:' + heightPct + '%;">' +
+        '<div style="position:absolute; top:-10px; left:5px; right:-5px; bottom:0; background:' + colorLight + '; opacity:0.45; border-radius:999px;"></div>' +
+        '<div style="position:absolute; inset:0 5px 0 0; background:linear-gradient(180deg,' + colorLight + ',' + color + '); border-radius:999px; box-shadow:0 6px 14px ' + hexToRgba(color, 0.3) + ';"></div>' +
+        '<div style="position:absolute; top:-16px; left:50%; transform:translateX(-50%); width:32px; height:32px; border-radius:50%; background:#fff; border:3px solid ' + color + '; box-shadow:0 4px 10px rgba(0,0,0,0.18); display:flex; align-items:center; justify-content:center; font-size:9px; font-weight:700; color:' + color + '; text-align:center; line-height:1.05;">' + fmtCompact(amountRaw) + '</div>' +
       '</div>';
     }
     var trendInner = d.hasTrendData
@@ -9708,15 +9717,15 @@
           '<div style="display:flex; align-items:center; gap:5px;"><span style="width:9px;height:9px;border-radius:3px;background:#40c057;display:inline-block;"></span>ยอดที่ได้รับจริง</div>' +
           '<div style="display:flex; align-items:center; gap:5px;"><span style="width:9px;height:9px;border-radius:3px;background:#e03131;display:inline-block;"></span>ยอดที่ยังไม่ได้รับ</div>' +
         '</div>' +
-        '<div style="display:flex; align-items:flex-end; gap:22px; min-height:250px; padding:90px 4px 0; overflow-x:auto;">' +
+        '<div style="display:flex; align-items:flex-end; gap:38px; min-height:230px; padding:30px 8px 0; overflow-x:auto;">' +
           d.monthlyTrend.map(function (m) {
-            return '<div style="display:flex; flex-direction:column; align-items:center; gap:8px; height:100%; justify-content:flex-end; flex-shrink:0;">' +
-              '<div style="display:flex; align-items:flex-end; gap:6px; height:130px;">' +
-                trendBar('#339af0', m.dueHeightPct, m.dueDisp) +
-                trendBar('#40c057', m.paidHeightPct, m.paidDisp) +
-                trendBar('#e03131', m.shortHeightPct, m.shortDisp) +
+            return '<div style="display:flex; flex-direction:column; align-items:center; gap:10px; height:100%; justify-content:flex-end; flex-shrink:0;">' +
+              '<div style="display:flex; align-items:flex-end; gap:16px; height:150px;">' +
+                trendBar('#339af0', '#74c0fc', m.dueHeightPct, m.dueDisp, m.dueRaw) +
+                trendBar('#40c057', '#8ce99a', m.paidHeightPct, m.paidDisp, m.paidRaw) +
+                trendBar('#e03131', '#ffa8a8', m.shortHeightPct, m.shortDisp, m.shortRaw) +
               '</div>' +
-              '<div style="font-size:11px; color:#6b7280; white-space:nowrap;">' + esc(m.label) + '</div>' +
+              '<div style="font-size:11.5px; color:#6b7280; font-weight:600; white-space:nowrap;">' + esc(m.label) + '</div>' +
             '</div>';
           }).join('') +
         '</div>'
