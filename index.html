@@ -2223,6 +2223,41 @@
     soldOrders.forEach(function (o) { totalOwedCustomerSet[customerKey(o)] = true; });
     var totalOwedSum = overdueSum + badDebtSum + soldOutstandingSum;
 
+    // Risk Overview breakdown (2026-08-26) — hero "มูลค่าหนี้ที่มีความเสี่ยงทั้งหมด" card + segmented
+    // bar. Priority-ordered, mutually-exclusive per order so ดำเนินคดีทางกฎหมาย (a customer-level tag
+    // orthogonal to installment status/isSold — see isCustomerLegalAction) never double-counts against
+    // ค้างชำระ/หนี้สงสัยจะสูญ/จำหน่ายให้บริษัทติดตามหนี้ for an order that is both legal-tagged and
+    // already counted there. Priority per order: legal-tagged (whole-order totalOutstandingRaw, same
+    // field legalActionSum above already uses) > active order's own per-installment
+    // ค้างชำระ/หนี้สงสัยจะสูญ > sold-outstanding. Explicitly excludes ยกเลิกสัญญา คืนเครื่อง and
+    // ยกเลิกบิล (เปิดผิด) per explicit user request.
+    var riskLegalSum = 0, riskOverdueSum = 0, riskBadDebtSum = 0, riskSoldSum = 0;
+    activeOrders.forEach(function (o) {
+      if (isCustomerLegalAction(o)) { riskLegalSum += o.totalOutstandingRaw; return; }
+      o.installments.concat(o.accessoryInstallments || []).forEach(function (i) {
+        var outstanding = Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0));
+        var grp = STATUS_TO_GROUP[i.effectiveStatus];
+        if (grp === 'ค้างชำระ') riskOverdueSum += outstanding;
+        else if (grp === 'หนี้สงสัยจะสูญ') riskBadDebtSum += outstanding;
+      });
+    });
+    soldOrders.forEach(function (o) {
+      if (isCustomerLegalAction(o)) { riskLegalSum += o.totalOutstandingRaw; return; }
+      riskSoldSum += o.totalOutstandingRaw;
+    });
+    var riskTotalSum = riskOverdueSum + riskSoldSum + riskLegalSum + riskBadDebtSum;
+    var riskSegs = [
+      { label: 'ค้างชำระ', color: '#e03131', amount: riskOverdueSum },
+      { label: 'จำหน่ายให้บริษัทติดตามหนี้', color: '#f08c00', amount: riskSoldSum },
+      { label: 'ดำเนินคดีทางกฎหมาย', color: '#5f3dc4', amount: riskLegalSum },
+      { label: 'หนี้สงสัยจะสูญ', color: '#9c1f4a', amount: riskBadDebtSum }
+    ].map(function (s) { return Object.assign({}, s, { pct: riskTotalSum > 0 ? (s.amount / riskTotalSum * 100) : 0, amountDisp: fmtMoney(s.amount) }); });
+    var riskBreakdown = {
+      totalRaw: riskTotalSum, totalDisp: fmtMoney(riskTotalSum),
+      pctOfContract: totalContract > 0 ? (riskTotalSum / totalContract * 100).toFixed(1) : '0.0',
+      segments: riskSegs
+    };
+
     var kpi = {
       totalContractDisp: fmtMoney(totalContract), contractCount: contractOrders.length,
       paidDisp: fmtMoney(paidSum), paidCustomerCount: Object.keys(paidCustomerSet).length,
@@ -2568,7 +2603,7 @@
     };
 
     return {
-      kpi: kpi, paymentDonut: paymentDonut, monthlyTrend: monthlyTrend, hasTrendData: monthlyTrend.length > 0,
+      kpi: kpi, riskBreakdown: riskBreakdown, paymentDonut: paymentDonut, monthlyTrend: monthlyTrend, hasTrendData: monthlyTrend.length > 0,
       dueDateBreakdown: dueDateBreakdown, dueDateHasData: dueDateHasData,
       gradeCards: gradeCards, gradeDonut: gradeDonut, gradeTotal: gradeTotal,
       ageOverdueSummary: ageOverdueSummary, ageBadDebtSummary: ageBadDebtSummary,
@@ -9613,24 +9648,43 @@
     var k = d.kpi;
     var html = '<div>';
 
-    // KPI grid
-    html += '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; margin-bottom:24px;">';
+    // Risk Overview — มูลค่าหนี้ที่มีความเสี่ยงทั้งหมด (hero card + segmented risk bar)
+    var rb = d.riskBreakdown;
+    html += '<div style="background:linear-gradient(135deg,#1c2333,#28324a); border-radius:20px; padding:26px 28px; margin-bottom:24px; color:#fff; box-shadow:0 10px 30px rgba(28,35,51,0.35);">' +
+      '<div style="display:flex; align-items:flex-start; justify-content:space-between; gap:20px; flex-wrap:wrap;">' +
+        '<div>' +
+          '<div style="font-size:13px; color:rgba(255,255,255,0.65); margin-bottom:6px;">มูลค่าหนี้ที่มีความเสี่ยงทั้งหมด (Total Risk Exposure)</div>' +
+          '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:34px;">฿' + rb.totalDisp + '</div>' +
+          '<div style="font-size:12px; color:rgba(255,255,255,0.55); margin-top:6px;">คิดเป็น ' + rb.pctOfContract + '% ของยอดรวมสัญญา ฿' + k.totalContractDisp + '</div>' +
+        '</div>' +
+        '<div style="text-align:right;">' +
+          '<div style="font-size:12.5px; color:rgba(255,255,255,0.65); margin-bottom:6px;">อัตราการชำระจากยอดรวมสัญญา</div>' +
+          '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:26px;">' + k.paidRatePercent + '%</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="height:12px; border-radius:8px; overflow:hidden; display:flex; background:rgba(255,255,255,0.10); margin-top:22px;">' +
+        rb.segments.filter(function (s) { return s.amount > 0; }).map(function (s) {
+          return '<div style="width:' + s.pct + '%; background:' + s.color + ';"></div>';
+        }).join('') +
+      '</div>' +
+      '<div style="display:flex; flex-wrap:wrap; gap:18px; margin-top:16px;">' +
+        rb.segments.map(function (s) {
+          return '<div style="display:flex; align-items:center; gap:7px; font-size:12.5px; color:rgba(255,255,255,0.85);">' +
+            '<div style="width:9px;height:9px;border-radius:50%;background:' + s.color + '; flex-shrink:0;"></div>' +
+            s.label + ' ฿' + s.amountDisp +
+          '</div>';
+        }).join('') +
+      '</div>' +
+    '</div>';
+
+    // KPI strip — สรุปยอดหลัก
+    html += '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:16px; margin-bottom:24px;">';
     html += kpiCard('#f36916', '', '1px solid rgba(247,130,59,0.10)', '0 4px 14px rgba(247,130,59,0.06)', 'ยอดรวมสัญญา', '#f36916', '฿' + k.totalContractDisp, k.contractCount + ' สัญญา');
     html += kpiCard('#12b886', '', '1px solid rgba(18,184,134,0.15)', '0 4px 14px rgba(18,184,134,0.06)', 'ยอดชำระแล้ว', '#12b886', '฿' + k.paidDisp, k.paidCustomerCount + ' ราย');
     html += kpiCard('#6b7280', '', '1px solid rgba(0,0,0,0.08)', '0 4px 14px rgba(0,0,0,0.04)', 'ยอดคงเหลือสุทธิ', '#212529', '฿' + k.netRemainingDisp, 'ยอดรวมสัญญา − ยอดชำระแล้ว');
-    html += kpiCard('#e03131', '', '2px solid rgba(224,49,49,0.35)', '0 4px 14px rgba(224,49,49,0.10)', 'ยอดค้างชำระทั้งหมด', '#e03131', '฿' + k.totalOwedDisp, k.totalOwedCustomerCount + ' ราย · รวมค้างชำระ+หนี้สงสัยจะสูญ+จำหน่ายชื่อฯ');
     html += kpiCard('#e03131', '', '1px solid rgba(224,49,49,0.15)', '0 4px 14px rgba(224,49,49,0.06)', 'ยอดค้างชำระ', '#e03131', '฿' + k.overdueDisp, k.overdueCustomerCount + ' ราย');
     html += kpiCard('#9c1f4a', '', '1px solid rgba(156,31,74,0.15)', '0 4px 14px rgba(156,31,74,0.06)', 'หนี้สงสัยจะสูญ', '#9c1f4a', '฿' + k.badDebtDisp, k.badDebtCustomerCount + ' ราย');
     html += kpiCard('#d6336c', '', '1px solid rgba(214,51,108,0.15)', '0 4px 14px rgba(214,51,108,0.06)', 'ยกเลิกสัญญา คืนเครื่อง', '#d6336c', '฿' + k.cancelledDisp, k.cancelledCount + ' สัญญา');
-    html += kpiCard('#f08c00', '', '1px solid rgba(240,140,0,0.15)', '0 4px 14px rgba(240,140,0,0.06)', 'จำหน่ายชื่อให้บริษัทติดตามหนี้', '#f08c00', '฿' + k.soldDisp, k.soldCount + ' สัญญา');
-    html += kpiCard('#0c8599', '', '1px solid rgba(12,133,153,0.15)', '0 4px 14px rgba(12,133,153,0.06)', 'ยกเลิกบิล (เปิดผิด)', '#0c8599', '฿' + k.billCancelledDisp, k.billCancelledCount + ' สัญญา');
-    html += kpiCard('#5f3dc4', '', '1px solid rgba(95,61,196,0.15)', '0 4px 14px rgba(95,61,196,0.06)', 'ดำเนินคดีทางกฎหมาย', '#5f3dc4', '฿' + k.legalActionDisp, k.legalActionCount + ' สัญญา');
-    html += kpiCard('#adb5bd', '', '1px solid rgba(173,181,189,0.25)', '0 4px 14px rgba(0,0,0,0.04)', 'ยังไม่ถึงกำหนด', '#6b7280', '฿' + k.notDueDisp, k.notDueCustomerCount + ' ราย');
-    html += '<div style="background:#fff; border-radius:14px; border:1px solid rgba(243,105,22,0.15); border-left:4px solid #f36916; padding:16px 18px; box-shadow:0 4px 14px rgba(243,105,22,0.06);">' +
-      '<div style="font-size:12.5px; color:#6b7280; margin-bottom:8px;">อัตราการชำระจากยอดรวมสัญญา</div>' +
-      '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:21px; color:#f36916; margin-bottom:8px;">' + k.paidRatePercent + '%</div>' +
-      '<div style="width:100%; height:8px; background:rgba(243,105,22,0.12); border-radius:6px; overflow:hidden;"><div style="height:100%; width:' + k.paidRatePercent + '%; background:linear-gradient(90deg,#f7823b,#f36916,#f0630f,#f7823b); background-size:200% 100%; border-radius:6px; animation:barShimmer 3s linear infinite;"></div></div>' +
-    '</div>';
     html += '</div>';
 
     // Payment donut + trend
