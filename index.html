@@ -9681,11 +9681,15 @@
       '</div>' +
     '</div>';
 
-    // KPI strip — สรุปยอดหลัก
-    html += '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:16px; margin-bottom:24px;">';
+    // KPI strip — สรุปยอดหลัก (2 แถวแยกกันชัดเจน ไม่ใช้ grid เดียวกันแบบ auto-fit เพื่อไม่ให้
+    // การ์ดแถวล่างขยายกว้างผิดสัดส่วนตอนเบราว์เซอร์กว้างพอดีให้แถวบนพอดี 3 การ์ด — per explicit
+    // user request 2026-08-26)
+    html += '<div style="display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:16px;">';
     html += kpiCard('#f36916', '', '1px solid rgba(247,130,59,0.10)', '0 4px 14px rgba(247,130,59,0.06)', 'ยอดรวมสัญญา', '#f36916', '฿' + k.totalContractDisp, k.contractCount + ' สัญญา');
     html += kpiCard('#12b886', '', '1px solid rgba(18,184,134,0.15)', '0 4px 14px rgba(18,184,134,0.06)', 'ยอดชำระแล้ว', '#12b886', '฿' + k.paidDisp, k.paidCustomerCount + ' ราย');
     html += kpiCard('#6b7280', '', '1px solid rgba(0,0,0,0.08)', '0 4px 14px rgba(0,0,0,0.04)', 'ยอดคงเหลือสุทธิ', '#212529', '฿' + k.netRemainingDisp, 'ยอดรวมสัญญา − ยอดชำระแล้ว');
+    html += '</div>';
+    html += '<div style="display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:24px;">';
     html += kpiCard('#e03131', '', '1px solid rgba(224,49,49,0.15)', '0 4px 14px rgba(224,49,49,0.06)', 'ยอดค้างชำระ', '#e03131', '฿' + k.overdueDisp, k.overdueCustomerCount + ' ราย · รวมหนี้สงสัยจะสูญ');
     html += kpiCard('#d6336c', '', '1px solid rgba(214,51,108,0.15)', '0 4px 14px rgba(214,51,108,0.06)', 'ยกเลิกสัญญา คืนเครื่อง', '#d6336c', '฿' + k.cancelledDisp, k.cancelledCount + ' สัญญา');
     html += '</div>';
