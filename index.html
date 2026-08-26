@@ -9692,44 +9692,64 @@
         '</div>' +
       '</div>' +
     '</div>';
-    // 3-series grouped bar chart (ยอดที่ต้องได้รับ / ยอดที่ได้รับจริง / ยอดที่ยังไม่ได้รับ per
-    // due-month), per explicit user request 2026-08-26. Restyled again same day per follow-up
-    // ("ให้ดูสวยงาม และมองตัวเลขได้ชัดเจน") — rotated-vertical text was hard to read at a glance,
-    // so the 3 full amounts now sit as a normal horizontal, color-coded 3-line stack directly above
-    // each month's bar trio (reads left-to-right like everything else on the page, no head-tilting)
-    // instead of rotated per-bar labels. Month groups stay flex:1/min-width:0 (no horizontal
-    // scroll) from the prior fix. Pill bars + soft ghost shadow behind kept for depth/polish.
-    function trendBar(color, colorLight, heightPct) {
-      return '<div style="position:relative; flex:0 1 18px; min-width:4px; height:' + heightPct + '%;">' +
-        '<div style="position:absolute; top:-8px; left:3px; right:-3px; bottom:0; background:' + colorLight + '; opacity:0.45; border-radius:999px;"></div>' +
-        '<div style="position:absolute; inset:0 3px 0 0; background:linear-gradient(180deg,' + colorLight + ',' + color + '); border-radius:999px; box-shadow:0 5px 10px ' + hexToRgba(color, 0.3) + ';"></div>' +
-      '</div>';
+    // Stacked bar chart (ยอดที่ได้รับจริง + ยอดที่ยังไม่ได้รับ, stacked — the two always sum to
+    // ยอดที่ต้องได้รับ by definition, so a full-height stack IS that total), per explicit user
+    // request 2026-08-26 (attached a reference image: classic 2-segment stacked bars, y-axis with
+    // gridlines, in-segment value labels). ยอดที่ต้องได้รับ shown as a bold total above each stack.
+    // In-segment labels round to whole Baht (matches the reference's own rounded style) — full
+    // 2-decimal amount still available via title tooltip.
+    function niceCeil(n) {
+      if (n <= 0) return 1;
+      var mag = Math.pow(10, Math.floor(Math.log(n) / Math.LN10));
+      var norm = n / mag;
+      var nice = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10;
+      return nice * mag;
     }
-    function trendValueLine(color, amountDisp) {
-      return '<div style="color:' + color + '; font-weight:700; white-space:nowrap;">฿' + amountDisp + '</div>';
+    function fmtWhole(n) { return Math.round(Number(n || 0)).toLocaleString('th-TH'); }
+    var TREND_GRID_H = 220;
+    var trendGridMax = d.hasTrendData ? niceCeil(Math.max.apply(null, d.monthlyTrend.map(function (m) { return m.dueRaw; }))) : 1;
+    var trendGridLevels = [1, 0.75, 0.5, 0.25, 0].map(function (f) { return trendGridMax * f; });
+    function trendSegment(color, colorLight, px, amountDisp, amountRawDisp) {
+      if (px <= 0) return '';
+      return '<div title="฿' + amountRawDisp + '" style="height:' + px + 'px; background:linear-gradient(180deg,' + colorLight + ',' + color + '); display:flex; align-items:center; justify-content:center; overflow:hidden;">' +
+        (px >= 15 ? '<span style="color:#fff; font-size:9.5px; font-weight:700; white-space:nowrap; text-shadow:0 1px 2px rgba(0,0,0,0.25);">฿' + amountDisp + '</span>' : '') +
+      '</div>';
     }
     var trendInner = d.hasTrendData
       ? '<div style="display:flex; align-items:center; gap:16px; margin-bottom:18px; font-size:11.5px; color:#6b7280; flex-wrap:wrap;">' +
-          '<div style="display:flex; align-items:center; gap:5px;"><span style="width:9px;height:9px;border-radius:3px;background:#339af0;display:inline-block;"></span>ยอดที่ต้องได้รับ</div>' +
           '<div style="display:flex; align-items:center; gap:5px;"><span style="width:9px;height:9px;border-radius:3px;background:#40c057;display:inline-block;"></span>ยอดที่ได้รับจริง</div>' +
           '<div style="display:flex; align-items:center; gap:5px;"><span style="width:9px;height:9px;border-radius:3px;background:#e03131;display:inline-block;"></span>ยอดที่ยังไม่ได้รับ</div>' +
         '</div>' +
-        '<div style="display:flex; align-items:flex-end; gap:6px;">' +
-          d.monthlyTrend.map(function (m) {
-            return '<div style="display:flex; flex-direction:column; align-items:center; gap:12px; flex:1; min-width:0; padding:10px 2px 14px;">' +
-              '<div style="display:flex; flex-direction:column; align-items:center; gap:2px; font-size:9.5px; line-height:1.5;">' +
-                trendValueLine('#339af0', m.dueDisp) +
-                trendValueLine('#40c057', m.paidDisp) +
-                trendValueLine('#e03131', m.shortDisp) +
+        '<div style="display:flex; gap:14px;">' +
+          '<div style="display:flex; flex-direction:column; justify-content:space-between; height:' + TREND_GRID_H + 'px; width:64px; flex-shrink:0; text-align:right; font-size:10px; color:#adb5bd;">' +
+            trendGridLevels.map(function (v) { return '<div>฿' + fmtWhole(v) + '</div>'; }).join('') +
+          '</div>' +
+          '<div style="flex:1; min-width:0;">' +
+            '<div style="position:relative; height:' + TREND_GRID_H + 'px;">' +
+              trendGridLevels.map(function (v, i) {
+                var topPx = (1 - v / trendGridMax) * TREND_GRID_H;
+                return '<div style="position:absolute; left:0; right:0; top:' + topPx + 'px; border-top:1px ' + (i === trendGridLevels.length - 1 ? 'solid #ced4da' : 'dashed #e9ecef') + ';"></div>';
+              }).join('') +
+              '<div style="position:absolute; inset:0; display:flex; align-items:flex-end; gap:12px;">' +
+                d.monthlyTrend.map(function (m) {
+                  var paidPx = Math.max(0, m.paidRaw / trendGridMax * TREND_GRID_H);
+                  var shortPx = Math.max(0, m.shortRaw / trendGridMax * TREND_GRID_H);
+                  return '<div style="flex:1; min-width:0; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%;">' +
+                    '<div style="font-size:10px; font-weight:700; color:#212529; white-space:nowrap; margin-bottom:4px;">฿' + fmtWhole(m.dueRaw) + '</div>' +
+                    '<div style="width:100%; max-width:74px; display:flex; flex-direction:column-reverse; border-radius:8px 8px 0 0; overflow:hidden; box-shadow:0 4px 10px rgba(0,0,0,0.08);">' +
+                      trendSegment('#40c057', '#8ce99a', paidPx, fmtWhole(m.paidRaw), m.paidDisp) +
+                      trendSegment('#e03131', '#ffa8a8', shortPx, fmtWhole(m.shortRaw), m.shortDisp) +
+                    '</div>' +
+                  '</div>';
+                }).join('') +
               '</div>' +
-              '<div style="display:flex; align-items:flex-end; justify-content:center; gap:4px; height:150px; width:100%;">' +
-                trendBar('#339af0', '#74c0fc', m.dueHeightPct) +
-                trendBar('#40c057', '#8ce99a', m.paidHeightPct) +
-                trendBar('#e03131', '#ffa8a8', m.shortHeightPct) +
-              '</div>' +
-              '<div style="font-size:11px; color:#6b7280; font-weight:600; white-space:nowrap;">' + esc(m.label) + '</div>' +
-            '</div>';
-          }).join('') +
+            '</div>' +
+            '<div style="display:flex; gap:12px; margin-top:8px;">' +
+              d.monthlyTrend.map(function (m) {
+                return '<div style="flex:1; min-width:0; text-align:center; font-size:11px; color:#6b7280; font-weight:600; white-space:nowrap;">' + esc(m.label) + '</div>';
+              }).join('') +
+            '</div>' +
+          '</div>' +
         '</div>'
       : '<div style="flex:1; display:flex; align-items:center; justify-content:center; min-height:160px; color:#8d93a0; font-size:13px;">ยังไม่มีข้อมูลค้างชำระ</div>';
     var trendCardHtml = '<div style="background:rgba(255,255,255,0.97); backdrop-filter:blur(18px); border:1px solid rgba(255,255,255,0.85); border-radius:20px; padding:22px 24px; box-shadow:0 8px 26px rgba(247,130,59,0.08); display:flex; flex-direction:column;">' +
