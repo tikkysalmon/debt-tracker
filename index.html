@@ -9694,24 +9694,27 @@
     '</div>';
     // 3-series grouped bar chart (ยอดที่ต้องได้รับ / ยอดที่ได้รับจริง / ยอดที่ยังไม่ได้รับ per
     // due-month), per explicit user request 2026-08-26 — replaces the old single-bar (ค้างชำระ
-    // only) look. Exact value per bar shown via native title tooltip (3 bars × 12 months would
-    // overflow/collide if every value were printed as its own text label).
-    function trendBar(color, heightPct, amountDisp, tipLabel) {
-      return '<div title="' + esc(tipLabel) + ': ฿' + amountDisp + '" style="position:relative; width:18px; height:' + heightPct + '%; background:' + color + '; border-radius:5px 5px 2px 2px; cursor:default;"></div>';
+    // only) look. ฟ้า/เขียว/แดง palette + the exact value printed above each bar (rotated vertical
+    // to stay compact at 3 bars × up to 12 months) per follow-up request same day.
+    function trendBar(color, heightPct, amountDisp) {
+      return '<div style="position:relative; width:20px; height:' + heightPct + '%;">' +
+        '<div style="position:absolute; bottom:100%; left:50%; margin-bottom:4px; font-size:9.5px; font-weight:700; color:#495057; white-space:nowrap; writing-mode:vertical-rl; transform:translateX(-50%) rotate(180deg); transform-origin:center;">฿' + amountDisp + '</div>' +
+        '<div style="width:100%; height:100%; background:' + color + '; border-radius:5px 5px 2px 2px;"></div>' +
+      '</div>';
     }
     var trendInner = d.hasTrendData
       ? '<div style="display:flex; align-items:center; gap:16px; margin-bottom:14px; font-size:11.5px; color:#6b7280; flex-wrap:wrap;">' +
-          '<div style="display:flex; align-items:center; gap:5px;"><span style="width:9px;height:9px;border-radius:3px;background:#f36916;display:inline-block;"></span>ยอดที่ต้องได้รับ</div>' +
-          '<div style="display:flex; align-items:center; gap:5px;"><span style="width:9px;height:9px;border-radius:3px;background:#12b886;display:inline-block;"></span>ยอดที่ได้รับจริง</div>' +
+          '<div style="display:flex; align-items:center; gap:5px;"><span style="width:9px;height:9px;border-radius:3px;background:#339af0;display:inline-block;"></span>ยอดที่ต้องได้รับ</div>' +
+          '<div style="display:flex; align-items:center; gap:5px;"><span style="width:9px;height:9px;border-radius:3px;background:#40c057;display:inline-block;"></span>ยอดที่ได้รับจริง</div>' +
           '<div style="display:flex; align-items:center; gap:5px;"><span style="width:9px;height:9px;border-radius:3px;background:#e03131;display:inline-block;"></span>ยอดที่ยังไม่ได้รับ</div>' +
         '</div>' +
-        '<div style="display:flex; align-items:flex-end; gap:20px; min-height:170px; padding:0 4px; overflow-x:auto;">' +
+        '<div style="display:flex; align-items:flex-end; gap:22px; min-height:250px; padding:90px 4px 0; overflow-x:auto;">' +
           d.monthlyTrend.map(function (m) {
             return '<div style="display:flex; flex-direction:column; align-items:center; gap:8px; height:100%; justify-content:flex-end; flex-shrink:0;">' +
-              '<div style="display:flex; align-items:flex-end; gap:4px; height:140px;">' +
-                trendBar('#f36916', m.dueHeightPct, m.dueDisp, 'ยอดที่ต้องได้รับ') +
-                trendBar('#12b886', m.paidHeightPct, m.paidDisp, 'ยอดที่ได้รับจริง') +
-                trendBar('#e03131', m.shortHeightPct, m.shortDisp, 'ยอดที่ยังไม่ได้รับ') +
+              '<div style="display:flex; align-items:flex-end; gap:6px; height:130px;">' +
+                trendBar('#339af0', m.dueHeightPct, m.dueDisp) +
+                trendBar('#40c057', m.paidHeightPct, m.paidDisp) +
+                trendBar('#e03131', m.shortHeightPct, m.shortDisp) +
               '</div>' +
               '<div style="font-size:11px; color:#6b7280; white-space:nowrap;">' + esc(m.label) + '</div>' +
             '</div>';
