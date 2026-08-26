@@ -2270,28 +2270,39 @@
     ].map(function (s) { return Object.assign({}, s, { pct: donutTotal > 0 ? (s.amount / donutTotal * 100) : 0, amountDisp: fmtMoney(s.amount) }); });
     var paymentDonut = { conic: buildConicGradient(rawSegs), segments: rawSegs.map(function (s) { return Object.assign({}, s, { pctDisp: s.pct.toFixed(1) }); }), totalDisp: fmtMoney(donutTotal) };
 
-    // "แนวโน้มยอดค้างชำระรายเดือน" is a look-back trend (how much became overdue each past month) —
-    // a งวด whose dueDate hasn't arrived yet can never be genuinely overdue, no matter what its
-    // effectiveStatus says. That can still happen: เปลี่ยนภาพพักหน้าจอ/ค้างชำระ ล็อคเครื่องไม่ได้ are
-    // MANUAL_ONLY_STATUSES, so staff can (and do — e.g. "device can't be locked, applies to every
-    // remaining งวด on this order") set them on a future-dated งวด on purpose. That's a legitimate
-    // current risk for the KPI/report totals, but showing it under an upcoming month on a "trend so
-    // far" chart reads as nonsensical future data — user caught this 2026-07-30. Scoped to just this
-    // chart; the KPI/report totals intentionally still count these installments as ค้างชำระ.
+    // "แนวโน้มยอดค้างชำระรายเดือน" (2026-08-26, per explicit user request) — rebuilt as a period
+    // reconciliation per due-month (ยอดที่ต้องได้รับ / ยอดที่ได้รับจริง / ยอดที่ยังไม่ได้รับ), same
+    // semantics as the Report page's "สรุปยอดตามรอบครบกำหนดชำระ" cycle-bucket table (see
+    // CYCLE_BUCKETS/scanCycle above in computeReport) but grouped by due-month instead of
+    // day-of-month range. ยอดที่ได้รับจริง counts amountPaid regardless of the installment's current
+    // status label (a reconciliation, not a current-risk snapshot) — capped at amountDue so an
+    // overpaid/cascaded งวด can't inflate its own month's collected figure past what was due.
+    // Only dueDate <= today: a งวด whose dueDate hasn't arrived has no real collection outcome yet
+    // (a งวด can still be MANUAL_ONLY_STATUSES-flagged on a future date on purpose — see prior note,
+    // preserved here — that's a legitimate current-risk concept elsewhere, just not a "past period"
+    // one for this chart).
     var todayNow = new Date();
     var todayStr = todayNow.getFullYear() + '-' + String(todayNow.getMonth() + 1).padStart(2, '0') + '-' + String(todayNow.getDate()).padStart(2, '0');
-    var trendMap = {};
+    var monthlyTotals = {};
     activeOrders.forEach(function (o) { o.installments.concat(o.accessoryInstallments || []).forEach(function (i) {
-      if (STATUS_TO_GROUP[i.effectiveStatus] !== 'ค้างชำระ' || !i.dueDate || i.dueDate > todayStr) return;
+      if (!i.dueDate || i.dueDate > todayStr) return;
       var key = i.dueDate.slice(0, 7);
-      var outstanding = Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0));
-      trendMap[key] = (trendMap[key] || 0) + outstanding;
+      var t = monthlyTotals[key] || (monthlyTotals[key] = { due: 0, paid: 0 });
+      t.due += Number(i.amountDue || 0);
+      t.paid += Math.min(Number(i.amountPaid || 0), Number(i.amountDue || 0));
     }); });
-    var trendKeys = Object.keys(trendMap).sort().slice(-12);
-    var trendMax = Math.max.apply(null, [1].concat(trendKeys.map(function (k) { return trendMap[k]; })));
+    var trendKeys = Object.keys(monthlyTotals).sort().slice(-12);
+    var trendMax = Math.max.apply(null, [1].concat(trendKeys.map(function (k) { return monthlyTotals[k].due; })));
     var monthlyTrend = trendKeys.map(function (k) {
       var parts = k.split('-'), y = parts[0], m = parts[1];
-      return { key: k, label: MONTH_LABELS[Number(m) - 1] + ' ' + y.slice(2), amountRaw: trendMap[k], amountDisp: fmtMoney(trendMap[k]), heightPct: Math.max(4, trendMap[k] / trendMax * 100) };
+      var t = monthlyTotals[k];
+      var shortRaw = Math.max(0, t.due - t.paid);
+      return {
+        key: k, label: MONTH_LABELS[Number(m) - 1] + ' ' + y.slice(2),
+        dueRaw: t.due, dueDisp: fmtMoney(t.due), dueHeightPct: Math.max(4, t.due / trendMax * 100),
+        paidRaw: t.paid, paidDisp: fmtMoney(t.paid), paidHeightPct: Math.max(4, t.paid / trendMax * 100),
+        shortRaw: shortRaw, shortDisp: fmtMoney(shortRaw), shortHeightPct: Math.max(4, shortRaw / trendMax * 100)
+      };
     });
 
     // Payment-status breakdown by ORDER (ราย), across every customer combined — no month/year
@@ -9681,21 +9692,28 @@
         '</div>' +
       '</div>' +
     '</div>';
-    // Restyled to match Report section 11's layered pill-bar look (2026-08-13, per explicit user
-    // request) — ghost bar offset behind each main bar for depth, full pill rounding. The value
-    // stays a plain text label above (not a floating capsule badge like section 11's) since these
-    // are currency amounts that can run 7 digits (฿5,477,441.23) across 9 bars in a row — a small
-    // badge would overflow/collide at that width, unlike section 11's short integer counts.
+    // 3-series grouped bar chart (ยอดที่ต้องได้รับ / ยอดที่ได้รับจริง / ยอดที่ยังไม่ได้รับ per
+    // due-month), per explicit user request 2026-08-26 — replaces the old single-bar (ค้างชำระ
+    // only) look. Exact value per bar shown via native title tooltip (3 bars × 12 months would
+    // overflow/collide if every value were printed as its own text label).
+    function trendBar(color, heightPct, amountDisp, tipLabel) {
+      return '<div title="' + esc(tipLabel) + ': ฿' + amountDisp + '" style="position:relative; width:18px; height:' + heightPct + '%; background:' + color + '; border-radius:5px 5px 2px 2px; cursor:default;"></div>';
+    }
     var trendInner = d.hasTrendData
-      ? '<div style="flex:1; display:flex; align-items:flex-end; gap:10px; min-height:160px; padding:0 4px;">' +
+      ? '<div style="display:flex; align-items:center; gap:16px; margin-bottom:14px; font-size:11.5px; color:#6b7280; flex-wrap:wrap;">' +
+          '<div style="display:flex; align-items:center; gap:5px;"><span style="width:9px;height:9px;border-radius:3px;background:#f36916;display:inline-block;"></span>ยอดที่ต้องได้รับ</div>' +
+          '<div style="display:flex; align-items:center; gap:5px;"><span style="width:9px;height:9px;border-radius:3px;background:#12b886;display:inline-block;"></span>ยอดที่ได้รับจริง</div>' +
+          '<div style="display:flex; align-items:center; gap:5px;"><span style="width:9px;height:9px;border-radius:3px;background:#e03131;display:inline-block;"></span>ยอดที่ยังไม่ได้รับ</div>' +
+        '</div>' +
+        '<div style="display:flex; align-items:flex-end; gap:20px; min-height:170px; padding:0 4px; overflow-x:auto;">' +
           d.monthlyTrend.map(function (m) {
-            return '<div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:6px; height:100%; justify-content:flex-end;">' +
-              '<div style="font-size:10.5px; color:#6b7280; white-space:nowrap;">฿' + m.amountDisp + '</div>' +
-              '<div style="position:relative; width:100%; max-width:30px; height:' + m.heightPct + '%;">' +
-                '<div style="position:absolute; top:8px; left:5px; right:-5px; bottom:0; background:#e03131; opacity:0.18; border-radius:999px;"></div>' +
-                '<div style="position:absolute; top:0; left:0; right:5px; bottom:0; background:linear-gradient(180deg,#e0562f,#e03131); border-radius:999px; box-shadow:0 6px 12px rgba(224,49,49,0.18);"></div>' +
+            return '<div style="display:flex; flex-direction:column; align-items:center; gap:8px; height:100%; justify-content:flex-end; flex-shrink:0;">' +
+              '<div style="display:flex; align-items:flex-end; gap:4px; height:140px;">' +
+                trendBar('#f36916', m.dueHeightPct, m.dueDisp, 'ยอดที่ต้องได้รับ') +
+                trendBar('#12b886', m.paidHeightPct, m.paidDisp, 'ยอดที่ได้รับจริง') +
+                trendBar('#e03131', m.shortHeightPct, m.shortDisp, 'ยอดที่ยังไม่ได้รับ') +
               '</div>' +
-              '<div style="font-size:11px; color:#6b7280;">' + esc(m.label) + '</div>' +
+              '<div style="font-size:11px; color:#6b7280; white-space:nowrap;">' + esc(m.label) + '</div>' +
             '</div>';
           }).join('') +
         '</div>'
