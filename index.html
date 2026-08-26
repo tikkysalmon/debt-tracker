@@ -9704,9 +9704,12 @@
       '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#212529; margin-bottom:16px;">แนวโน้มยอดค้างชำระรายเดือน</div>' + trendInner +
     '</div>';
 
-    html += '<div style="display:grid; grid-template-columns:1.1fr 1fr; gap:20px; margin-bottom:24px; align-items:start;">';
-    html += '<div style="display:flex; flex-direction:column; gap:20px;">' + donutCardHtml + trendCardHtml + '</div>';
-    html += '<div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:stretch;">';
+    // Right group now stretches to match the donut card's own height exactly — per explicit user
+    // request 2026-08-26 (it previously matched the donut+trend combined column and stayed
+    // visibly shorter/mismatched). Trend chart moved to its own full-width row below instead.
+    html += '<div style="display:grid; grid-template-columns:1.1fr 1fr; gap:20px; margin-bottom:20px; align-items:stretch;">';
+    html += donutCardHtml;
+    html += '<div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:stretch; height:100%;">';
     html += '<div style="height:100%;">' + bigAmountCard('#e03131', '1px solid rgba(224,49,49,0.15)', '0 4px 14px rgba(224,49,49,0.06)', 'ยอดค้างชำระ', '#e03131', k.overdueExLegalDisp, k.overdueExLegalCustomerCount + ' ราย · ไม่รวมจำหน่ายชื่อฯ/ดำเนินคดี', true) + '</div>';
     html += '<div style="display:grid; grid-template-rows:1fr 1fr; gap:16px; height:100%;">' +
       bigAmountCard('#f08c00', '1px solid rgba(240,140,0,0.15)', '0 4px 14px rgba(240,140,0,0.06)', 'จำหน่ายชื่อให้บริษัทติดตามหนี้', '#f08c00', k.soldDisp, k.soldCount + ' สัญญา', false) +
@@ -9714,6 +9717,7 @@
     '</div>';
     html += '</div>';
     html += '</div>';
+    html += '<div style="margin-bottom:24px;">' + trendCardHtml + '</div>';
 
     // Payment-status breakdown (all installments of all customers combined)
     html += '<div style="background:rgba(255,255,255,0.97); backdrop-filter:blur(18px); border:1px solid rgba(255,255,255,0.85); border-radius:20px; padding:22px 24px; margin-bottom:24px; box-shadow:0 8px 26px rgba(247,130,59,0.08);">' +
