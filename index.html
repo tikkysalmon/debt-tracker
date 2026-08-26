@@ -9717,6 +9717,7 @@
     }
     var trendInner = d.hasTrendData
       ? '<div style="display:flex; align-items:center; gap:16px; margin-bottom:18px; font-size:11.5px; color:#6b7280; flex-wrap:wrap;">' +
+          '<div style="display:flex; align-items:center; gap:5px;"><span style="width:9px;height:9px;border-radius:3px;background:#339af0;display:inline-block;"></span>ยอดที่ต้องได้รับ</div>' +
           '<div style="display:flex; align-items:center; gap:5px;"><span style="width:9px;height:9px;border-radius:3px;background:#40c057;display:inline-block;"></span>ยอดที่ได้รับจริง</div>' +
           '<div style="display:flex; align-items:center; gap:5px;"><span style="width:9px;height:9px;border-radius:3px;background:#e03131;display:inline-block;"></span>ยอดที่ยังไม่ได้รับ</div>' +
         '</div>' +
@@ -9735,7 +9736,7 @@
                   var paidPx = Math.max(0, m.paidRaw / trendGridMax * TREND_GRID_H);
                   var shortPx = Math.max(0, m.shortRaw / trendGridMax * TREND_GRID_H);
                   return '<div style="flex:1; min-width:0; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%;">' +
-                    '<div style="font-size:10px; font-weight:700; color:#212529; white-space:nowrap; margin-bottom:4px;">฿' + fmtWhole(m.dueRaw) + '</div>' +
+                    '<div style="font-size:10px; font-weight:700; color:#339af0; white-space:nowrap; margin-bottom:4px;">฿' + fmtWhole(m.dueRaw) + '</div>' +
                     '<div style="width:100%; max-width:74px; display:flex; flex-direction:column-reverse; border-radius:8px 8px 0 0; overflow:hidden; box-shadow:0 4px 10px rgba(0,0,0,0.08);">' +
                       trendSegment('#40c057', '#8ce99a', paidPx, fmtWhole(m.paidRaw), m.paidDisp) +
                       trendSegment('#e03131', '#ffa8a8', shortPx, fmtWhole(m.shortRaw), m.shortDisp) +
