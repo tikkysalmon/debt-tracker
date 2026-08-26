@@ -2246,11 +2246,12 @@
       riskSoldSum += o.totalOutstandingRaw;
     });
     var riskTotalSum = riskOverdueSum + riskSoldSum + riskLegalSum + riskBadDebtSum;
+    // หนี้สงสัยจะสูญ merged into ค้างชำระ as one segment per explicit user request (2026-08-26) —
+    // no longer broken out on its own in the risk bar.
     var riskSegs = [
-      { label: 'ค้างชำระ', color: '#e03131', amount: riskOverdueSum },
+      { label: 'ค้างชำระ', color: '#e03131', amount: riskOverdueSum + riskBadDebtSum },
       { label: 'จำหน่ายให้บริษัทติดตามหนี้', color: '#f08c00', amount: riskSoldSum },
-      { label: 'ดำเนินคดีทางกฎหมาย', color: '#5f3dc4', amount: riskLegalSum },
-      { label: 'หนี้สงสัยจะสูญ', color: '#9c1f4a', amount: riskBadDebtSum }
+      { label: 'ดำเนินคดีทางกฎหมาย', color: '#5f3dc4', amount: riskLegalSum }
     ].map(function (s) { return Object.assign({}, s, { pct: riskTotalSum > 0 ? (s.amount / riskTotalSum * 100) : 0, amountDisp: fmtMoney(s.amount) }); });
     var riskBreakdown = {
       totalRaw: riskTotalSum, totalDisp: fmtMoney(riskTotalSum),
@@ -2262,7 +2263,10 @@
       totalContractDisp: fmtMoney(totalContract), contractCount: contractOrders.length,
       paidDisp: fmtMoney(paidSum), paidCustomerCount: Object.keys(paidCustomerSet).length,
       netRemainingDisp: fmtMoney(netRemaining),
-      overdueDisp: fmtMoney(overdueSum), overdueCustomerCount: Object.keys(overdueCustomerSet).length,
+      // ยอดค้างชำระ now folds in หนี้สงสัยจะสูญ per explicit user request (2026-08-26) — no longer
+      // shown as its own separate KPI card; overdueCustomerCount deduped via a set union so a
+      // customer with both a ค้างชำระ and a หนี้สงสัยจะสูญ installment isn't counted twice.
+      overdueDisp: fmtMoney(overdueSum + badDebtSum), overdueCustomerCount: Object.keys(Object.assign({}, overdueCustomerSet, badDebtCustomerSet)).length,
       badDebtDisp: fmtMoney(badDebtSum), badDebtCustomerCount: Object.keys(badDebtCustomerSet).length,
       totalOwedDisp: fmtMoney(totalOwedSum), totalOwedCustomerCount: Object.keys(totalOwedCustomerSet).length,
       cancelledDisp: fmtMoney(cancelledSum), cancelledCount: cancelledOrders.length,
@@ -9682,8 +9686,7 @@
     html += kpiCard('#f36916', '', '1px solid rgba(247,130,59,0.10)', '0 4px 14px rgba(247,130,59,0.06)', 'ยอดรวมสัญญา', '#f36916', '฿' + k.totalContractDisp, k.contractCount + ' สัญญา');
     html += kpiCard('#12b886', '', '1px solid rgba(18,184,134,0.15)', '0 4px 14px rgba(18,184,134,0.06)', 'ยอดชำระแล้ว', '#12b886', '฿' + k.paidDisp, k.paidCustomerCount + ' ราย');
     html += kpiCard('#6b7280', '', '1px solid rgba(0,0,0,0.08)', '0 4px 14px rgba(0,0,0,0.04)', 'ยอดคงเหลือสุทธิ', '#212529', '฿' + k.netRemainingDisp, 'ยอดรวมสัญญา − ยอดชำระแล้ว');
-    html += kpiCard('#e03131', '', '1px solid rgba(224,49,49,0.15)', '0 4px 14px rgba(224,49,49,0.06)', 'ยอดค้างชำระ', '#e03131', '฿' + k.overdueDisp, k.overdueCustomerCount + ' ราย');
-    html += kpiCard('#9c1f4a', '', '1px solid rgba(156,31,74,0.15)', '0 4px 14px rgba(156,31,74,0.06)', 'หนี้สงสัยจะสูญ', '#9c1f4a', '฿' + k.badDebtDisp, k.badDebtCustomerCount + ' ราย');
+    html += kpiCard('#e03131', '', '1px solid rgba(224,49,49,0.15)', '0 4px 14px rgba(224,49,49,0.06)', 'ยอดค้างชำระ', '#e03131', '฿' + k.overdueDisp, k.overdueCustomerCount + ' ราย · รวมหนี้สงสัยจะสูญ');
     html += kpiCard('#d6336c', '', '1px solid rgba(214,51,108,0.15)', '0 4px 14px rgba(214,51,108,0.06)', 'ยกเลิกสัญญา คืนเครื่อง', '#d6336c', '฿' + k.cancelledDisp, k.cancelledCount + ' สัญญา');
     html += '</div>';
 
