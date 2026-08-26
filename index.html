@@ -2274,7 +2274,8 @@
       billCancelledDisp: fmtMoney(billCancelledSum), billCancelledCount: billCancelledOrders.length,
       legalActionDisp: fmtMoney(legalActionSum), legalActionCount: legalActionOrders.length,
       notDueDisp: fmtMoney(notDueSum), notDueCustomerCount: Object.keys(notDueCustomerSet).length,
-      paidRatePercent: paidRatePercent.toFixed(1)
+      paidRatePercent: paidRatePercent.toFixed(1),
+      remainingRatePercent: totalContract > 0 ? (netRemaining / totalContract * 100).toFixed(1) : '0.0'
     };
 
     var donutTotal = paidSum + overdueSum + badDebtSum + cancelledSum + soldSum + notDueSum;
@@ -9647,10 +9648,29 @@
       '<div style="font-size:12px; color:#8d93a0; margin-top:4px;">' + sub + '</div>' +
     '</div>';
   }
+  function bigRateCard(borderColor, cardBorder, shadow, label, valueColor, pctDisp, amountDisp, sub, big) {
+    return '<div style="background:#fff; border-radius:16px; border:' + cardBorder + '; border-left:' + (big ? '6px' : '4px') + ' solid ' + borderColor + '; padding:' + (big ? '26px 28px' : '16px 18px') + '; box-shadow:' + shadow + '; height:100%; box-sizing:border-box; display:flex; flex-direction:column; justify-content:center;">' +
+      '<div style="font-size:' + (big ? '14px' : '12.5px') + '; color:#6b7280; margin-bottom:8px;">' + label + '</div>' +
+      '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:' + (big ? '46px' : '26px') + '; color:' + valueColor + '; line-height:1;">' + pctDisp + '%</div>' +
+      '<div style="font-size:' + (big ? '15px' : '13px') + '; color:#212529; font-weight:600; margin-top:10px;">฿' + amountDisp + '</div>' +
+      '<div style="font-size:12px; color:#8d93a0; margin-top:2px;">' + sub + '</div>' +
+    '</div>';
+  }
   function renderDashboard() {
     var d = CV.dashboard;
     var k = d.kpi;
     var html = '<div>';
+
+    // ยอดรวมสัญญา/ยอดชำระแล้ว/ยอดคงเหลือ — big card + 2 stacked sub-cards, % emphasized over
+    // amount/count, per explicit user request (2026-08-26). ยอดรวมสัญญา shows 100% as the base
+    // that ยอดชำระแล้ว/ยอดคงเหลือ's own % (of ยอดรวมสัญญา) are measured against.
+    html += '<div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:24px;">';
+    html += bigRateCard('#f36916', '1px solid rgba(247,130,59,0.10)', '0 4px 14px rgba(247,130,59,0.06)', 'ยอดรวมสัญญา', '#f36916', '100.0', k.totalContractDisp, k.contractCount + ' สัญญา', true);
+    html += '<div style="display:grid; grid-template-rows:1fr 1fr; gap:16px;">' +
+      bigRateCard('#12b886', '1px solid rgba(18,184,134,0.15)', '0 4px 14px rgba(18,184,134,0.06)', 'ยอดชำระแล้ว', '#12b886', k.paidRatePercent, k.paidDisp, k.paidCustomerCount + ' ราย', false) +
+      bigRateCard('#6b7280', '1px solid rgba(0,0,0,0.08)', '0 4px 14px rgba(0,0,0,0.04)', 'ยอดคงเหลือสุทธิ', '#212529', k.remainingRatePercent, k.netRemainingDisp, 'ยอดรวมสัญญา − ยอดชำระแล้ว', false) +
+    '</div>';
+    html += '</div>';
 
     // Risk Overview — มูลค่าหนี้ที่มีความเสี่ยงทั้งหมด (hero card + segmented risk bar)
     var rb = d.riskBreakdown;
@@ -9681,15 +9701,9 @@
       '</div>' +
     '</div>';
 
-    // KPI strip — สรุปยอดหลัก (2 แถวแยกกันชัดเจน ไม่ใช้ grid เดียวกันแบบ auto-fit เพื่อไม่ให้
-    // การ์ดแถวล่างขยายกว้างผิดสัดส่วนตอนเบราว์เซอร์กว้างพอดีให้แถวบนพอดี 3 การ์ด — per explicit
-    // user request 2026-08-26)
-    html += '<div style="display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:16px;">';
-    html += kpiCard('#f36916', '', '1px solid rgba(247,130,59,0.10)', '0 4px 14px rgba(247,130,59,0.06)', 'ยอดรวมสัญญา', '#f36916', '฿' + k.totalContractDisp, k.contractCount + ' สัญญา');
-    html += kpiCard('#12b886', '', '1px solid rgba(18,184,134,0.15)', '0 4px 14px rgba(18,184,134,0.06)', 'ยอดชำระแล้ว', '#12b886', '฿' + k.paidDisp, k.paidCustomerCount + ' ราย');
-    html += kpiCard('#6b7280', '', '1px solid rgba(0,0,0,0.08)', '0 4px 14px rgba(0,0,0,0.04)', 'ยอดคงเหลือสุทธิ', '#212529', '฿' + k.netRemainingDisp, 'ยอดรวมสัญญา − ยอดชำระแล้ว');
-    html += '</div>';
-    html += '<div style="display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:24px;">';
+    // KPI strip — ยอดค้างชำระ/ยกเลิกสัญญาคืนเครื่อง (ยอดรวมสัญญา/ยอดชำระแล้ว/ยอดคงเหลือสุทธิ
+    // ย้ายขึ้นไปเป็นการ์ดใหญ่ด้านบนแล้ว — per explicit user request 2026-08-26)
+    html += '<div style="display:grid; grid-template-columns:repeat(2,1fr); gap:16px; margin-bottom:24px;">';
     html += kpiCard('#e03131', '', '1px solid rgba(224,49,49,0.15)', '0 4px 14px rgba(224,49,49,0.06)', 'ยอดค้างชำระ', '#e03131', '฿' + k.overdueDisp, k.overdueCustomerCount + ' ราย · รวมหนี้สงสัยจะสูญ');
     html += kpiCard('#d6336c', '', '1px solid rgba(214,51,108,0.15)', '0 4px 14px rgba(214,51,108,0.06)', 'ยกเลิกสัญญา คืนเครื่อง', '#d6336c', '฿' + k.cancelledDisp, k.cancelledCount + ' สัญญา');
     html += '</div>';
