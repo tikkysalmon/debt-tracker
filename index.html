@@ -2223,42 +2223,6 @@
     soldOrders.forEach(function (o) { totalOwedCustomerSet[customerKey(o)] = true; });
     var totalOwedSum = overdueSum + badDebtSum + soldOutstandingSum;
 
-    // Risk Overview breakdown (2026-08-26) — hero "มูลค่าหนี้ที่มีความเสี่ยงทั้งหมด" card + segmented
-    // bar. Priority-ordered, mutually-exclusive per order so ดำเนินคดีทางกฎหมาย (a customer-level tag
-    // orthogonal to installment status/isSold — see isCustomerLegalAction) never double-counts against
-    // ค้างชำระ/หนี้สงสัยจะสูญ/จำหน่ายให้บริษัทติดตามหนี้ for an order that is both legal-tagged and
-    // already counted there. Priority per order: legal-tagged (whole-order totalOutstandingRaw, same
-    // field legalActionSum above already uses) > active order's own per-installment
-    // ค้างชำระ/หนี้สงสัยจะสูญ > sold-outstanding. Explicitly excludes ยกเลิกสัญญา คืนเครื่อง and
-    // ยกเลิกบิล (เปิดผิด) per explicit user request.
-    var riskLegalSum = 0, riskOverdueSum = 0, riskBadDebtSum = 0, riskSoldSum = 0;
-    activeOrders.forEach(function (o) {
-      if (isCustomerLegalAction(o)) { riskLegalSum += o.totalOutstandingRaw; return; }
-      o.installments.concat(o.accessoryInstallments || []).forEach(function (i) {
-        var outstanding = Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0));
-        var grp = STATUS_TO_GROUP[i.effectiveStatus];
-        if (grp === 'ค้างชำระ') riskOverdueSum += outstanding;
-        else if (grp === 'หนี้สงสัยจะสูญ') riskBadDebtSum += outstanding;
-      });
-    });
-    soldOrders.forEach(function (o) {
-      if (isCustomerLegalAction(o)) { riskLegalSum += o.totalOutstandingRaw; return; }
-      riskSoldSum += o.totalOutstandingRaw;
-    });
-    var riskTotalSum = riskOverdueSum + riskSoldSum + riskLegalSum + riskBadDebtSum;
-    // หนี้สงสัยจะสูญ merged into ค้างชำระ as one segment per explicit user request (2026-08-26) —
-    // no longer broken out on its own in the risk bar.
-    var riskSegs = [
-      { label: 'ค้างชำระ', color: '#e03131', amount: riskOverdueSum + riskBadDebtSum },
-      { label: 'จำหน่ายให้บริษัทติดตามหนี้', color: '#f08c00', amount: riskSoldSum },
-      { label: 'ดำเนินคดีทางกฎหมาย', color: '#5f3dc4', amount: riskLegalSum }
-    ].map(function (s) { return Object.assign({}, s, { pct: riskTotalSum > 0 ? (s.amount / riskTotalSum * 100) : 0, amountDisp: fmtMoney(s.amount) }); });
-    var riskBreakdown = {
-      totalRaw: riskTotalSum, totalDisp: fmtMoney(riskTotalSum),
-      pctOfContract: totalContract > 0 ? (riskTotalSum / totalContract * 100).toFixed(1) : '0.0',
-      segments: riskSegs
-    };
-
     var kpi = {
       totalContractDisp: fmtMoney(totalContract), contractCount: contractOrders.length,
       paidDisp: fmtMoney(paidSum), paidCustomerCount: Object.keys(paidCustomerSet).length,
@@ -2608,7 +2572,7 @@
     };
 
     return {
-      kpi: kpi, riskBreakdown: riskBreakdown, paymentDonut: paymentDonut, monthlyTrend: monthlyTrend, hasTrendData: monthlyTrend.length > 0,
+      kpi: kpi, paymentDonut: paymentDonut, monthlyTrend: monthlyTrend, hasTrendData: monthlyTrend.length > 0,
       dueDateBreakdown: dueDateBreakdown, dueDateHasData: dueDateHasData,
       gradeCards: gradeCards, gradeDonut: gradeDonut, gradeTotal: gradeTotal,
       ageOverdueSummary: ageOverdueSummary, ageBadDebtSummary: ageBadDebtSummary,
@@ -9672,38 +9636,9 @@
     '</div>';
     html += '</div>';
 
-    // Risk Overview — มูลค่าหนี้ที่มีความเสี่ยงทั้งหมด (hero card + segmented risk bar)
-    var rb = d.riskBreakdown;
-    html += '<div style="background:linear-gradient(135deg,#1c2333,#28324a); border-radius:20px; padding:26px 28px; margin-bottom:24px; color:#fff; box-shadow:0 10px 30px rgba(28,35,51,0.35);">' +
-      '<div style="display:flex; align-items:flex-start; justify-content:space-between; gap:20px; flex-wrap:wrap;">' +
-        '<div>' +
-          '<div style="font-size:13px; color:rgba(255,255,255,0.65); margin-bottom:6px;">มูลค่าหนี้ที่มีความเสี่ยงทั้งหมด (Total Risk Exposure)</div>' +
-          '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:34px;">฿' + rb.totalDisp + '</div>' +
-          '<div style="font-size:12px; color:rgba(255,255,255,0.55); margin-top:6px;">คิดเป็น ' + rb.pctOfContract + '% ของยอดรวมสัญญา ฿' + k.totalContractDisp + '</div>' +
-        '</div>' +
-        '<div style="text-align:right;">' +
-          '<div style="font-size:12.5px; color:rgba(255,255,255,0.65); margin-bottom:6px;">อัตราการชำระจากยอดรวมสัญญา</div>' +
-          '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:26px;">' + k.paidRatePercent + '%</div>' +
-        '</div>' +
-      '</div>' +
-      '<div style="height:12px; border-radius:8px; overflow:hidden; display:flex; background:rgba(255,255,255,0.10); margin-top:22px;">' +
-        rb.segments.filter(function (s) { return s.amount > 0; }).map(function (s) {
-          return '<div style="width:' + s.pct + '%; background:' + s.color + ';"></div>';
-        }).join('') +
-      '</div>' +
-      '<div style="display:flex; flex-wrap:wrap; gap:18px; margin-top:16px;">' +
-        rb.segments.map(function (s) {
-          return '<div style="display:flex; align-items:center; gap:7px; font-size:12.5px; color:rgba(255,255,255,0.85);">' +
-            '<div style="width:9px;height:9px;border-radius:50%;background:' + s.color + '; flex-shrink:0;"></div>' +
-            s.label + ' ฿' + s.amountDisp +
-          '</div>';
-        }).join('') +
-      '</div>' +
-    '</div>';
-
-    // ยอดค้างชำระ/ยกเลิกสัญญาคืนเครื่อง KPI cards removed per explicit user request (2026-08-26) —
-    // ค้างชำระ is already shown in the risk bar's legend above; ยกเลิกสัญญาคืนเครื่อง still has its
-    // own detail section further down the page.
+    // Risk Overview hero card removed per explicit user request (2026-08-26). ยอดค้างชำระ/
+    // ยกเลิกสัญญาคืนเครื่อง KPI cards were already removed above this for the same reason — all
+    // these figures still have their own detail sections further down the page.
 
     // Payment donut + trend
     html += '<div style="display:grid; grid-template-columns:1.1fr 1fr; gap:20px; margin-bottom:24px; align-items:stretch;">';
