@@ -9693,31 +9693,39 @@
       '</div>' +
     '</div>';
     // 3-series grouped bar chart (ยอดที่ต้องได้รับ / ยอดที่ได้รับจริง / ยอดที่ยังไม่ได้รับ per
-    // due-month), per explicit user request 2026-08-26. Circular badge removed and full (not
-    // K/M-abbreviated) amount shown per same-day follow-up — printed as compact rotated-vertical
-    // text above each bar so it still fits without collision. Month groups use flex:1/min-width:0
-    // (not fixed widths + overflow-x:auto like the earlier version) so all months compress to fit
-    // the card's actual width with no horizontal scroll needed, per that same follow-up.
-    function trendBar(color, colorLight, heightPct, amountDisp) {
+    // due-month), per explicit user request 2026-08-26. Restyled again same day per follow-up
+    // ("ให้ดูสวยงาม และมองตัวเลขได้ชัดเจน") — rotated-vertical text was hard to read at a glance,
+    // so the 3 full amounts now sit as a normal horizontal, color-coded 3-line stack directly above
+    // each month's bar trio (reads left-to-right like everything else on the page, no head-tilting)
+    // instead of rotated per-bar labels. Month groups stay flex:1/min-width:0 (no horizontal
+    // scroll) from the prior fix. Pill bars + soft ghost shadow behind kept for depth/polish.
+    function trendBar(color, colorLight, heightPct) {
       return '<div style="position:relative; flex:0 1 18px; min-width:4px; height:' + heightPct + '%;">' +
-        '<div style="position:absolute; bottom:100%; left:50%; margin-bottom:5px; font-size:8.5px; font-weight:700; color:#495057; white-space:nowrap; writing-mode:vertical-rl; transform:translateX(-50%) rotate(180deg); transform-origin:center;">฿' + amountDisp + '</div>' +
         '<div style="position:absolute; top:-8px; left:3px; right:-3px; bottom:0; background:' + colorLight + '; opacity:0.45; border-radius:999px;"></div>' +
         '<div style="position:absolute; inset:0 3px 0 0; background:linear-gradient(180deg,' + colorLight + ',' + color + '); border-radius:999px; box-shadow:0 5px 10px ' + hexToRgba(color, 0.3) + ';"></div>' +
       '</div>';
     }
+    function trendValueLine(color, amountDisp) {
+      return '<div style="color:' + color + '; font-weight:700; white-space:nowrap;">฿' + amountDisp + '</div>';
+    }
     var trendInner = d.hasTrendData
-      ? '<div style="display:flex; align-items:center; gap:16px; margin-bottom:14px; font-size:11.5px; color:#6b7280; flex-wrap:wrap;">' +
+      ? '<div style="display:flex; align-items:center; gap:16px; margin-bottom:18px; font-size:11.5px; color:#6b7280; flex-wrap:wrap;">' +
           '<div style="display:flex; align-items:center; gap:5px;"><span style="width:9px;height:9px;border-radius:3px;background:#339af0;display:inline-block;"></span>ยอดที่ต้องได้รับ</div>' +
           '<div style="display:flex; align-items:center; gap:5px;"><span style="width:9px;height:9px;border-radius:3px;background:#40c057;display:inline-block;"></span>ยอดที่ได้รับจริง</div>' +
           '<div style="display:flex; align-items:center; gap:5px;"><span style="width:9px;height:9px;border-radius:3px;background:#e03131;display:inline-block;"></span>ยอดที่ยังไม่ได้รับ</div>' +
         '</div>' +
-        '<div style="display:flex; align-items:flex-end; gap:8px; min-height:290px; padding:140px 4px 0;">' +
+        '<div style="display:flex; align-items:flex-end; gap:6px;">' +
           d.monthlyTrend.map(function (m) {
-            return '<div style="display:flex; flex-direction:column; align-items:center; gap:10px; height:100%; justify-content:flex-end; flex:1; min-width:0;">' +
+            return '<div style="display:flex; flex-direction:column; align-items:center; gap:12px; flex:1; min-width:0; padding:10px 2px 14px;">' +
+              '<div style="display:flex; flex-direction:column; align-items:center; gap:2px; font-size:9.5px; line-height:1.5;">' +
+                trendValueLine('#339af0', m.dueDisp) +
+                trendValueLine('#40c057', m.paidDisp) +
+                trendValueLine('#e03131', m.shortDisp) +
+              '</div>' +
               '<div style="display:flex; align-items:flex-end; justify-content:center; gap:4px; height:150px; width:100%;">' +
-                trendBar('#339af0', '#74c0fc', m.dueHeightPct, m.dueDisp) +
-                trendBar('#40c057', '#8ce99a', m.paidHeightPct, m.paidDisp) +
-                trendBar('#e03131', '#ffa8a8', m.shortHeightPct, m.shortDisp) +
+                trendBar('#339af0', '#74c0fc', m.dueHeightPct) +
+                trendBar('#40c057', '#8ce99a', m.paidHeightPct) +
+                trendBar('#e03131', '#ffa8a8', m.shortHeightPct) +
               '</div>' +
               '<div style="font-size:11px; color:#6b7280; font-weight:600; white-space:nowrap;">' + esc(m.label) + '</div>' +
             '</div>';
