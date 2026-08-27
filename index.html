@@ -2245,6 +2245,40 @@
     // separately-scoped figure.
     var totalDebtSum = overdueExLegalSum + soldSum + legalActionSum;
 
+    // ยอดรวมหนี้ทั้งหมด แยกตามเดือนที่ทำสัญญา (2026-08-26, per explicit user request) — same 3
+    // components as totalDebtSum above (ค้างชำระ ไม่รวมดำเนินคดี + จำหน่ายชื่อให้บริษัทติดตามหนี้ +
+    // ดำเนินคดีทางกฎหมาย, same per-order basis each already uses), just re-bucketed by
+    // o.contractDate's month instead of flattened into one number — so the 3 totals still sum to
+    // exactly totalDebtSum. Orders with no contractDate are skipped (can't be bucketed).
+    var contractMonthTotals = {};
+    function addToContractMonth(o, amount) {
+      if (amount <= 0 || !o.contractDate) return;
+      var key = o.contractDate.slice(0, 7);
+      contractMonthTotals[key] = (contractMonthTotals[key] || 0) + amount;
+    }
+    activeOrders.forEach(function (o) {
+      if (isCustomerLegalAction(o)) return;
+      var orderOverdue = 0;
+      o.installments.concat(o.accessoryInstallments || []).forEach(function (i) {
+        var outstanding = Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0));
+        var grp = STATUS_TO_GROUP[i.effectiveStatus];
+        if (grp === 'ค้างชำระ' || grp === 'หนี้สงสัยจะสูญ') orderOverdue += outstanding;
+      });
+      addToContractMonth(o, orderOverdue);
+    });
+    soldOrders.forEach(function (o) { addToContractMonth(o, o.totalContractRaw); });
+    legalActionOrders.forEach(function (o) { addToContractMonth(o, o.totalOutstandingRaw); });
+    var contractMonthKeys = Object.keys(contractMonthTotals).sort().slice(-12);
+    var contractMonthMax = Math.max.apply(null, [1].concat(contractMonthKeys.map(function (k) { return contractMonthTotals[k]; })));
+    var totalDebtByContractMonth = contractMonthKeys.map(function (k) {
+      var parts = k.split('-'), y = parts[0], m = parts[1];
+      return {
+        key: k, label: MONTH_LABELS[Number(m) - 1] + ' ' + y.slice(2),
+        amountRaw: contractMonthTotals[k], amountDisp: fmtMoney(contractMonthTotals[k]),
+        heightPct: Math.max(4, contractMonthTotals[k] / contractMonthMax * 100)
+      };
+    });
+
     var kpi = {
       totalContractDisp: fmtMoney(totalContract), contractCount: contractOrders.length,
       paidDisp: fmtMoney(paidSum), paidCustomerCount: Object.keys(paidCustomerSet).length,
@@ -2652,6 +2686,7 @@
 
     return {
       kpi: kpi, paymentDonut: paymentDonut, monthlyTrend: monthlyTrend, hasTrendData: monthlyTrend.length > 0,
+      totalDebtByContractMonth: totalDebtByContractMonth, hasTotalDebtByContractMonthData: totalDebtByContractMonth.length > 0,
       dueDateBreakdown: dueDateBreakdown, dueDateHasData: dueDateHasData,
       gradeCards: gradeCards, gradeDonut: gradeDonut, gradeTotal: gradeTotal,
       ageOverdueSummary: ageOverdueSummary, ageBadDebtSummary: ageBadDebtSummary,
@@ -9831,6 +9866,31 @@
     '</div>';
     html += '</div>';
     html += '</div>';
+
+    // ยอดรวมหนี้ทั้งหมด แยกตามเดือนที่ทำสัญญา (2026-08-26, per explicit user request — matches a
+    // reference image they attached: single pill bar per month, ghost shadow behind, plain value
+    // label above). Same 3-component total as the ยอดรวมหนี้ทั้งหมด card above, just re-bucketed by
+    // contract-date month instead of flattened into one number.
+    if (d.hasTotalDebtByContractMonthData) {
+      var CM_BAR_H = 140;
+      html += '<div style="background:rgba(255,255,255,0.97); backdrop-filter:blur(18px); border:1px solid rgba(255,255,255,0.85); border-radius:20px; padding:22px 24px; margin-bottom:24px; box-shadow:0 8px 26px rgba(247,130,59,0.08);">' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#212529; margin-bottom:16px;">ยอดรวมหนี้ทั้งหมดแยกตามเดือนที่ทำสัญญา</div>' +
+        '<div style="display:flex; align-items:flex-end; gap:8px; min-height:' + (CM_BAR_H + 60) + 'px;">' +
+          d.totalDebtByContractMonth.map(function (m) {
+            var barPx = Math.max(4, m.heightPct / 100 * CM_BAR_H);
+            return '<div style="display:flex; flex-direction:column; align-items:center; justify-content:flex-end; flex:1; min-width:0; height:100%;">' +
+              '<div style="font-size:9.5px; font-weight:700; color:#495057; white-space:nowrap; margin-bottom:4px;">฿' + m.amountDisp + '</div>' +
+              '<div style="position:relative; width:100%; max-width:28px; height:' + barPx + 'px;">' +
+                '<div style="position:absolute; top:-8px; left:4px; right:-4px; bottom:0; background:#ffa8a8; opacity:0.5; border-radius:999px;"></div>' +
+                '<div style="position:absolute; inset:0 4px 0 0; background:linear-gradient(180deg,#ff8787,#e03131); border-radius:999px; box-shadow:0 5px 10px rgba(224,49,49,0.25);"></div>' +
+              '</div>' +
+              '<div style="font-size:11px; color:#6b7280; font-weight:600; margin-top:8px; white-space:nowrap;">' + esc(m.label) + '</div>' +
+            '</div>';
+          }).join('') +
+        '</div>' +
+      '</div>';
+    }
+
     html += '<div style="margin-bottom:24px;">' + trendCardHtml + '</div>';
 
     // Payment-status breakdown (all installments of all customers combined)
