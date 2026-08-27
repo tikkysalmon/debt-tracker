@@ -2239,6 +2239,12 @@
       });
     });
 
+    // ยอดรวมหนี้ทั้งหมด (ไม่รวมยกเลิกสัญญาคืนเครื่อง, ยกเลิกบิล) — per explicit user request
+    // 2026-08-26. Straight sum of the 3 cards it sits above (ยอดค้างชำระ + จำหน่ายชื่อให้บริษัท
+    // ติดตามหนี้ + ดำเนินคดีทางกฎหมาย), matching what's already shown rather than re-deriving a
+    // separately-scoped figure.
+    var totalDebtSum = overdueExLegalSum + soldSum + legalActionSum;
+
     var kpi = {
       totalContractDisp: fmtMoney(totalContract), contractCount: contractOrders.length,
       paidDisp: fmtMoney(paidSum), paidCustomerCount: Object.keys(paidCustomerSet).length,
@@ -2248,6 +2254,7 @@
       // customer with both a ค้างชำระ and a หนี้สงสัยจะสูญ installment isn't counted twice.
       overdueDisp: fmtMoney(overdueSum + badDebtSum), overdueCustomerCount: Object.keys(Object.assign({}, overdueCustomerSet, badDebtCustomerSet)).length,
       overdueExLegalDisp: fmtMoney(overdueExLegalSum), overdueExLegalCustomerCount: Object.keys(overdueExLegalCustomerSet).length,
+      totalDebtDisp: fmtMoney(totalDebtSum),
       badDebtDisp: fmtMoney(badDebtSum), badDebtCustomerCount: Object.keys(badDebtCustomerSet).length,
       totalOwedDisp: fmtMoney(totalOwedSum), totalOwedCustomerCount: Object.keys(totalOwedCustomerSet).length,
       cancelledDisp: fmtMoney(cancelledSum), cancelledCount: cancelledOrders.length,
@@ -9762,8 +9769,14 @@
     // visibly shorter/mismatched). Trend chart moved to its own full-width row below instead.
     html += '<div style="display:grid; grid-template-columns:1.1fr 1fr; gap:20px; margin-bottom:20px; align-items:stretch;">';
     html += donutCardHtml;
+    // Symmetric 2x2 grid (ยอดรวมหนี้ทั้งหมด stacked above ยอดค้างชำระ, matching จำหน่ายชื่อฯ
+    // stacked above ดำเนินคดีทางกฎหมาย) — all 4 cards same size, per explicit user request
+    // 2026-08-26 (previously ยอดค้างชำระ alone was a big card next to 2 small stacked ones).
     html += '<div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:stretch; height:100%;">';
-    html += '<div style="height:100%;">' + bigAmountCard('#e03131', '1px solid rgba(224,49,49,0.15)', '0 4px 14px rgba(224,49,49,0.06)', 'ยอดค้างชำระ', '#e03131', k.overdueExLegalDisp, k.overdueExLegalCustomerCount + ' ราย · ไม่รวมจำหน่ายชื่อฯ/ดำเนินคดี', true) + '</div>';
+    html += '<div style="display:grid; grid-template-rows:1fr 1fr; gap:16px; height:100%;">' +
+      bigAmountCard('#212529', '1px solid rgba(33,37,41,0.15)', '0 4px 14px rgba(33,37,41,0.06)', 'ยอดรวมหนี้ทั้งหมด', '#212529', k.totalDebtDisp, 'ยอดค้างชำระ + จำหน่ายชื่อฯ + ดำเนินคดี · ไม่รวมยกเลิกสัญญา/ยกเลิกบิล', false) +
+      bigAmountCard('#e03131', '1px solid rgba(224,49,49,0.15)', '0 4px 14px rgba(224,49,49,0.06)', 'ยอดค้างชำระ', '#e03131', k.overdueExLegalDisp, k.overdueExLegalCustomerCount + ' ราย · ไม่รวมจำหน่ายชื่อฯ/ดำเนินคดี', false) +
+    '</div>';
     html += '<div style="display:grid; grid-template-rows:1fr 1fr; gap:16px; height:100%;">' +
       bigAmountCard('#f08c00', '1px solid rgba(240,140,0,0.15)', '0 4px 14px rgba(240,140,0,0.06)', 'จำหน่ายชื่อให้บริษัทติดตามหนี้', '#f08c00', k.soldDisp, k.soldCount + ' สัญญา', false) +
       bigAmountCard('#5f3dc4', '1px solid rgba(95,61,196,0.15)', '0 4px 14px rgba(95,61,196,0.06)', 'ดำเนินคดีทางกฎหมาย', '#5f3dc4', k.legalActionDisp, k.legalActionCount + ' สัญญา', false) +
