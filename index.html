@@ -9692,11 +9692,15 @@
     '</div>';
   }
   function bigRateCard(borderColor, cardBorder, shadow, label, valueColor, pctDisp, amountDisp, sub, big) {
+    // pctDisp omitted (e.g. ยอดรวมสัญญา, which is trivially 100% of itself) — per explicit user
+    // request 2026-08-26, drop the % line entirely and show the amount at the big % font size
+    // instead, so it's the prominent figure rather than a small secondary line.
+    var showPct = !!pctDisp;
     return '<div style="background:#fff; border-radius:16px; border:' + cardBorder + '; border-left:' + (big ? '6px' : '4px') + ' solid ' + borderColor + '; padding:' + (big ? '26px 28px' : '16px 18px') + '; box-shadow:' + shadow + '; height:100%; box-sizing:border-box; display:flex; flex-direction:column; justify-content:center;">' +
       '<div style="font-size:' + (big ? '14px' : '12.5px') + '; color:#6b7280; margin-bottom:8px;">' + label + '</div>' +
-      '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:' + (big ? '46px' : '26px') + '; color:' + valueColor + '; line-height:1;">' + pctDisp + '%</div>' +
-      '<div style="font-size:' + (big ? '22px' : '18px') + '; color:#212529; font-weight:700; margin-top:10px;">฿' + amountDisp + '</div>' +
-      '<div style="font-size:12px; color:#8d93a0; margin-top:2px;">' + sub + '</div>' +
+      (showPct ? '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:' + (big ? '46px' : '26px') + '; color:' + valueColor + '; line-height:1;">' + pctDisp + '%</div>' : '') +
+      '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:' + (showPct ? (big ? '22px' : '18px') : (big ? '40px' : '24px')) + '; color:' + (showPct ? '#212529' : valueColor) + '; margin-top:' + (showPct ? '10px' : '0') + '; line-height:1;">฿' + amountDisp + '</div>' +
+      '<div style="font-size:12px; color:#8d93a0; margin-top:8px;">' + sub + '</div>' +
     '</div>';
   }
   function bigAmountCard(borderColor, cardBorder, shadow, label, valueColor, amountDisp, sub, big) {
@@ -9715,7 +9719,7 @@
     // amount/count, per explicit user request (2026-08-26). ยอดรวมสัญญา shows 100% as the base
     // that ยอดชำระแล้ว/ยอดคงเหลือ's own % (of ยอดรวมสัญญา) are measured against.
     html += '<div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:24px;">';
-    html += bigRateCard('#f36916', '1px solid rgba(247,130,59,0.10)', '0 4px 14px rgba(247,130,59,0.06)', 'ยอดรวมสัญญา', '#f36916', '100.0', k.totalContractDisp, k.contractCount + ' สัญญา', true);
+    html += bigRateCard('#f36916', '1px solid rgba(247,130,59,0.10)', '0 4px 14px rgba(247,130,59,0.06)', 'ยอดรวมสัญญา', '#f36916', '', k.totalContractDisp, k.contractCount + ' สัญญา', true);
     html += '<div style="display:grid; grid-template-rows:1fr 1fr; gap:16px;">' +
       bigRateCard('#12b886', '1px solid rgba(18,184,134,0.15)', '0 4px 14px rgba(18,184,134,0.06)', 'ยอดชำระแล้ว', '#12b886', k.paidRatePercent, k.paidDisp, k.paidCustomerCount + ' ราย', false) +
       bigRateCard('#6b7280', '1px solid rgba(0,0,0,0.08)', '0 4px 14px rgba(0,0,0,0.04)', 'ยอดคงเหลือสุทธิ', '#212529', k.remainingRatePercent, k.netRemainingDisp, 'ยอดรวมสัญญา − ยอดชำระแล้ว', false) +
