@@ -2254,10 +2254,17 @@
     // order-level lump sums with no single "due date" of their own — bucketed by that order's
     // EARLIEST still-unpaid installment's due date instead, as the best available proxy for "when
     // this money first became due."
+    // Capped at the current month per explicit user follow-up 2026-08-26 — a งวด whose dueDate
+    // hasn't arrived yet can show up here (e.g. a MANUAL_ONLY_STATUSES-flagged future งวด, or the
+    // earliest-unpaid-installment proxy landing on a not-yet-due งวด) but reads as nonsensical
+    // "future" data on a bar-per-month chart, same reasoning as the ยอดที่ต้องได้รับ trend above.
+    var dueMonthNow = new Date();
+    var dueMonthTodayKey = dueMonthNow.getFullYear() + '-' + String(dueMonthNow.getMonth() + 1).padStart(2, '0');
     var dueMonthTotals = {};
     function addToDueMonth(dueDate, amount) {
       if (amount <= 0 || !dueDate) return;
       var key = dueDate.slice(0, 7);
+      if (key > dueMonthTodayKey) return;
       dueMonthTotals[key] = (dueMonthTotals[key] || 0) + amount;
     }
     function earliestUnpaidDueDate(o) {
