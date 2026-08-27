@@ -2425,13 +2425,57 @@
       });
     var dueDateHasData = dueDateBreakdown.length > 0;
 
-    var gradeBuckets = { A: { count: 0, paid: 0, overdue: 0 }, B: { count: 0, paid: 0, overdue: 0 }, 'หนี้สงสัยจะสูญ': { count: 0, paid: 0, overdue: 0 } };
+    // จำแนกเกรดลูกค้าใหม่ (2026-08-26, per explicit user request — scoped ONLY to this Dashboard
+    // card; every other lateCount/GRADE_COLORS-based use elsewhere in the app, e.g. SMS filters,
+    // age summaries, the tracking-page badge, is untouched, confirmed via AskUserQuestion). The app
+    // has no separate late-payment-history log — only each installment's current effectiveStatus —
+    // so "ประวัติ" is derived from the customer's own last-3-PAID-installments sample (main+
+    // accessory combined, same scope lateCount used), per the user's own answer via
+    // AskUserQuestion. Installments whose paidDate falls on/near 2026-07-11 (the bulk
+    // data-migration date, confirmed by the user — there's no importedAt field to check directly)
+    // are excluded from the sample so the migration's stamped dates don't masquerade as real
+    // late-payment history for every customer.
+    var GRADE_HISTORY_EXCLUDE_FROM = '2026-07-08', GRADE_HISTORY_EXCLUDE_TO = '2026-07-14';
+    var newGradeBuckets = {
+      A: { count: 0, paid: 0, overdue: 0 },
+      B: { count: 0, paid: 0, overdue: 0 },
+      watch: { count: 0, paid: 0, overdue: 0 },
+      blacklist: { count: 0, paid: 0, overdue: 0 }
+    };
     activeOrders.forEach(function (o) {
-      var g = o.lateCount === 0 ? 'A' : o.lateCount === 1 ? 'B' : 'หนี้สงสัยจะสูญ';
-      gradeBuckets[g].count++;
-      gradeBuckets[g].paid += o.totalPaidFullRaw;
-      gradeBuckets[g].overdue += o.lateOutstandingRaw;
+      var allInsts = o.installments.concat(o.accessoryInstallments || []);
+      var reliable = allInsts.filter(function (i) {
+        return !(i.paidDate && i.paidDate >= GRADE_HISTORY_EXCLUDE_FROM && i.paidDate <= GRADE_HISTORY_EXCLUDE_TO);
+      });
+      var paidHistory = reliable.filter(function (i) { return i.paidDate; })
+        .sort(function (a, b) { return a.paidDate < b.paidDate ? 1 : -1; })
+        .slice(0, 3);
+      // "ล่าช้า" = paid strictly after its own due date.
+      var lateInSample = paidHistory.filter(function (i) { return i.dueDate && i.paidDate > i.dueDate; }).length;
+
+      // Blacklist: never made a real payment, AND already overdue on the very first installment
+      // (by due date) — takes priority over the sample-based grades below (a never-paid order has
+      // no paidHistory to sample anyway).
+      var neverPaid = o.totalPaidFullRaw <= 0.005;
+      var firstInst = allInsts.slice().sort(function (a, b) { return (a.dueDate || '') < (b.dueDate || '') ? -1 : 1; })[0];
+      var overdueFromFirst = firstInst && LATE_STATUSES.indexOf(firstInst.effectiveStatus) !== -1;
+
+      var g;
+      if (neverPaid && overdueFromFirst) g = 'blacklist';
+      else if (paidHistory.length === 0) g = null; // too new / not enough payment history to grade yet
+      else if (lateInSample === 0) g = 'A';
+      else if (lateInSample === 1) g = 'B';
+      else g = 'watch'; // 2-3 of the (up to 3) sampled installments were late
+
+      if (!g) return;
+      newGradeBuckets[g].count++;
+      newGradeBuckets[g].paid += o.totalPaidFullRaw;
+      newGradeBuckets[g].overdue += o.lateOutstandingRaw;
     });
+    var NEW_GRADE_ORDER = ['A', 'B', 'watch', 'blacklist'];
+    var NEW_GRADE_COLORS = { A: '#12b886', B: '#f59f00', watch: '#e8590c', blacklist: '#c92a2a' };
+    var NEW_GRADE_CARD_KEY = { A: 'เกรด A', B: 'เกรด B', watch: 'กลุ่มเฝ้าระวัง', blacklist: 'กลุ่ม Blacklist' };
+    var NEW_GRADE_DONUT_LABEL = { A: 'A', B: 'B', watch: 'เฝ้าระวัง', blacklist: 'Blacklist' };
     // % ต่อเกรดต้องคำนวณจากยอดรวมสัญญาทั้งหมด (orders.length, ทุกสถานะ) ไม่ใช่แค่ active — เดิมใช้
     // activeOrders.length ทำให้ทั้งตัวเลข "สัญญาทั้งหมด" ที่แสดงและ % ต่อการ์ดไม่ตรงกับยอดรวมสัญญาจริง
     // (ไม่รวมยกเลิกสัญญา/จำหน่ายชื่อ) ตามที่ผู้ใช้ท้วงติง 2026-07-30 — การจัดกลุ่มเกรด (บรรทัดด้านบน)
@@ -2439,22 +2483,22 @@
     var gradeTotal = orders.length;
     // % ต่อการ์ดเกรด (2026-07-30, ตามที่ผู้ใช้ระบุ): ไม่ใช่สัดส่วนจำนวนสัญญาอีกต่อไป แต่เป็นสัดส่วน
     // ยอดเงินเทียบกับยอดรวมสัญญาทั้งหมด (totalContract) — เกรด A ใช้ยอดชำระแล้วของเกรดนั้นเป็นตัวตั้ง
-    // (สะท้อนว่าเงินที่เก็บได้จากลูกค้าความเสี่ยงต่ำคิดเป็นกี่ % ของพอร์ตทั้งหมด), เกรด B และ
-    // หนี้สงสัยจะสูญ ใช้ยอดค้างชำระของเกรดนั้นแทน (ความเสี่ยงที่ยังค้างอยู่คิดเป็นกี่ % ของพอร์ต) — ตัว
-    // หารเดียวกันทั้ง 3 การ์ด แต่ตัวตั้งต่างกัน จึงไม่จำเป็นต้องรวมกันได้ 100% (คนละคำถามกัน: "เก็บเงินได้
-    // เท่าไหร่" กับ "ยังค้างอยู่เท่าไหร่" ไม่ใช่สัดส่วนของก้อนเดียวกัน).
-    function gradeAmount(g) { return g === 'A' ? gradeBuckets[g].paid : gradeBuckets[g].overdue; }
+    // (สะท้อนว่าเงินที่เก็บได้จากลูกค้าความเสี่ยงต่ำคิดเป็นกี่ % ของพอร์ตทั้งหมด), เกรดอื่นๆ ใช้
+    // ยอดค้างชำระของเกรดนั้นแทน (ความเสี่ยงที่ยังค้างอยู่คิดเป็นกี่ % ของพอร์ต) — ตัวหารเดียวกันทั้ง
+    // การ์ด แต่ตัวตั้งต่างกัน จึงไม่จำเป็นต้องรวมกันได้ 100% (คนละคำถามกัน: "เก็บเงินได้เท่าไหร่" กับ
+    // "ยังค้างอยู่เท่าไหร่" ไม่ใช่สัดส่วนของก้อนเดียวกัน).
+    function gradeAmount(g) { return g === 'A' ? newGradeBuckets[g].paid : newGradeBuckets[g].overdue; }
     function gradePct(g) { return totalContract > 0 ? (gradeAmount(g) / totalContract * 100) : 0; }
-    var gradeCards = ['A', 'B', 'หนี้สงสัยจะสูญ'].map(function (g) {
+    var gradeCards = NEW_GRADE_ORDER.map(function (g) {
       return {
-        key: g, count: gradeBuckets[g].count, color: GRADE_COLORS[g],
+        key: NEW_GRADE_CARD_KEY[g], count: newGradeBuckets[g].count, color: NEW_GRADE_COLORS[g],
         pct: gradePct(g).toFixed(1),
         pctLabel: g === 'A' ? 'ยอดที่ชำระแล้วจากยอดรวมทั้งหมด' : 'ยอดที่ค้างชำระจากยอดรวมทั้งหมด',
-        paidDisp: fmtMoney(gradeBuckets[g].paid), overdueDisp: fmtMoney(gradeBuckets[g].overdue),
+        paidDisp: fmtMoney(newGradeBuckets[g].paid), overdueDisp: fmtMoney(newGradeBuckets[g].overdue),
         barPct: gradePct(g)
       };
     });
-    var gradeDonutSegs = ['A', 'B', 'หนี้สงสัยจะสูญ'].map(function (g) { return { label: g, color: GRADE_COLORS[g], count: gradeBuckets[g].count, pct: gradePct(g) }; });
+    var gradeDonutSegs = NEW_GRADE_ORDER.map(function (g) { return { label: NEW_GRADE_DONUT_LABEL[g], color: NEW_GRADE_COLORS[g], count: newGradeBuckets[g].count, pct: gradePct(g) }; });
     var gradeDonut = { conic: buildConicGradient(gradeDonutSegs), segments: gradeDonutSegs.map(function (s) { return Object.assign({}, s, { pctDisp: s.pct.toFixed(1) }); }) };
 
     function buildAgeSummary(minLate) {
@@ -9828,7 +9872,7 @@
       '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; margin-bottom:20px;">' +
         d.gradeCards.map(function (gc) {
           return '<div style="border:1.5px solid ' + gc.color + '55; border-radius:16px; padding:18px; background:rgba(255,255,255,0.97);">' +
-            '<div style="display:inline-block; background:' + gc.color + '22; color:' + gc.color + '; padding:4px 12px; border-radius:20px; font-size:12px; font-weight:700; margin-bottom:10px;">เกรด ' + esc(gc.key) + '</div>' +
+            '<div style="display:inline-block; background:' + gc.color + '22; color:' + gc.color + '; padding:4px 12px; border-radius:20px; font-size:12px; font-weight:700; margin-bottom:10px;">' + esc(gc.key) + '</div>' +
             '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:26px; color:' + gc.color + ';">' + gc.pct + '%</div>' +
             '<div style="font-size:11px; color:#8d93a0; margin-top:2px;">(' + gc.pctLabel + ')</div>' +
             '<div style="font-size:12px; color:#6b7280; margin:6px 0 10px;">' + gc.count + ' สัญญา</div>' +
