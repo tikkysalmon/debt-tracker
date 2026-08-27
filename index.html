@@ -2245,37 +2245,45 @@
     // separately-scoped figure.
     var totalDebtSum = overdueExLegalSum + soldSum + legalActionSum;
 
-    // ยอดรวมหนี้ทั้งหมด แยกตามเดือนที่ทำสัญญา (2026-08-26, per explicit user request) — same 3
-    // components as totalDebtSum above (ค้างชำระ ไม่รวมดำเนินคดี + จำหน่ายชื่อให้บริษัทติดตามหนี้ +
-    // ดำเนินคดีทางกฎหมาย, same per-order basis each already uses), just re-bucketed by
-    // o.contractDate's month instead of flattened into one number — so the 3 totals still sum to
-    // exactly totalDebtSum. Orders with no contractDate are skipped (can't be bucketed).
-    var contractMonthTotals = {};
-    function addToContractMonth(o, amount) {
-      if (amount <= 0 || !o.contractDate) return;
-      var key = o.contractDate.slice(0, 7);
-      contractMonthTotals[key] = (contractMonthTotals[key] || 0) + amount;
+    // ยอดรวมหนี้ทั้งหมด แยกตามเดือนวันครบกำหนดชำระ (2026-08-26, per explicit user request — changed
+    // from เดือนที่ทำสัญญา same day per follow-up). Same 3 components as totalDebtSum above (ค้างชำระ
+    // ไม่รวมดำเนินคดี + จำหน่ายชื่อให้บริษัทติดตามหนี้ + ดำเนินคดีทางกฎหมาย, same per-order basis each
+    // already uses), so the totals still sum to exactly totalDebtSum. ค้างชำระ has a natural
+    // per-installment due date, so each overdue installment's own outstanding amount is bucketed by
+    // ITS OWN dueDate's month (finer-grained than one bucket per order). จำหน่ายชื่อฯ/ดำเนินคดี are
+    // order-level lump sums with no single "due date" of their own — bucketed by that order's
+    // EARLIEST still-unpaid installment's due date instead, as the best available proxy for "when
+    // this money first became due."
+    var dueMonthTotals = {};
+    function addToDueMonth(dueDate, amount) {
+      if (amount <= 0 || !dueDate) return;
+      var key = dueDate.slice(0, 7);
+      dueMonthTotals[key] = (dueMonthTotals[key] || 0) + amount;
+    }
+    function earliestUnpaidDueDate(o) {
+      var unpaid = o.installments.concat(o.accessoryInstallments || [])
+        .filter(function (i) { return i.dueDate && Number(i.amountPaid || 0) < Number(i.amountDue || 0); })
+        .sort(function (a, b) { return a.dueDate < b.dueDate ? -1 : 1; });
+      return unpaid.length ? unpaid[0].dueDate : null;
     }
     activeOrders.forEach(function (o) {
       if (isCustomerLegalAction(o)) return;
-      var orderOverdue = 0;
       o.installments.concat(o.accessoryInstallments || []).forEach(function (i) {
         var outstanding = Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0));
         var grp = STATUS_TO_GROUP[i.effectiveStatus];
-        if (grp === 'ค้างชำระ' || grp === 'หนี้สงสัยจะสูญ') orderOverdue += outstanding;
+        if (grp === 'ค้างชำระ' || grp === 'หนี้สงสัยจะสูญ') addToDueMonth(i.dueDate, outstanding);
       });
-      addToContractMonth(o, orderOverdue);
     });
-    soldOrders.forEach(function (o) { addToContractMonth(o, o.totalContractRaw); });
-    legalActionOrders.forEach(function (o) { addToContractMonth(o, o.totalOutstandingRaw); });
-    var contractMonthKeys = Object.keys(contractMonthTotals).sort().slice(-12);
-    var contractMonthMax = Math.max.apply(null, [1].concat(contractMonthKeys.map(function (k) { return contractMonthTotals[k]; })));
-    var totalDebtByContractMonth = contractMonthKeys.map(function (k) {
+    soldOrders.forEach(function (o) { addToDueMonth(earliestUnpaidDueDate(o), o.totalContractRaw); });
+    legalActionOrders.forEach(function (o) { addToDueMonth(earliestUnpaidDueDate(o), o.totalOutstandingRaw); });
+    var dueMonthKeys = Object.keys(dueMonthTotals).sort().slice(-12);
+    var dueMonthMax = Math.max.apply(null, [1].concat(dueMonthKeys.map(function (k) { return dueMonthTotals[k]; })));
+    var totalDebtByDueMonth = dueMonthKeys.map(function (k) {
       var parts = k.split('-'), y = parts[0], m = parts[1];
       return {
         key: k, label: MONTH_LABELS[Number(m) - 1] + ' ' + y.slice(2),
-        amountRaw: contractMonthTotals[k], amountDisp: fmtMoney(contractMonthTotals[k]),
-        heightPct: Math.max(4, contractMonthTotals[k] / contractMonthMax * 100)
+        amountRaw: dueMonthTotals[k], amountDisp: fmtMoney(dueMonthTotals[k]),
+        heightPct: Math.max(4, dueMonthTotals[k] / dueMonthMax * 100)
       };
     });
 
@@ -2686,7 +2694,7 @@
 
     return {
       kpi: kpi, paymentDonut: paymentDonut, monthlyTrend: monthlyTrend, hasTrendData: monthlyTrend.length > 0,
-      totalDebtByContractMonth: totalDebtByContractMonth, hasTotalDebtByContractMonthData: totalDebtByContractMonth.length > 0,
+      totalDebtByDueMonth: totalDebtByDueMonth, hasTotalDebtByDueMonthData: totalDebtByDueMonth.length > 0,
       dueDateBreakdown: dueDateBreakdown, dueDateHasData: dueDateHasData,
       gradeCards: gradeCards, gradeDonut: gradeDonut, gradeTotal: gradeTotal,
       ageOverdueSummary: ageOverdueSummary, ageBadDebtSummary: ageBadDebtSummary,
@@ -9867,16 +9875,16 @@
     html += '</div>';
     html += '</div>';
 
-    // ยอดรวมหนี้ทั้งหมด แยกตามเดือนที่ทำสัญญา (2026-08-26, per explicit user request — matches a
-    // reference image they attached: single pill bar per month, ghost shadow behind, plain value
-    // label above). Same 3-component total as the ยอดรวมหนี้ทั้งหมด card above, just re-bucketed by
-    // contract-date month instead of flattened into one number.
-    if (d.hasTotalDebtByContractMonthData) {
+    // ยอดรวมหนี้ทั้งหมด แยกตามเดือนวันครบกำหนดชำระ (2026-08-26, per explicit user request —
+    // changed from เดือนที่ทำสัญญา same day per follow-up; still matches the same reference-image
+    // style: single pill bar per month, ghost shadow behind, plain value label above). Same
+    // 3-component total as the ยอดรวมหนี้ทั้งหมด card above, just re-bucketed by due-date month.
+    if (d.hasTotalDebtByDueMonthData) {
       var CM_BAR_H = 140;
       html += '<div style="background:rgba(255,255,255,0.97); backdrop-filter:blur(18px); border:1px solid rgba(255,255,255,0.85); border-radius:20px; padding:22px 24px; margin-bottom:24px; box-shadow:0 8px 26px rgba(247,130,59,0.08);">' +
-        '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#212529; margin-bottom:16px;">ยอดรวมหนี้ทั้งหมดแยกตามเดือนที่ทำสัญญา</div>' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#212529; margin-bottom:16px;">ยอดรวมหนี้ทั้งหมดแยกตามเดือนวันครบกำหนดชำระ</div>' +
         '<div style="display:flex; align-items:flex-end; gap:8px; min-height:' + (CM_BAR_H + 60) + 'px;">' +
-          d.totalDebtByContractMonth.map(function (m) {
+          d.totalDebtByDueMonth.map(function (m) {
             var barPx = Math.max(4, m.heightPct / 100 * CM_BAR_H);
             return '<div style="display:flex; flex-direction:column; align-items:center; justify-content:flex-end; flex:1; min-width:0; height:100%;">' +
               '<div style="font-size:9.5px; font-weight:700; color:#495057; white-space:nowrap; margin-bottom:4px;">฿' + m.amountDisp + '</div>' +
