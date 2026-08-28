@@ -158,7 +158,11 @@ function computeSummary(state) {
       const isNotDueStatus = NOTDUE_STATUSES.indexOf(i.effectiveStatus) !== -1;
       // Safety-net catch-all mirrors index.html's fix #3 — a งวด manually frozen at "ชำระแล้ว" via
       // statusOverride can still have real remaining > 0; no-op for any properly-settled งวด.
-      if (i.effectiveStatus === 'ชำระบางส่วน' || grp === 'ค้างชำระ' || grp === 'หนี้สงสัยจะสูญ' || (!isNotDueStatus && remaining > 0.005)) {
+      const isOwedStatus = i.effectiveStatus === 'ชำระบางส่วน' || grp === 'ค้างชำระ' || grp === 'หนี้สงสัยจะสูญ' || (!isNotDueStatus && remaining > 0.005);
+      // dueDate gate (2026-08-28 follow-up, mirrors index.html) — a งวด flagged ค้างชำระ-type ahead of
+      // its real due date isn't genuinely overdue yet, per explicit user confirmation.
+      const dueReached = isDueDateReached(i) || isNaN(new Date(i.dueDate).getTime());
+      if (isOwedStatus && dueReached) {
         if (isLegal) legalDonutSum += remaining;
         else { overdueSum += remaining; overdueCustomerSet[ck] = true; }
       }
