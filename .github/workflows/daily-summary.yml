@@ -1,0 +1,31 @@
+name: Publish daily debt summary
+
+# Refreshes reports/latest-summary.json from /api/dashboard-summary so the Lark
+# daily-report routine (which cannot reach vercel.app directly — its sandbox
+# only allows api.github.com) can read fresh numbers via the GitHub Contents API.
+on:
+  schedule:
+    - cron: '50 10 * * 1-5' # 17:50 Asia/Bangkok (UTC+7), Mon-Fri — 10 min before the 18:00 Lark send
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch dashboard summary
+        run: |
+          mkdir -p reports
+          curl -sS --fail https://debt-tracker-amber-five.vercel.app/api/dashboard-summary -o reports/latest-summary.json
+          cat reports/latest-summary.json
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add reports/latest-summary.json
+          git diff --cached --quiet && echo "No changes" && exit 0
+          git commit -m "Update daily debt summary [skip ci]"
+          git push
