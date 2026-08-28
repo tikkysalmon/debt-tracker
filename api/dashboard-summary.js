@@ -112,12 +112,28 @@ function computeOrders(state) {
 function computeSummary(state) {
   const orders = computeOrders(state);
   const activeOrders = orders.filter((o) => !o.isCancelled && !o.isSold && !o.isBillCancelled);
-  const soldOrders = orders.filter((o) => o.isSold);
   const contractOrders = orders.filter((o) => !o.isBillCancelled);
   const legalActionOrders = orders.filter((o) => isCustomerLegalAction(o, state));
 
-  const paidSum = activeOrders.reduce((s, o) => s + o.totalPaidFullRaw, 0);
-  const totalContract = contractOrders.reduce((s, o) => s + o.totalContractRaw, 0);
+  // Re-synced 2026-08-28 to index.html's computeDashboard round-4 rewrite (see that file's big
+  // comment on the same identity) — totalContract/paidSum now guarantee reconciliation with the
+  // Dashboard donut for ANY data: netDue = max(0, amountDue - discount) (excludes ยอดวางดาวน์
+  // entirely); cappedPaid = min(paid, netDue); remaining = max(0, netDue - paid). cappedPaid +
+  // remaining = netDue always, so paidSum spans ALL contractOrders (not just active) and reads
+  // higher than before; cancelled/sold orders' remaining (not their full gross contract) feeds
+  // soldSum below instead of totalContractRaw.
+  let paidSum = 0, totalContract = 0, soldRemainingSum = 0;
+  contractOrders.forEach((o) => {
+    o.installments.concat(o.accessoryInstallments || []).forEach((i) => {
+      const due = Number(i.amountDue || 0), paid = Number(i.amountPaid || 0), disc = Number(i.discount || 0);
+      const netDue = Math.max(0, due - disc);
+      const cappedPaid = Math.min(paid, netDue);
+      const remaining = Math.max(0, netDue - paid);
+      totalContract += netDue;
+      paidSum += cappedPaid;
+      if (o.isSold) soldRemainingSum += remaining;
+    });
+  });
   const netRemaining = Math.max(0, totalContract - paidSum);
   const paidRatePercent = totalContract > 0 ? (paidSum / totalContract * 100) : 0;
 
@@ -133,7 +149,7 @@ function computeSummary(state) {
     });
   });
 
-  const soldSum = soldOrders.reduce((s, o) => s + o.totalContractRaw, 0);
+  const soldSum = soldRemainingSum;
   const legalActionSum = legalActionOrders.reduce((s, o) => s + o.totalOutstandingRaw, 0);
   const totalDebtSum = overdueExLegalSum + soldSum + legalActionSum;
 
