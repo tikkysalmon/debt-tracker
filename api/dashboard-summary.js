@@ -137,21 +137,37 @@ function computeSummary(state) {
   const netRemaining = Math.max(0, totalContract - paidSum);
   const paidRatePercent = totalContract > 0 ? (paidSum / totalContract * 100) : 0;
 
-  let overdueExLegalSum = 0;
-  const overdueExLegalCustomerSet = {};
+  // Re-synced 2026-08-28 (fixes #1+#2 of the same-day KPI-vs-donut reconciliation pass, see
+  // index.html's computeDashboard for the full explanation) — ค้างชำระ/หนี้สงสัยจะสูญ merged into one
+  // "owed" pool, then split by isCustomerLegalAction: overdueSum (non-legal, what "overdue" below
+  // reports) vs legalDonutSum (legal-tagged, narrower than legalActionSum's full totalOutstandingRaw —
+  // see index.html's comment on why the two "ดำเนินคดีทางกฎหมาย" figures intentionally differ).
+  // totalDebtSum used to double-count by adding legalActionSum on top of an already-legal-exclusive
+  // overdueSum (ดำเนินคดีทางกฎหมาย is an orthogonal tag overlapping both ค้างชำระ and จำหน่ายชื่อฯ) —
+  // now sums overdueSum + legalDonutSum + soldSum instead, reconciling by construction.
+  let overdueSum = 0, legalDonutSum = 0;
+  const overdueCustomerSet = {};
   activeOrders.forEach((o) => {
-    if (isCustomerLegalAction(o, state)) return;
+    const isLegal = isCustomerLegalAction(o, state);
     const ck = customerKey(o);
     o.installments.concat(o.accessoryInstallments || []).forEach((i) => {
-      const outstanding = Math.max(0, Number(i.amountDue || 0) - Number(i.amountPaid || 0) - Number(i.discount || 0));
+      const due = Number(i.amountDue || 0), paid = Number(i.amountPaid || 0), disc = Number(i.discount || 0);
+      const netDue = Math.max(0, due - disc);
+      const remaining = Math.max(0, netDue - paid);
       const grp = STATUS_TO_GROUP[i.effectiveStatus];
-      if (grp === 'ค้างชำระ' || grp === 'หนี้สงสัยจะสูญ') { overdueExLegalSum += outstanding; overdueExLegalCustomerSet[ck] = true; }
+      const isNotDueStatus = NOTDUE_STATUSES.indexOf(i.effectiveStatus) !== -1;
+      // Safety-net catch-all mirrors index.html's fix #3 — a งวด manually frozen at "ชำระแล้ว" via
+      // statusOverride can still have real remaining > 0; no-op for any properly-settled งวด.
+      if (i.effectiveStatus === 'ชำระบางส่วน' || grp === 'ค้างชำระ' || grp === 'หนี้สงสัยจะสูญ' || (!isNotDueStatus && remaining > 0.005)) {
+        if (isLegal) legalDonutSum += remaining;
+        else { overdueSum += remaining; overdueCustomerSet[ck] = true; }
+      }
     });
   });
 
   const soldSum = soldRemainingSum;
   const legalActionSum = legalActionOrders.reduce((s, o) => s + o.totalOutstandingRaw, 0);
-  const totalDebtSum = overdueExLegalSum + soldSum + legalActionSum;
+  const totalDebtSum = overdueSum + legalDonutSum + soldSum;
 
   return {
     asOf: new Date().toISOString(),
@@ -159,7 +175,7 @@ function computeSummary(state) {
     paid: { amountRaw: paidSum, amountDisp: fmtMoney(paidSum) },
     netRemaining: { amountRaw: netRemaining, amountDisp: fmtMoney(netRemaining) },
     totalDebt: { amountRaw: totalDebtSum, amountDisp: fmtMoney(totalDebtSum) },
-    overdue: { amountRaw: overdueExLegalSum, amountDisp: fmtMoney(overdueExLegalSum), customerCount: Object.keys(overdueExLegalCustomerSet).length },
+    overdue: { amountRaw: overdueSum, amountDisp: fmtMoney(overdueSum), customerCount: Object.keys(overdueCustomerSet).length },
     legalAction: { amountRaw: legalActionSum, amountDisp: fmtMoney(legalActionSum), count: legalActionOrders.length },
     paidRatePercent: paidRatePercent.toFixed(1)
   };
