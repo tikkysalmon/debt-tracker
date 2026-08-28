@@ -137,6 +137,19 @@ function computeSummary(state) {
   const legalActionSum = legalActionOrders.reduce((s, o) => s + o.totalOutstandingRaw, 0);
   const totalDebtSum = overdueExLegalSum + soldSum + legalActionSum;
 
+  // TEMPORARY diagnostic field (2026-08-28) — investigating why ยอดรวมสัญญา (totalContract above)
+  // disagrees with the Dashboard donut's รวมทั้งหมด by ~12-13M. User's own hypothesis: totalContract
+  // should already be net of discount (ราคาสินค้า - ส่วนลด - ยอดวางดาวน์ - ยอดผ่อนสะสม = ยอดคงเหลือ),
+  // but totalContractRaw (index.html, this file's computeOrders) sums raw amountDue with NO discount
+  // subtracted anywhere — discount is only ever subtracted per-installment when computing "outstanding"
+  // for currently-unpaid งวด, so a discount granted on an ALREADY-PAID installment (likely the far
+  // more common case across 14k historical contracts) never reduces totalContract at all. This field
+  // sums every installment's discount (any status, any order type) to test that theory directly.
+  // DELETE this field once the root cause is confirmed/fixed — not meant to stay long-term.
+  const _diagTotalDiscount = contractOrders.reduce((s, o) =>
+    s + o.installments.concat(o.accessoryInstallments || []).reduce((s2, i) => s2 + Number(i.discount || 0), 0)
+  , 0);
+
   return {
     asOf: new Date().toISOString(),
     totalContract: { amountRaw: totalContract, amountDisp: fmtMoney(totalContract), count: contractOrders.length },
@@ -145,7 +158,9 @@ function computeSummary(state) {
     totalDebt: { amountRaw: totalDebtSum, amountDisp: fmtMoney(totalDebtSum) },
     overdue: { amountRaw: overdueExLegalSum, amountDisp: fmtMoney(overdueExLegalSum), customerCount: Object.keys(overdueExLegalCustomerSet).length },
     legalAction: { amountRaw: legalActionSum, amountDisp: fmtMoney(legalActionSum), count: legalActionOrders.length },
-    paidRatePercent: paidRatePercent.toFixed(1)
+    paidRatePercent: paidRatePercent.toFixed(1),
+    _diagTotalDiscountAllInstallments: { amountRaw: _diagTotalDiscount, amountDisp: fmtMoney(_diagTotalDiscount) },
+    _diagTotalContractNetOfDiscount: fmtMoney(totalContract - _diagTotalDiscount)
   };
 }
 
