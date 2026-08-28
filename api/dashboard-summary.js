@@ -137,14 +137,14 @@ function computeSummary(state) {
   const netRemaining = Math.max(0, totalContract - paidSum);
   const paidRatePercent = totalContract > 0 ? (paidSum / totalContract * 100) : 0;
 
-  // Re-synced 2026-08-28 (fixes #1+#2 of the same-day KPI-vs-donut reconciliation pass, see
-  // index.html's computeDashboard for the full explanation) — ค้างชำระ/หนี้สงสัยจะสูญ merged into one
-  // "owed" pool, then split by isCustomerLegalAction: overdueSum (non-legal, what "overdue" below
-  // reports) vs legalDonutSum (legal-tagged, narrower than legalActionSum's full totalOutstandingRaw —
-  // see index.html's comment on why the two "ดำเนินคดีทางกฎหมาย" figures intentionally differ).
-  // totalDebtSum used to double-count by adding legalActionSum on top of an already-legal-exclusive
-  // overdueSum (ดำเนินคดีทางกฎหมาย is an orthogonal tag overlapping both ค้างชำระ and จำหน่ายชื่อฯ) —
-  // now sums overdueSum + legalDonutSum + soldSum instead, reconciling by construction.
+  // Re-synced 2026-08-28 (fixes #1+#2, plus a same-day follow-up, of the KPI-vs-donut reconciliation
+  // pass — see index.html's computeDashboard for the full explanation) — ค้างชำระ/หนี้สงสัยจะสูญ merged
+  // into one "owed" pool, then split by isCustomerLegalAction: overdueSum (non-legal, what "overdue"
+  // below reports) vs legalDonutSum (legal-tagged — used for BOTH the donut segment and the
+  // legalAction card below now, replacing the old totalOutstandingRaw-based legalActionSum which never
+  // matched the donut). totalDebtSum used to double-count by adding legalActionSum on top of an
+  // already-legal-exclusive overdueSum — now sums overdueSum + legalDonutSum + soldSum instead,
+  // reconciling by construction.
   let overdueSum = 0, legalDonutSum = 0;
   const overdueCustomerSet = {};
   activeOrders.forEach((o) => {
@@ -166,7 +166,6 @@ function computeSummary(state) {
   });
 
   const soldSum = soldRemainingSum;
-  const legalActionSum = legalActionOrders.reduce((s, o) => s + o.totalOutstandingRaw, 0);
   const totalDebtSum = overdueSum + legalDonutSum + soldSum;
 
   return {
@@ -176,7 +175,10 @@ function computeSummary(state) {
     netRemaining: { amountRaw: netRemaining, amountDisp: fmtMoney(netRemaining) },
     totalDebt: { amountRaw: totalDebtSum, amountDisp: fmtMoney(totalDebtSum) },
     overdue: { amountRaw: overdueSum, amountDisp: fmtMoney(overdueSum), customerCount: Object.keys(overdueCustomerSet).length },
-    legalAction: { amountRaw: legalActionSum, amountDisp: fmtMoney(legalActionSum), count: legalActionOrders.length },
+    // legalAction amount re-synced 2026-08-28 follow-up to match the donut's narrower legalDonutSum
+    // (ค้างชำระ/หนี้สงสัยจะสูญ/ชำระบางส่วน only) instead of totalOutstandingRaw across ALL statuses —
+    // per user request, this card should equal the donut segment exactly, not a separately-scoped figure.
+    legalAction: { amountRaw: legalDonutSum, amountDisp: fmtMoney(legalDonutSum), count: legalActionOrders.length },
     paidRatePercent: paidRatePercent.toFixed(1)
   };
 }
