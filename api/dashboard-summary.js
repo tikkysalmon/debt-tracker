@@ -137,18 +137,35 @@ function computeSummary(state) {
   const legalActionSum = legalActionOrders.reduce((s, o) => s + o.totalOutstandingRaw, 0);
   const totalDebtSum = overdueExLegalSum + soldSum + legalActionSum;
 
-  // TEMPORARY diagnostic field (2026-08-28) — investigating why ยอดรวมสัญญา (totalContract above)
-  // disagrees with the Dashboard donut's รวมทั้งหมด by ~12-13M. User's own hypothesis: totalContract
-  // should already be net of discount (ราคาสินค้า - ส่วนลด - ยอดวางดาวน์ - ยอดผ่อนสะสม = ยอดคงเหลือ),
-  // but totalContractRaw (index.html, this file's computeOrders) sums raw amountDue with NO discount
-  // subtracted anywhere — discount is only ever subtracted per-installment when computing "outstanding"
-  // for currently-unpaid งวด, so a discount granted on an ALREADY-PAID installment (likely the far
-  // more common case across 14k historical contracts) never reduces totalContract at all. This field
-  // sums every installment's discount (any status, any order type) to test that theory directly.
-  // DELETE this field once the root cause is confirmed/fixed — not meant to stay long-term.
+  // TEMPORARY diagnostic fields (2026-08-28) — investigating why ยอดรวมสัญญา (totalContract above)
+  // disagrees with the Dashboard donut's รวมทั้งหมด by ~12-13M. First theory tested (discount not
+  // subtracted from totalContract) came back tiny (~22k, see _diagTotalDiscountAllInstallments below)
+  // — nowhere near enough to explain the gap, RULED OUT. Testing the other 2 candidates now:
+  // - partialRemainder: a 'ชำระบางส่วน' installment's unpaid remainder is never added to any donut
+  //   sum, but its full amountDue IS inside totalContract's totalDue.
+  // - overpayExcess: amountPaid exceeding a single installment's OWN amountDue (any status, any
+  //   order type) inflates paidSum (which just sums raw amountPaid, no per-installment cap) past
+  //   what totalContract counted for that งวด — the donut's outstanding side clamps at 0 and can't
+  //   go negative to compensate, so this pushes the donut ABOVE totalContract (matches the observed
+  //   direction — donut 428M > totalContract 415M — unlike every other candidate so far).
+  // DELETE these fields once the root cause is confirmed/fixed — not meant to stay long-term.
   const _diagTotalDiscount = contractOrders.reduce((s, o) =>
     s + o.installments.concat(o.accessoryInstallments || []).reduce((s2, i) => s2 + Number(i.discount || 0), 0)
   , 0);
+  let _diagPartialRemainder = 0, _diagOverpayExcess = 0, _diagOverpayCount = 0;
+  const _diagTopOverpay = [];
+  contractOrders.forEach((o) => {
+    o.installments.concat(o.accessoryInstallments || []).forEach((i) => {
+      const due = Number(i.amountDue || 0), paid = Number(i.amountPaid || 0);
+      if (i.effectiveStatus === 'ชำระบางส่วน') _diagPartialRemainder += Math.max(0, due - paid);
+      const overpay = paid - due;
+      if (overpay > 0.005) {
+        _diagOverpayExcess += overpay; _diagOverpayCount++;
+        _diagTopOverpay.push({ orderId: o.orderId, customerId: o.customerId, no: i.no, amountDue: due, amountPaid: paid, overpay });
+      }
+    });
+  });
+  _diagTopOverpay.sort((a, b) => b.overpay - a.overpay);
 
   return {
     asOf: new Date().toISOString(),
@@ -160,7 +177,10 @@ function computeSummary(state) {
     legalAction: { amountRaw: legalActionSum, amountDisp: fmtMoney(legalActionSum), count: legalActionOrders.length },
     paidRatePercent: paidRatePercent.toFixed(1),
     _diagTotalDiscountAllInstallments: { amountRaw: _diagTotalDiscount, amountDisp: fmtMoney(_diagTotalDiscount) },
-    _diagTotalContractNetOfDiscount: fmtMoney(totalContract - _diagTotalDiscount)
+    _diagTotalContractNetOfDiscount: fmtMoney(totalContract - _diagTotalDiscount),
+    _diagPartialRemainder: { amountRaw: _diagPartialRemainder, amountDisp: fmtMoney(_diagPartialRemainder) },
+    _diagOverpayExcess: { amountRaw: _diagOverpayExcess, amountDisp: fmtMoney(_diagOverpayExcess), count: _diagOverpayCount },
+    _diagTopOverpaySample: _diagTopOverpay.slice(0, 10)
   };
 }
 
