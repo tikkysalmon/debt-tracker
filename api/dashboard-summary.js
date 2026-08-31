@@ -128,6 +128,15 @@ function computeSummary(state) {
   // months should only count once each งวด is genuinely due, not all at once.
   let paidSum = 0, totalContract = 0, soldRemainingSum = 0, cancelledRemainingSum = 0;
   contractOrders.forEach((o) => {
+    // Order-level full-settlement check (2026-08-31, mirrors index.html's isOrderFullySettled exactly)
+    // — see that file's comment for the real workflow this covers: an early full settlement paid into
+    // one งวด, with staff manually marking the OTHER งวด ชำระแล้ว without updating their own amountPaid.
+    let orderNetDueTotal = 0, orderPaidTotal = 0;
+    o.installments.concat(o.accessoryInstallments || []).forEach((i) => {
+      orderNetDueTotal += Math.max(0, Number(i.amountDue || 0) - Number(i.discount || 0));
+      orderPaidTotal += Number(i.amountPaid || 0);
+    });
+    const isOrderFullySettled = orderPaidTotal >= orderNetDueTotal - 0.005;
     o.installments.concat(o.accessoryInstallments || []).forEach((i) => {
       const due = Number(i.amountDue || 0), paid = Number(i.amountPaid || 0), disc = Number(i.discount || 0);
       const netDue = Math.max(0, due - disc);
@@ -136,10 +145,16 @@ function computeSummary(state) {
       totalContract += netDue;
       paidSum += cappedPaid;
       if (o.isCancelled) { cancelledRemainingSum += remaining; return; }
+      const grp = STATUS_TO_GROUP[i.effectiveStatus];
+      const isNotDueStatus = NOTDUE_STATUSES.indexOf(i.effectiveStatus) !== -1;
+      const isExplicitOwed = i.effectiveStatus === 'ชำระบางส่วน' || grp === 'ค้างชำระ' || grp === 'หนี้สงสัยจะสูญ';
+      const isCatchAll = !isExplicitOwed && !isNotDueStatus && remaining > 0.005;
+      // Credits paidSum here (not just for sold orders) so netRemaining below stays accurate for
+      // active orders too — the 2nd loop further down re-derives isOrderFullySettled per order to gate
+      // its own overdueSum/legalDonutSum catch-all the same way, but doesn't touch paidSum/netRemaining.
+      if (isCatchAll && isOrderFullySettled) { paidSum += remaining; return; }
       if (o.isSold) {
-        const grp = STATUS_TO_GROUP[i.effectiveStatus];
-        const isNotDueStatus = NOTDUE_STATUSES.indexOf(i.effectiveStatus) !== -1;
-        const isOwedStatus = i.effectiveStatus === 'ชำระบางส่วน' || grp === 'ค้างชำระ' || grp === 'หนี้สงสัยจะสูญ' || (!isNotDueStatus && remaining > 0.005);
+        const isOwedStatus = isExplicitOwed || isCatchAll;
         const dueReached = isDueDateReached(i) || isNaN(new Date(i.dueDate).getTime());
         if (isOwedStatus && dueReached) soldRemainingSum += remaining;
       }
@@ -165,6 +180,13 @@ function computeSummary(state) {
   activeOrders.forEach((o) => {
     const isLegal = isCustomerLegalAction(o, state);
     const ck = customerKey(o);
+    // Mirrors index.html's isOrderFullySettled (2026-08-31) — gates the catch-all below the same way.
+    let orderNetDueTotal = 0, orderPaidTotal = 0;
+    o.installments.concat(o.accessoryInstallments || []).forEach((i) => {
+      orderNetDueTotal += Math.max(0, Number(i.amountDue || 0) - Number(i.discount || 0));
+      orderPaidTotal += Number(i.amountPaid || 0);
+    });
+    const isOrderFullySettled = orderPaidTotal >= orderNetDueTotal - 0.005;
     o.installments.concat(o.accessoryInstallments || []).forEach((i) => {
       const due = Number(i.amountDue || 0), paid = Number(i.amountPaid || 0), disc = Number(i.discount || 0);
       const netDue = Math.max(0, due - disc);
@@ -172,8 +194,11 @@ function computeSummary(state) {
       const grp = STATUS_TO_GROUP[i.effectiveStatus];
       const isNotDueStatus = NOTDUE_STATUSES.indexOf(i.effectiveStatus) !== -1;
       // Safety-net catch-all mirrors index.html's fix #3 — a งวด manually frozen at "ชำระแล้ว" via
-      // statusOverride can still have real remaining > 0; no-op for any properly-settled งวด.
-      const isOwedStatus = i.effectiveStatus === 'ชำระบางส่วน' || grp === 'ค้างชำระ' || grp === 'หนี้สงสัยจะสูญ' || (!isNotDueStatus && remaining > 0.005);
+      // statusOverride can still have real remaining > 0; no-op for any properly-settled งวด. Narrowed
+      // 2026-08-31: suppressed when the order overall is fully settled (paidSum already credited for
+      // this in the loop above) — trusts the label instead of double-flagging it as owed.
+      const isExplicitOwed = i.effectiveStatus === 'ชำระบางส่วน' || grp === 'ค้างชำระ' || grp === 'หนี้สงสัยจะสูญ';
+      const isOwedStatus = isExplicitOwed || (!isNotDueStatus && !isOrderFullySettled && remaining > 0.005);
       // dueDate gate (2026-08-28 follow-up, mirrors index.html) — a งวด flagged ค้างชำระ-type ahead of
       // its real due date isn't genuinely overdue yet, per explicit user confirmation.
       const dueReached = isDueDateReached(i) || isNaN(new Date(i.dueDate).getTime());
