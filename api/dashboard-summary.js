@@ -122,6 +122,10 @@ function computeSummary(state) {
   // remaining = netDue always, so paidSum spans ALL contractOrders (not just active) and reads
   // higher than before; cancelled/sold orders' remaining (not their full gross contract) feeds
   // soldSum below instead of totalContractRaw.
+  // Sold orders re-synced 2026-08-28 (same-day follow-up) — used to unconditionally dump every
+  // installment's remaining into soldRemainingSum regardless of status/dueDate. Now gated on the same
+  // isOwedStatus+dueReached condition as index.html, since a sold order's unpaid งวด spanning multiple
+  // months should only count once each งวด is genuinely due, not all at once.
   let paidSum = 0, totalContract = 0, soldRemainingSum = 0;
   contractOrders.forEach((o) => {
     o.installments.concat(o.accessoryInstallments || []).forEach((i) => {
@@ -131,7 +135,13 @@ function computeSummary(state) {
       const remaining = Math.max(0, netDue - paid);
       totalContract += netDue;
       paidSum += cappedPaid;
-      if (o.isSold) soldRemainingSum += remaining;
+      if (o.isSold) {
+        const grp = STATUS_TO_GROUP[i.effectiveStatus];
+        const isNotDueStatus = NOTDUE_STATUSES.indexOf(i.effectiveStatus) !== -1;
+        const isOwedStatus = i.effectiveStatus === 'ชำระบางส่วน' || grp === 'ค้างชำระ' || grp === 'หนี้สงสัยจะสูญ' || (!isNotDueStatus && remaining > 0.005);
+        const dueReached = isDueDateReached(i) || isNaN(new Date(i.dueDate).getTime());
+        if (isOwedStatus && dueReached) soldRemainingSum += remaining;
+      }
     });
   });
   const netRemaining = Math.max(0, totalContract - paidSum);
