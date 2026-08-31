@@ -126,7 +126,7 @@ function computeSummary(state) {
   // installment's remaining into soldRemainingSum regardless of status/dueDate. Now gated on the same
   // isOwedStatus+dueReached condition as index.html, since a sold order's unpaid งวด spanning multiple
   // months should only count once each งวด is genuinely due, not all at once.
-  let paidSum = 0, totalContract = 0, soldRemainingSum = 0;
+  let paidSum = 0, totalContract = 0, soldRemainingSum = 0, cancelledRemainingSum = 0;
   contractOrders.forEach((o) => {
     o.installments.concat(o.accessoryInstallments || []).forEach((i) => {
       const due = Number(i.amountDue || 0), paid = Number(i.amountPaid || 0), disc = Number(i.discount || 0);
@@ -135,6 +135,7 @@ function computeSummary(state) {
       const remaining = Math.max(0, netDue - paid);
       totalContract += netDue;
       paidSum += cappedPaid;
+      if (o.isCancelled) { cancelledRemainingSum += remaining; return; }
       if (o.isSold) {
         const grp = STATUS_TO_GROUP[i.effectiveStatus];
         const isNotDueStatus = NOTDUE_STATUSES.indexOf(i.effectiveStatus) !== -1;
@@ -144,7 +145,11 @@ function computeSummary(state) {
       }
     });
   });
-  const netRemaining = Math.max(0, totalContract - paidSum);
+  // netRemaining nets out cancelledRemainingSum (2026-08-28, per explicit user request, mirrors
+  // index.html) — a ยกเลิกสัญญา คืนเครื่อง order's remaining balance is a write-off (device already
+  // returned), not money genuinely still expected. billCancelledSum needs no separate subtraction —
+  // contractOrders already excludes isBillCancelled orders from totalContract entirely.
+  const netRemaining = Math.max(0, totalContract - paidSum - cancelledRemainingSum);
   const paidRatePercent = totalContract > 0 ? (paidSum / totalContract * 100) : 0;
 
   // Re-synced 2026-08-28 (fixes #1+#2, plus a same-day follow-up, of the KPI-vs-donut reconciliation
