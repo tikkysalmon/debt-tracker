@@ -22,6 +22,14 @@ function nowThaiTimestamp() {
   return th.getUTCFullYear() + '-' + pad(th.getUTCMonth() + 1) + '-' + pad(th.getUTCDate()) + ' ' +
     pad(th.getUTCHours()) + ':' + pad(th.getUTCMinutes()) + ':' + pad(th.getUTCSeconds());
 }
+// สั้นกว่า nowThaiTimestamp — ใช้ติดป้ายใกล้ "สถานะชำระเงิน" ของงวด (ไม่ใช่ในช่องหมายเหตุ)
+// เฉพาะกรณีเติมยอดที่ยังไม่เคยมีการชำระมาก่อน (ไม่ใช่การแก้ไขยอดที่เคยบันทึกผิดไว้)
+function apiUpdateLabel() {
+  const th = new Date(Date.now() + 7 * 60 * 60 * 1000);
+  const pad = n => String(n).padStart(2, '0');
+  return 'API Update ' + pad(th.getUTCDate()) + '/' + pad(th.getUTCMonth() + 1) + '/' + th.getUTCFullYear() + ' ' +
+    pad(th.getUTCHours()) + ':' + pad(th.getUTCMinutes());
+}
 function employeeCodeToEmail(code) {
   const slug = String(code || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
   return 'staff-' + slug + '@debttracker.internal';
@@ -294,12 +302,21 @@ function close(a, b, tol) { return Math.abs((Number(a) || 0) - (Number(b) || 0))
           }
           report.penaltiesApplied++;
         }
-        const bits = ['อัพเดทยอด โดย API (เทียบข้อมูลจริงจาก CRM ' + plan.orderId + ', ' + TODAY + ')'];
-        bits.push('เดิม ฿' + curAmountPaid + (curPaidDate ? ' (' + curPaidDate + ')' : '') + ' → ฿' + ch.after.amountPaid + (ch.after.paidDate ? ' (' + ch.after.paidDate + ')' : ''));
-        if (ch.after.penaltyPaid > 0) bits.push('มีค่าปรับ ฿' + ch.after.penaltyPaid);
-        bits.push('ระบบอัปเดตเมื่อ ' + nowThaiTimestamp() + ' น.');
-        // ต่อประวัติเดิมไว้ (ไม่ทับ) — กรณีชำระบางส่วนหลายรอบ จะได้เห็นประวัติการอัปเดตแต่ละรอบครบ
-        inst.note = (inst.note ? inst.note + '\n' : '') + bits.join(' | ');
+        // งวดที่ยังไม่เคยมีการชำระมาก่อน (เดิม ฿0) แล้ว CRM มียอดจริงเข้ามา = "อัพเดทยอดรับชำระ"
+        // ปกติ ไม่ใช่การแก้ไขข้อมูลที่ผิด — ลงแค่ป้าย API Update ใกล้สถานะชำระเงิน ไม่ต้องลงหมายเหตุ
+        // ยาวๆ ให้รก. ส่วนกรณีที่เคยมียอดบันทึกไว้แล้วแต่ผิด (กำลังถูกแก้ให้ถูกต้อง) ยังคงลงหมายเหตุ
+        // แบบเดิมพร้อม timestamp ที่แก้ เพื่อให้ตรวจสอบย้อนหลังได้ว่าระบบแก้ไขเมื่อไหร่
+        const isFreshPayment = curAmountPaid <= 0.005;
+        if (isFreshPayment) {
+          inst.apiUpdateHistory = (inst.apiUpdateHistory || []).concat([apiUpdateLabel()]);
+        } else {
+          const bits = ['แก้ไขจาก API (เทียบข้อมูลจริงจาก CRM ' + plan.orderId + ', ' + TODAY + ')'];
+          bits.push('เดิม ฿' + curAmountPaid + (curPaidDate ? ' (' + curPaidDate + ')' : '') + ' → ฿' + ch.after.amountPaid + (ch.after.paidDate ? ' (' + ch.after.paidDate + ')' : ''));
+          if (ch.after.penaltyPaid > 0) bits.push('มีค่าปรับ ฿' + ch.after.penaltyPaid);
+          bits.push('ระบบแก้ไขเมื่อ ' + nowThaiTimestamp() + ' น.');
+          // ต่อประวัติเดิมไว้ (ไม่ทับ) — กรณีแก้ไขหลายรอบ จะได้เห็นประวัติการแก้ไขแต่ละรอบครบ
+          inst.note = (inst.note ? inst.note + '\n' : '') + bits.join(' | ');
+        }
         report.fixedInstallments++;
         touched = true;
       });
