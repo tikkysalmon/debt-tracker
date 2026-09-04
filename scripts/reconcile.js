@@ -132,7 +132,7 @@ function close(a, b, tol) { return Math.abs((Number(a) || 0) - (Number(b) || 0))
     const insts = o.installments || [];
     const totalPaid = insts.reduce((s, i) => s + (Number(i.amountPaid) || 0), 0);
     const remaining = (Number(o.productPrice || 0) - Number(o.discount || 0)) - (Number(o.downPayment || 0) + totalPaid);
-    return remaining > 0.5;
+    return Math.abs(remaining) > 0.5; // ต้องเช็คทั้งค้างจ่าย (>0) และเกิน/ผิดปกติ (<0) ไม่ใช่แค่ >0
   });
   log('ออเดอร์ที่ยังมียอดค้าง (จะเช็คกับ CRM): ' + candidates.length);
 
@@ -254,7 +254,7 @@ function close(a, b, tol) { return Math.abs((Number(a) || 0) - (Number(b) || 0))
           }
           report.penaltiesApplied++;
         }
-        const bits = ['แก้ไขจาก API (เทียบข้อมูลจริงจาก CRM ' + plan.orderId + ', ' + TODAY + ')'];
+        const bits = ['อัพเดทยอด โดย API (เทียบข้อมูลจริงจาก CRM ' + plan.orderId + ', ' + TODAY + ')'];
         bits.push('เดิม ฿' + curAmountPaid + (curPaidDate ? ' (' + curPaidDate + ')' : '') + ' → ฿' + ch.after.amountPaid + (ch.after.paidDate ? ' (' + ch.after.paidDate + ')' : ''));
         if (ch.after.penaltyPaid > 0) bits.push('มีค่าปรับ ฿' + ch.after.penaltyPaid);
         inst.note = bits.join(' | ');
