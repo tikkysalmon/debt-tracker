@@ -50,6 +50,15 @@ async function fetchAllPaymentTransactions(soNumber) {
   }
   return all;
 }
+// รายการที่ type รวมค่าปรับ (เช่น INSTALLMENT_AND_OVERDUE_FEE) แต่ paymentData เป็น null จาก list endpoint
+// ต้องดึงรายละเอียดจริงจาก endpoint นี้แทน — คืน invoiceItems ที่แจกแจงค่าผ่อน/ค่าปรับเหมือนหน้าเว็บ CRM เป๊ะ
+// (ยืนยันจากตัวอย่างจริง SO-2026022200079 no.4/5: 11,100 = ค่าผ่อน 10,100 + ค่าปรับชำระล่าช้า 500 +
+// ค่าธรรมเนียมระบบ 500 — ทั้งสองอย่างหลังเป็น type "OVERDUE_FEE" เหมือนกัน แค่ name ต่างกัน)
+async function fetchTransactionDetail(paymentTransactionId) {
+  const r = await crmGet('/crm/payment-transaction/' + paymentTransactionId);
+  if (r.__httpError || r.__crmError) return null;
+  return r.invoiceItems || null;
+}
 
 async function debtTrackerLogin() {
   const res = await fetch(SUPABASE_URL + '/auth/v1/token?grant_type=password', {
@@ -155,37 +164,63 @@ function close(a, b, tol) { return Math.abs((Number(a) || 0) - (Number(b) || 0))
     const successful = txs.filter(x => x.paymentStatus === 'SUCCESSFUL' && /INSTALLMENT/.test(x.type || '') && Number(x.amount) > 0);
     const firstNumberedIdx = successful.findIndex(x => /^(\d+)\/(\d+)$/.test(String(x.no || '')));
 
-    const perInstallment = {};
-    let unassignedTotal = 0;
-    successful.forEach((x, i) => {
-      const m = /^(\d+)\/(\d+)$/.exec(String(x.no || ''));
-      if (!m) {
-        if (firstNumberedIdx === -1 || i < firstNumberedIdx) return;
-        unassignedTotal += Number(x.amount) || 0;
-        return;
+    // ตารางผ่อนต่องวดต้องยึดตามสัญญาเสมอ (จำนวนงวด/ยอดต่องวดที่ debt-tracker ตั้งไว้) — เลข "no":"X/Y"
+    // ของ CRM ไม่ใช้จับคู่งวดโดยตรงอีกต่อไป เพราะ CRM จะสร้าง slot ใหม่ให้ทุกครั้งที่ลูกค้าจ่ายไม่ครบยอด
+    // ต่องวด (ผ่อนแบบทะยอยจ่าย) ทำให้จำนวน slot ใน CRM มากกว่าจำนวนงวดจริงตามสัญญาได้ — แก้โดยดึงเฉพาะ
+    // ยอด/วันที่/ค่าปรับจากธุรกรรมจริงเรียงตามลำดับเวลาเดิม แล้วจำลองเติมเงินแบบ FIFO ไล่ทีละงวดตามสัญญา
+    // เอง (เหมือน distributeCombinedPayment ที่แอปใช้ตอนนำเข้าไฟล์ชำระเงินที่ไม่มีคอลัมน์งวดที่)
+    const installmentTxs = [];
+    for (let i = (firstNumberedIdx === -1 ? successful.length : firstNumberedIdx); i < successful.length; i++) {
+      const x = successful[i];
+      let items = (x.paymentData && x.paymentData.items) || null;
+      // type รวมค่าปรับ (เช่น INSTALLMENT_AND_OVERDUE_FEE) แต่ list endpoint ไม่ให้ breakdown มา (paymentData:null)
+      // — ต้องดึงรายละเอียดจริงเพิ่ม ไม่ใช่เหมาทั้งก้อนเป็นค่าผ่อน (ยืนยันบั๊กจริงจาก SO-2026022200079)
+      if (!items && /OVERDUE_FEE|PENALTY/.test(x.type || '') && x.paymentTransactionId) {
+        items = await fetchTransactionDetail(x.paymentTransactionId);
       }
-      const n = Number(m[1]);
-      const entry = perInstallment[n] || { installmentAmt: 0, penaltyAmt: 0, latestDate: null };
-      const items = (x.paymentData && x.paymentData.items) || null;
-      if (items) items.forEach(it => { if (it.type === 'INSTALLMENT') entry.installmentAmt += Number(it.amount) || 0; else entry.penaltyAmt += Number(it.amount) || 0; });
-      else entry.installmentAmt += Number(x.amount) || 0;
-      const d = x.paymentDate ? x.paymentDate.slice(0, 10) : null;
-      if (d && (!entry.latestDate || d > entry.latestDate)) entry.latestDate = d;
-      perInstallment[n] = entry;
+      let installmentAmt = 0, penaltyAmt = 0;
+      if (items) items.forEach(it => { if (it.type === 'INSTALLMENT') installmentAmt += Number(it.amount) || 0; else penaltyAmt += Number(it.amount) || 0; });
+      else installmentAmt = Number(x.amount) || 0;
+      installmentTxs.push({ installmentAmt, penaltyAmt, date: x.paymentDate ? x.paymentDate.slice(0, 10) : null });
+    }
+
+    const sim = insts.map(inst => ({
+      no: inst.no,
+      dueRemaining: Math.max(0, Number(inst.amountDue || 0) - Number(inst.discount || 0)),
+      paid: 0, penalty: 0, lastDate: null,
+    }));
+    let cursor = 0;
+    if (!sim.length) return { orderId: order.orderId, skip: 'no_installments' };
+    installmentTxs.forEach(tx => {
+      let amt = tx.installmentAmt;
+      while (cursor < sim.length && sim[cursor].dueRemaining > 0 && sim[cursor].paid >= sim[cursor].dueRemaining - 0.005) cursor++;
+      const primaryIdx = cursor < sim.length ? cursor : sim.length - 1;
+      while (amt > 0.005 && cursor < sim.length) {
+        const slot = sim[cursor];
+        const room = Math.max(0, slot.dueRemaining - slot.paid);
+        if (room <= 0.005) { cursor++; continue; }
+        const take = Math.min(amt, room);
+        slot.paid += take;
+        if (tx.date) slot.lastDate = tx.date;
+        amt -= take;
+        if (slot.paid >= slot.dueRemaining - 0.005) cursor++;
+      }
+      // จ่ายเกินยอดตามสัญญาทั้งหมด (ทุกงวดเต็มแล้ว) — ใส่ไว้ที่งวดสุดท้ายเป็น "เกิน" ให้เห็นชัดว่าจ่ายเกิน
+      // ไม่ข้ามไปเฉยๆ เพื่อให้ยอดคงเหลือแสดงตามจริง (ติดลบได้ถ้าลูกค้าจ่ายเกินจริง)
+      if (amt > 0.005) {
+        const last = sim[sim.length - 1];
+        last.paid += amt;
+        if (tx.date) last.lastDate = tx.date;
+      }
+      if (tx.penaltyAmt > 0) sim[primaryIdx].penalty += tx.penaltyAmt;
     });
 
-    const maxCrmNo = Object.keys(perInstallment).map(Number).reduce((a, b) => Math.max(a, b), 0);
-    if (maxCrmNo > insts.length) return { orderId: order.orderId, skip: 'structure_mismatch' };
-
     const changes = [];
-    insts.forEach(inst => {
-      const real = perInstallment[inst.no] || { installmentAmt: 0, penaltyAmt: 0, latestDate: null };
-      const dueRemaining = Math.max(0, Number(inst.amountDue || 0) - Number(inst.discount || 0));
-      let installmentPortion = real.installmentAmt, penaltyPortion = real.penaltyAmt;
-      if (installmentPortion > dueRemaining + 0.01) { penaltyPortion += (installmentPortion - dueRemaining); installmentPortion = dueRemaining; }
-      const targetAmountPaid = Math.round(installmentPortion * 100) / 100;
-      const targetPaidDate = (installmentPortion > 0.005 || penaltyPortion > 0.005) ? real.latestDate : '';
-      const targetPenaltyPaid = Math.round(penaltyPortion * 100) / 100;
+    insts.forEach((inst, idx) => {
+      const s = sim[idx];
+      const targetAmountPaid = Math.round(s.paid * 100) / 100;
+      const targetPaidDate = (s.paid > 0.005 || s.penalty > 0.005) ? s.lastDate : '';
+      const targetPenaltyPaid = Math.round(s.penalty * 100) / 100;
 
       const curAmountPaid = Number(inst.amountPaid) || 0;
       const curPaidDate = inst.paidDate || '';
@@ -199,7 +234,6 @@ function close(a, b, tol) { return Math.abs((Number(a) || 0) - (Number(b) || 0))
       }
     });
 
-    if (unassignedTotal > 1) return { orderId: order.orderId, skip: 'unassigned_transactions' };
     if (!changes.length) return { orderId: order.orderId, skip: 'no_installment_change' };
 
     const newTotalPaid = insts.reduce((s, inst) => { const ch = changes.find(c => c.no === inst.no); return s + (ch ? ch.after.amountPaid : (Number(inst.amountPaid) || 0)); }, 0);
@@ -257,7 +291,8 @@ function close(a, b, tol) { return Math.abs((Number(a) || 0) - (Number(b) || 0))
         const bits = ['อัพเดทยอด โดย API (เทียบข้อมูลจริงจาก CRM ' + plan.orderId + ', ' + TODAY + ')'];
         bits.push('เดิม ฿' + curAmountPaid + (curPaidDate ? ' (' + curPaidDate + ')' : '') + ' → ฿' + ch.after.amountPaid + (ch.after.paidDate ? ' (' + ch.after.paidDate + ')' : ''));
         if (ch.after.penaltyPaid > 0) bits.push('มีค่าปรับ ฿' + ch.after.penaltyPaid);
-        inst.note = bits.join(' | ');
+        // ต่อประวัติเดิมไว้ (ไม่ทับ) — กรณีชำระบางส่วนหลายรอบ จะได้เห็นประวัติการอัปเดตแต่ละรอบครบ
+        inst.note = (inst.note ? inst.note + '\n' : '') + bits.join(' | ');
         report.fixedInstallments++;
         touched = true;
       });
