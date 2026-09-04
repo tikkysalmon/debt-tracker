@@ -16,6 +16,12 @@ const STALE_MS = 25000;
 const TODAY = new Date().toISOString().slice(0, 10);
 
 function log(msg) { console.log('[' + new Date().toISOString() + '] ' + msg); }
+function nowThaiTimestamp() {
+  const th = new Date(Date.now() + 7 * 60 * 60 * 1000);
+  const pad = n => String(n).padStart(2, '0');
+  return th.getUTCFullYear() + '-' + pad(th.getUTCMonth() + 1) + '-' + pad(th.getUTCDate()) + ' ' +
+    pad(th.getUTCHours()) + ':' + pad(th.getUTCMinutes()) + ':' + pad(th.getUTCSeconds());
+}
 function employeeCodeToEmail(code) {
   const slug = String(code || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
   return 'staff-' + slug + '@debttracker.internal';
@@ -291,6 +297,7 @@ function close(a, b, tol) { return Math.abs((Number(a) || 0) - (Number(b) || 0))
         const bits = ['อัพเดทยอด โดย API (เทียบข้อมูลจริงจาก CRM ' + plan.orderId + ', ' + TODAY + ')'];
         bits.push('เดิม ฿' + curAmountPaid + (curPaidDate ? ' (' + curPaidDate + ')' : '') + ' → ฿' + ch.after.amountPaid + (ch.after.paidDate ? ' (' + ch.after.paidDate + ')' : ''));
         if (ch.after.penaltyPaid > 0) bits.push('มีค่าปรับ ฿' + ch.after.penaltyPaid);
+        bits.push('ระบบอัปเดตเมื่อ ' + nowThaiTimestamp() + ' น.');
         // ต่อประวัติเดิมไว้ (ไม่ทับ) — กรณีชำระบางส่วนหลายรอบ จะได้เห็นประวัติการอัปเดตแต่ละรอบครบ
         inst.note = (inst.note ? inst.note + '\n' : '') + bits.join(' | ');
         report.fixedInstallments++;
