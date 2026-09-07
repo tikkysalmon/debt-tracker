@@ -228,7 +228,10 @@ function computeSummary(state) {
     // (ค้างชำระ/หนี้สงสัยจะสูญ/ชำระบางส่วน only) instead of totalOutstandingRaw across ALL statuses —
     // per user request, this card should equal the donut segment exactly, not a separately-scoped figure.
     legalAction: { amountRaw: legalDonutSum, amountDisp: fmtMoney(legalDonutSum), count: legalActionOrders.length },
-    paidRatePercent: paidRatePercent.toFixed(1)
+    paidRatePercent: paidRatePercent.toFixed(1),
+    // Mirrors index.html's kpi.cancelledRatePercent/remainingRatePercent exactly.
+    cancelledRatePercent: totalContract > 0 ? (cancelledRemainingSum / totalContract * 100).toFixed(1) : '0.0',
+    remainingRatePercent: totalContract > 0 ? (netRemaining / totalContract * 100).toFixed(1) : '0.0'
   };
 }
 
