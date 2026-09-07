@@ -1,8 +1,8 @@
 // GET /api/dashboard-summary — read-only, NO LOGIN required (same pattern as api/writeoff-view.js).
-// Returns just the 6 aggregate KPI numbers the Dashboard's top KPI row shows (ยอดรวมสัญญา/ยอดชำระแล้ว/
-// ยอดคงเหลือ/ยอดรวมหนี้ทั้งหมด/ยอดค้างชำระ/ดำเนินคดีทางกฎหมาย) — built for the Lark daily-summary
-// routine (see project memory "project_debt_tracker_daily_lark_summary") so it never needs a real
-// login or the full ~15-20MB state.json.
+// Returns the aggregate KPI numbers the Dashboard's top KPI row + lifecycle cards show (ยอดรวมสัญญา/
+// ยอดชำระแล้ว/ยอดคงเหลือ/ยอดรวมหนี้ทั้งหมด/ยอดค้างชำระ/ดำเนินคดีทางกฎหมาย/ยกเลิกสัญญาคืนเครื่อง/
+// จำหน่ายชื่อให้บริษัทติดตามหนี้) — built for the Lark daily-summary routine (see project memory
+// "project_debt_tracker_daily_lark_summary") so it never needs a real login or the full ~15-20MB state.json.
 //
 // IMPORTANT — this is a DELIBERATE, VERBATIM PORT of index.html's computeStatus/effectiveStatusOf/
 // computeOrdersUncached/computeDashboard (as of build 2026-08-26, index.html lines ~528, ~1990,
@@ -114,6 +114,9 @@ function computeSummary(state) {
   const activeOrders = orders.filter((o) => !o.isCancelled && !o.isSold && !o.isBillCancelled);
   const contractOrders = orders.filter((o) => !o.isBillCancelled);
   const legalActionOrders = orders.filter((o) => isCustomerLegalAction(o, state));
+  // Mirrors index.html's computeDashboard exactly (unfiltered orders, not just contractOrders/activeOrders).
+  const cancelledOrders = orders.filter((o) => o.isCancelled);
+  const soldOrders = orders.filter((o) => o.isSold);
 
   // Re-synced 2026-08-28 to index.html's computeDashboard round-4 rewrite (see that file's big
   // comment on the same identity) — totalContract/paidSum now guarantee reconciliation with the
@@ -219,6 +222,8 @@ function computeSummary(state) {
     netRemaining: { amountRaw: netRemaining, amountDisp: fmtMoney(netRemaining) },
     totalDebt: { amountRaw: totalDebtSum, amountDisp: fmtMoney(totalDebtSum) },
     overdue: { amountRaw: overdueSum, amountDisp: fmtMoney(overdueSum), customerCount: Object.keys(overdueCustomerSet).length },
+    cancelled: { amountRaw: cancelledRemainingSum, amountDisp: fmtMoney(cancelledRemainingSum), count: cancelledOrders.length },
+    sold: { amountRaw: soldRemainingSum, amountDisp: fmtMoney(soldRemainingSum), count: soldOrders.length },
     // legalAction amount re-synced 2026-08-28 follow-up to match the donut's narrower legalDonutSum
     // (ค้างชำระ/หนี้สงสัยจะสูญ/ชำระบางส่วน only) instead of totalOutstandingRaw across ALL statuses —
     // per user request, this card should equal the donut segment exactly, not a separately-scoped figure.
