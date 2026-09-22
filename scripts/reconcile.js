@@ -131,6 +131,17 @@ async function uploadState(token, stateObj) {
   });
   if (!res.ok) throw new Error('upload state.json failed: ' + res.status + ' ' + (await res.text()));
 }
+// รายงาน read-only (ไม่แก้ state.json/หน้าเว็บใดๆ) — เก็บรายชื่อ SO ที่พบส่วนต่างจริงจาก CRM แต่ residual
+// เกิน ฿5 จึงไม่ถูกเขียนอัตโนมัติ (เดิมหายไปเงียบๆ ไม่มี log เลย) เก็บไว้ที่ bucket private เดียวกับ
+// state.json (ไม่ commit เข้า repo ซึ่งเป็น public — เลี่ยงการเปิดเผยยอดหนี้ต่อ SO ต่อสาธารณะ)
+async function uploadPendingReport(token, reportObj) {
+  const res = await fetch(SUPABASE_URL + '/storage/v1/object/app-data/reconcile-pending.json', {
+    method: 'PUT',
+    headers: { Authorization: 'Bearer ' + token, apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json', 'x-upsert': 'true', 'cache-control': '0' },
+    body: JSON.stringify(reportObj),
+  });
+  if (!res.ok) log('อัปโหลด reconcile-pending.json ไม่สำเร็จ: ' + res.status + ' ' + (await res.text()));
+}
 
 async function mapWithConcurrency(items, limit, worker) {
   const results = new Array(items.length);
@@ -258,9 +269,26 @@ function close(a, b, tol) { return Math.abs((Number(a) || 0) - (Number(b) || 0))
   });
 
   const ready = plans.filter(p => p.residualOk === true);
+  // เดิม: order ที่คำนวณส่วนต่างจริง (changes.length>0) แต่ residual เกิน ฿5 หายไปเงียบๆ ไม่ถูกเขียน
+  // และไม่ถูก log เป็น skip เลย (ไม่มี label ให้) — เก็บไว้เป็นรายงานแยกให้ตรวจสอบย้อนหลังได้
+  const pending = plans.filter(p => p.residualOk === false);
   const bySkip = {};
   plans.forEach(p => { if (p.skip) bySkip[p.skip] = (bySkip[p.skip] || 0) + 1; });
-  log('เทียบยอดเสร็จ: candidates=' + candidates.length + ' ready=' + ready.length + ' skip=' + JSON.stringify(bySkip));
+  log('เทียบยอดเสร็จ: candidates=' + candidates.length + ' ready=' + ready.length + ' pending_review=' + pending.length + ' skip=' + JSON.stringify(bySkip));
+
+  await uploadPendingReport(dtToken, {
+    generatedAt: new Date().toISOString(),
+    candidates: candidates.length,
+    ready: ready.length,
+    pendingReview: pending.length,
+    skip: bySkip,
+    items: pending.map(p => ({
+      orderId: p.orderId,
+      crmRemaining: Math.round(p.crmRemaining * 100) / 100,
+      residual: p.residual,
+      changedInstallments: p.changes.length,
+    })),
+  });
 
   if (!ready.length) { log('ไม่มีรายการที่ต้องแก้ไขรอบนี้'); return; }
 
