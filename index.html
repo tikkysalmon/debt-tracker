@@ -5525,7 +5525,7 @@
       : 'ตามคำสั่งซื้อเลขที่ ' + esc(fallbackSoNo);
     var scopeNote = draft.scope === 'accessory' ? ' (เฉพาะอุปกรณ์เสริม)' : draft.scope === 'main' && order.hasAccessory ? ' (เฉพาะเครื่องหลัก)' : '';
     var clauses = [
-      'ลูกค้าตกลงผ่อนชำระสินค้าในราคาวางดาวน์เดิมที่ทำสัญญาซื้อขายครั้งแรกเท่านั้น คือ ฿' + esc(snapshot.fullPriceDisp) + ' บาท ไม่สามารถเปลี่ยนแปลงราคาได้ไม่ว่ากรณีใดๆ',
+      'ลูกค้าตกลงผ่อนชำระสินค้าในราคาวางดาวน์เดิมที่ทำสัญญาซื้อขายครั้งแรกเท่านั้น คือ ราคาเช่าซื้อสุทธิรวมทั้งสิ้น ' + esc(snapshot.totalContractDisp) + ' บาท และคงเหลือยอดค้างชำระตามเงื่อนไขการผ่อนเดิมอีกจำนวน ' + esc(snapshot.totalOutstandingDisp) + ' บาท ไม่สามารถเปลี่ยนแปลงราคาได้ไม่ว่ากรณีใดๆ',
       'ลูกค้าเลือกผ่อนชำระในรูปแบบ <b>"ผ่อนครบรับของ"</b> เท่านั้น กล่าวคือ บริษัทฯ จะส่งมอบสินค้าคืนให้แก่ลูกค้าต่อเมื่อลูกค้าชำระเงินครบถ้วนตามยอดที่ตกลงไว้แล้วเท่านั้น',
       'ลูกค้าชำระเงินในรูปแบบ <b>"ตามใจ"</b> โดยชำระขั้นต่ำ 200 บาทต่อครั้ง จะแบ่งชำระกี่ครั้งก็ได้ต่อเดือนตามความสะดวกของลูกค้า โดยลูกค้าต้องผ่อนชำระให้ครบมูลค่าสินค้าทั้งหมด (ตามราคาวางดาวน์เดิมที่ทำสัญญาซื้อขายครั้งแรก) ภายในระยะเวลา 3 เดือน',
       'กำหนดระยะเวลาผ่อนชำระตามเงื่อนไขใหม่นี้ ตั้งแต่วันที่ <b>' + esc(fmtDate(draft.firstDueDate)) + '</b> ถึงวันที่ <b>' + esc(fmtDate(draft.lastDueDate)) + '</b> เป็นอย่างช้าที่สุด (ไม่เกิน 3 เดือนนับแต่วันทำหนังสือฉบับนี้)',
@@ -5549,7 +5549,7 @@
       '</div>' +
       '<div style="text-align:center; font-size:16px; font-weight:700; margin-bottom:14px;">หนังสือเงื่อนไขการผ่อนชำระสินค้าแบบ &quot;Salmon Easy Restart&quot;' + esc(scopeNote) + '</div>' +
       '<div style="margin-bottom:12px;">เรียน คุณ' + esc(order.customerName) + '</div>' +
-      '<p style="margin:0 0 12px; text-align:justify; text-indent:2em;">ตามที่ท่านได้ทำสัญญาเช่าซื้อสินค้ากับบริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด (&quot;บริษัทฯ&quot;) ' + contractRefPhrase + ' ฉบับลงวันที่ ' + esc(order.contractDateDisp) + ' รายการสินค้า ' + esc(snapshot.productList) + ' ราคาเช่าซื้อสุทธิรวมทั้งสิ้น ฿' + esc(snapshot.totalContractDisp) + ' บาท โดยนับแต่วันทำสัญญา ท่านได้ชำระค่าเช่าซื้อให้แก่บริษัทมาแล้วเป็นเงิน ฿' + esc(snapshot.totalPaidDisp) + ' บาท และคงเหลือยอดค้างชำระตามเงื่อนไขการผ่อนเดิมอีกจำนวน ฿' + esc(snapshot.totalOutstandingDisp) + ' บาท</p>' +
+      '<p style="margin:0 0 12px; text-align:justify; text-indent:2em;">ตามที่ท่านได้ทำสัญญาเช่าซื้อสินค้ากับบริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด (&quot;บริษัทฯ&quot;) ' + contractRefPhrase + ' ฉบับลงวันที่ ' + esc(order.contractDateDisp) + ' รายการสินค้า ' + esc(snapshot.productList) + ' ราคาเช่าซื้อสุทธิรวมทั้งสิ้น ' + esc(snapshot.totalContractDisp) + ' บาท โดยนับแต่วันทำสัญญา ท่านได้ชำระค่าเช่าซื้อให้แก่บริษัทมาแล้วเป็นเงิน ' + esc(snapshot.totalPaidDisp) + ' บาท และคงเหลือยอดค้างชำระตามเงื่อนไขการผ่อนเดิมอีกจำนวน ' + esc(snapshot.totalOutstandingDisp) + ' บาท</p>' +
       '<p style="margin:0 0 12px; text-align:justify; text-indent:2em;">เนื่องจากท่านมีความประสงค์ขอยกเลิกสัญญาเช่าซื้อเดิมและคืนเครื่อง พร้อมขอผ่อนชำระต่อในราคาวางดาวน์เดิมตามแผน &quot;Salmon Easy Restart&quot; ของบริษัทฯ ข้าพเจ้าในฐานะลูกค้าผู้ทำสัญญาได้อ่านและเข้าใจเงื่อนไขการผ่อนชำระสินค้าตามแผนดังกล่าวโดยละเอียดแล้ว และยินยอมปฏิบัติตามเงื่อนไขดังต่อไปนี้ทุกประการ</p>' +
       '<ol style="margin:0 0 14px; padding-left:0; list-style:none;">' + clausesHtml + '</ol>' +
       '<div style="display:flex; justify-content:space-between; margin-top:26px;">' +
