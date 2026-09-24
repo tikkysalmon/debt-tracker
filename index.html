@@ -252,10 +252,10 @@
     toggleVerifiedCRM: 'tracking_edit', saveCallLog: 'tracking_edit', commitChanges: 'tracking_edit',
     confirmSendSms: 'send_sms', addSmsTemplate: 'send_sms', deleteSmsTemplate: 'send_sms',
     confirmSendEmail: 'send_letter', issueLetter: 'send_letter',
-    confirmIssueCancelLetter: 'send_letter',
+    confirmIssueCancelLetter: 'send_letter', confirmIssueEasyRestartLetter: 'send_letter',
     onDebtFile: 'upload_files', onPaymentFile: 'upload_files', onCustomerInfo: 'upload_files', onLetterheadFile: 'upload_files', onEmailReportFile: 'upload_files', onSmsLogFile: 'upload_files', onLockSystemFile: 'upload_files',
     deleteInstallment: 'delete_data', cancelOrder: 'delete_data', undoAccountLevelStatus: 'delete_data',
-    deleteCancelLetterHistory: 'delete_data',
+    deleteCancelLetterHistory: 'delete_data', deleteEasyRestartLetterHistory: 'delete_data',
     // Full data wipe — too dangerous to leave as a togglable permission; admin-only no matter what.
     clearToEmpty: '__admin__', resetToSample: '__admin__',
     bulkDeleteOrdersFromCleanupDate: '__admin__',
@@ -2002,6 +2002,11 @@
     // this document's per-case terms (เหตุผล/ทรัพย์สินคืน/คืนเงินหรือไม่/ยกเลิกเรียกเก็บหรือไม่ ฯลฯ)
     // can't be computed automatically the way ยอดค้างชำระ can — see openCancelLetterModal.
     cancelLetterModalTarget: null, cancelLetterDraft: null, cancelLetterIssuing: null, cancelLetterStamping: null,
+    // หนังสือเงื่อนไข Salmon Easy Restart (2026-09-24) — ฟอร์มเดียวก่อนออกเอกสาร มีช่องเดียวที่พนักงาน
+    // กรอกเอง (วันที่ครบกำหนดผ่อนใหม่ ภายใน 3 เดือน) ส่วนอื่นอ้างอิงสัญญาเดิม/เงื่อนไขการผ่อนเดิมจาก
+    // ข้อมูลบัญชีโดยตรง เหมือน cancelLetterDraft ใช้ scope เดียวกัน (all/main/accessory) สำหรับบิลที่มี
+    // อุปกรณ์เสริมแยก SO.
+    easyRestartLetterIssuing: null, easyRestartModalTarget: null, easyRestartDraft: null,
     appliedQuery: '',
     appliedAccountStatuses: [],
     appliedDueStatus: 'all',
@@ -5456,6 +5461,184 @@
       db.storage.from(CLOUD_BUCKET).remove([storagePathFromValue(entry.url)]).catch(function () {});
     }
   }
+  // ---------- หนังสือเงื่อนไข Salmon Easy Restart (PDF) ----------
+  // เพิ่มใหม่ 2026-09-24 ตาม Project Salmon Easy Restart (ผ่อนวางดาวน์ กรณีลูกค้ายกเลิกสัญญา คืนเครื่อง)
+  // — เอกสารเงื่อนไขการผ่อนชำระที่แนบท้ายหนังสือยกเลิกสัญญาเดิม อ้างอิงสัญญาเดิม/เงื่อนไขการผ่อนเดิมจาก
+  // ข้อมูลบัญชีโดยตรง (เลขที่สัญญา วันที่ทำสัญญา สินค้า ราคาวางดาวน์ ยอดตามสัญญา/ชำระแล้ว/คงเหลือ) มีเพียง
+  // "วันที่ครบกำหนดผ่อนชำระเงื่อนไขใหม่ (ภายใน 3 เดือน)" ที่ให้พนักงานกรอกเองในฟอร์มก่อนออกเอกสาร. ใช้ scope
+  // เดียวกับหนังสือบอกเลิกสัญญา (all/main/accessory — ดู cancelLetterDefaultDraft) เพื่อให้บิลที่มีอุปกรณ์
+  // เสริมแยก SO เลือกได้ว่าจะรีสตาร์ทเฉพาะ SO ไหน สอดคล้องกับ scope ที่เลือกตอนออกหนังสือยกเลิกสัญญาเดิม —
+  // แยกเป็นฟีเจอร์ของตัวเอง (history/ปุ่ม/dispatch) ทั้งหมด ไม่แตะโค้ดเดิมของหนังสือบอกเลิกสัญญา/ระบบเซ็น
+  // ออนไลน์ที่มีอยู่แล้ว ตามคำขอผู้ใช้ให้ไม่แก้ไขส่วนอื่นของระบบ.
+  function easyRestartDefaultDraft(cvOrder, initialTrack) {
+    var canSplit = !!(cvOrder.hasAccessory && cvOrder.accessoryOrderId);
+    var scope = canSplit ? (initialTrack === 'accessory' ? 'accessory' : 'main') : 'all';
+    return { scope: scope, newDueDate: easyRestartSuggestedDate(cvOrder, scope) };
+  }
+  // เสนอวันที่ครบกำหนดให้เป็นค่าเริ่มต้น (พนักงานแก้ไขได้เสมอ): ถ้ายังไม่ถึงกำหนดงวดสุดท้ายเดิมของ
+  // track ที่เลือก ให้เสนอวันนั้น มิฉะนั้นเสนอ 3 เดือนนับจากวันนี้แบบสิ้นเดือน (ก่อนวันที่ 15 ของเดือน →
+  // เดือนนี้เป็นเดือนแรก, ตั้งแต่วันที่ 15 เป็นต้นไป → เดือนถัดไปเป็นเดือนแรก)
+  function easyRestartSuggestedDate(cvOrder, scope) {
+    var insts = (scope === 'accessory' ? (cvOrder.accessoryInstallments || []) : (cvOrder.installments || [])).slice()
+      .sort(function (a, b) { return (a.dueDate || '').localeCompare(b.dueDate || ''); });
+    var lastDue = insts.length ? insts[insts.length - 1].dueDate : '';
+    var today = new Date();
+    var todayIso = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+    if (lastDue && lastDue >= todayIso) return lastDue;
+    var monthsAhead = today.getDate() <= 15 ? 2 : 3;
+    var endDate = new Date(today.getFullYear(), today.getMonth() + monthsAhead + 1, 0);
+    return endDate.getFullYear() + '-' + String(endDate.getMonth() + 1).padStart(2, '0') + '-' + String(endDate.getDate()).padStart(2, '0');
+  }
+  function openEasyRestartLetterModal(orderId, track) {
+    var cvOrder = (CV.computedOrders || []).find(function (o) { return o.orderId === orderId; });
+    if (!cvOrder) return;
+    state.easyRestartModalTarget = orderId;
+    state.easyRestartDraft = easyRestartDefaultDraft(cvOrder, track);
+    render();
+  }
+  function closeEasyRestartLetterModal() {
+    state.easyRestartModalTarget = null;
+    state.easyRestartDraft = null;
+    render();
+  }
+  function buildEasyRestartLetterHtml(order, letterNo, draft, snapshot, letterheadSrc) {
+    var now = new Date();
+    var todayIso = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+    var headerHtml = letterheadSrc
+      ? '<img src="' + letterheadSrc + '" style="width:100%; display:block; margin-bottom:16px;" />'
+      : '<div style="font-weight:700; font-size:17px; margin-bottom:6px;">บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด</div><div style="height:2px; background:#1f3a5f; margin-bottom:14px;"></div>';
+    var fallbackSoNo = draft.scope === 'accessory' ? (order.accessoryOrderId || order.orderId) : order.orderId;
+    var contractRefPhrase = order.contractNo
+      ? 'ตามหนังสือสัญญาเช่าซื้อเลขที่ ' + esc(order.contractNo)
+      : 'ตามคำสั่งซื้อเลขที่ ' + esc(fallbackSoNo);
+    var scopeNote = draft.scope === 'accessory' ? ' (เฉพาะอุปกรณ์เสริม)' : draft.scope === 'main' && order.hasAccessory ? ' (เฉพาะเครื่องหลัก)' : '';
+    var clauses = [
+      'ลูกค้าตกลงผ่อนชำระสินค้าในราคาวางดาวน์เดิมที่ทำสัญญาซื้อขายครั้งแรกเท่านั้น คือ ฿' + esc(snapshot.downPaymentDisp) + ' บาท ไม่สามารถเปลี่ยนแปลงราคาได้ไม่ว่ากรณีใดๆ',
+      'ลูกค้าเลือกผ่อนชำระในรูปแบบ <b>"ผ่อนครบรับของ"</b> เท่านั้น กล่าวคือ บริษัทฯ จะส่งมอบสินค้าคืนให้แก่ลูกค้าต่อเมื่อลูกค้าชำระเงินครบถ้วนตามยอดที่ตกลงไว้แล้วเท่านั้น',
+      'ลูกค้าชำระเงินในรูปแบบ <b>"ตามใจ"</b> โดยชำระขั้นต่ำ 200 บาทต่อครั้ง จะแบ่งชำระกี่ครั้งก็ได้ต่อเดือนตามความสะดวกของลูกค้า โดยลูกค้าต้องผ่อนชำระให้ครบมูลค่าสินค้าทั้งหมด (ตามราคาวางดาวน์เดิมที่ทำสัญญาซื้อขายครั้งแรก) ภายในระยะเวลา 3 เดือน',
+      'กำหนดระยะเวลาผ่อนชำระตามเงื่อนไขใหม่นี้ ให้สิ้นสุดภายในวันที่ <b>' + esc(fmtDate(draft.newDueDate)) + '</b> เป็นอย่างช้าที่สุด (ไม่เกิน 3 เดือนนับแต่วันทำหนังสือฉบับนี้)',
+      'ตลอดระยะเวลาผ่อนชำระตามเงื่อนไขนี้ บริษัทฯ จะไม่เรียกเก็บค่าปรับใดๆ จากลูกค้าในทุกกรณีที่มีการผ่อนชำระล่าช้ากว่ากำหนด',
+      'หากลูกค้าผ่อนชำระไม่เป็นไปตามเงื่อนไขที่กำหนดไว้ในหนังสือฉบับนี้ไม่ว่ากรณีใดๆ <b>บริษัทฯ มีสิทธิ์ยึดสินค้าคืนได้ทันที</b> โดยลูกค้าจะไม่โต้แย้งหรือเรียกร้องค่าเสียหายใดๆ จากบริษัทฯ',
+      'หากลูกค้าไม่สามารถผ่อนชำระต่อไปได้ และประสงค์จะยกเลิกสัญญาฉบับนี้ <b>บริษัทฯ จะไม่คืนเงินที่ลูกค้าชำระมาแล้วไม่ว่าส่วนใดส่วนหนึ่งหรือทั้งหมด ไม่ว่ากรณีใดๆ ทั้งสิ้น</b>',
+      'เมื่อลูกค้าผ่อนชำระครบถ้วนตามเงื่อนไขนี้แล้ว บริษัทฯ จะดำเนินการส่งมอบสินค้าคืนให้แก่ลูกค้าตามขั้นตอนของบริษัทฯ ต่อไป'
+    ];
+    var clausesHtml = clauses.map(function (text, idx) {
+      var critical = (idx === 5 || idx === 6);
+      return '<li style="display:flex; gap:8px; padding:7px 10px; border-radius:8px;' + (critical ? ' background:rgba(179,38,30,0.06);' : '') + '">' +
+        '<div style="flex:none; font-weight:700; color:' + (critical ? '#b3261e' : '#1f3a5f') + '; white-space:nowrap;">ข้อ ' + (idx + 1) + '.</div>' +
+        '<div style="flex:1;">' + text + '</div>' +
+      '</li>';
+    }).join('');
+    return '<div style="width:794px; box-sizing:border-box; padding:36px 50px; background:#ffffff; font-family:\'Sarabun\',\'Noto Sans Thai\',\'Leelawadee UI\',sans-serif; color:#1c1b19; font-size:13.5px; line-height:1.6;">' +
+      headerHtml +
+      '<div style="display:flex; justify-content:space-between; font-size:12px; color:#5b5750; margin-bottom:14px;">' +
+        '<div>เลขที่เอกสาร: ER-' + esc(fallbackSoNo) + '-' + letterNo + '</div>' +
+        '<div>วันที่ทำเอกสาร ' + esc(fmtDate(todayIso)) + '</div>' +
+      '</div>' +
+      '<div style="text-align:center; font-size:16px; font-weight:700; margin-bottom:3px;">หนังสือเงื่อนไขการผ่อนชำระสินค้าแบบ &quot;Salmon Easy Restart&quot;' + esc(scopeNote) + '</div>' +
+      '<div style="text-align:center; font-size:12px; color:#5b5750; margin-bottom:14px;">แนบท้ายหนังสือยกเลิกสัญญาเดิม / เอกสารประกอบสัญญาผ่อนชำระ (ครั้งที่ ' + letterNo + ')</div>' +
+      '<div style="margin-bottom:12px;">เรียน คุณ' + esc(order.customerName) + '</div>' +
+      '<p style="margin:0 0 12px; text-align:justify; text-indent:2em;">ตามที่ท่านได้ทำสัญญาเช่าซื้อสินค้ากับบริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด (&quot;บริษัทฯ&quot;) ' + contractRefPhrase + ' ฉบับลงวันที่ ' + esc(order.contractDateDisp) + ' รายการสินค้า ' + esc(snapshot.productList) + ' ราคาเช่าซื้อสุทธิรวมทั้งสิ้น ฿' + esc(snapshot.totalContractDisp) + ' บาท โดยนับแต่วันทำสัญญา ท่านได้ชำระค่าเช่าซื้อให้แก่บริษัทมาแล้วเป็นเงิน ฿' + esc(snapshot.totalPaidDisp) + ' บาท และคงเหลือยอดค้างชำระตามเงื่อนไขการผ่อนเดิมอีกจำนวน ฿' + esc(snapshot.totalOutstandingDisp) + ' บาท</p>' +
+      '<p style="margin:0 0 12px; text-align:justify; text-indent:2em;">เนื่องจากท่านมีความประสงค์ขอยกเลิกสัญญาเช่าซื้อเดิมและคืนเครื่อง พร้อมขอผ่อนชำระต่อในราคาวางดาวน์เดิมตามแผน &quot;Salmon Easy Restart&quot; ของบริษัทฯ ข้าพเจ้าในฐานะลูกค้าผู้ทำสัญญาได้อ่านและเข้าใจเงื่อนไขการผ่อนชำระสินค้าตามแผนดังกล่าวโดยละเอียดแล้ว และยินยอมปฏิบัติตามเงื่อนไขดังต่อไปนี้ทุกประการ</p>' +
+      '<ol style="margin:0 0 14px; padding-left:0; list-style:none;">' + clausesHtml + '</ol>' +
+      '<div style="display:flex; justify-content:space-between; margin-top:26px;">' +
+        '<div style="text-align:center; font-size:13px; width:45%;">' +
+          '<div style="border-top:1px solid #5b5750; margin-bottom:6px; padding-top:34px;">ลงชื่อ ........................................... ลูกค้า</div>' +
+          '<div style="color:#5b5750; font-size:12px;">( ' + esc(order.customerName) + ' )</div>' +
+          '<div style="color:#5b5750; font-size:12px; margin-top:4px;">วันที่ ...................................</div>' +
+        '</div>' +
+        '<div style="text-align:center; font-size:13px; width:45%;">' +
+          '<div style="border-top:1px solid #5b5750; margin-bottom:6px; padding-top:34px;">ลงชื่อ ........................................... ผู้รับมอบอำนาจบริษัทฯ</div>' +
+          '<div style="color:#5b5750; font-size:12px;">( พนักงานฝ่ายบัญชีหนี้สิน บจก.แซลม่อน เอ็นเตอร์ไพรส์ )</div>' +
+          '<div style="color:#5b5750; font-size:12px; margin-top:4px;">วันที่ ...................................</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
+  function confirmIssueEasyRestartLetter() {
+    if (state.easyRestartLetterIssuing) return;
+    var orderId = state.easyRestartModalTarget;
+    var draft = state.easyRestartDraft;
+    if (!orderId || !draft) return;
+    var order = state.orders.find(function (o) { return o.orderId === orderId; });
+    var cvOrder = (CV.computedOrders || []).find(function (o) { return o.orderId === orderId; });
+    if (!order || !cvOrder) return;
+    if (!String(draft.newDueDate || '').trim()) { window.alert('กรุณากรอกวันที่ครบกำหนดผ่อนชำระเงื่อนไขใหม่'); return; }
+    if (!db) { window.alert('ยังไม่ได้เชื่อมต่อฐานข้อมูลกลาง (Supabase) — ไม่สามารถบันทึกไฟล์ PDF ได้'); return; }
+    if (!window.html2canvas || !(window.jspdf && window.jspdf.jsPDF)) { window.alert('ไม่พบไลบรารีสร้าง PDF กรุณาลองรีเฟรชหน้าเว็บ'); return; }
+    var history = order.easyRestartLetterHistory || [];
+    var letterNo = history.reduce(function (m, h) { return Math.max(m, h.no); }, 0) + 1;
+    var scope = draft.scope || 'all';
+    var snapshot = scope === 'accessory'
+      ? { downPaymentDisp: fmtMoney(order.accessoryDownPayment), totalContractDisp: fmtMoney(cvOrder.accessoryContractRaw), totalPaidDisp: fmtMoney(cvOrder.accessoryPaidFullRaw), totalOutstandingDisp: cvOrder.accessoryOutstandingDisp, productList: cvOrder.accessoryProductList || '' }
+      : scope === 'main'
+      ? { downPaymentDisp: fmtMoney(order.downPayment), totalContractDisp: fmtMoney(cvOrder.mainContractRaw), totalPaidDisp: fmtMoney(cvOrder.mainPaidFullRaw), totalOutstandingDisp: cvOrder.mainOutstandingDisp, productList: cvOrder.productList }
+      : { downPaymentDisp: fmtMoney(Number(order.downPayment || 0) + Number(order.accessoryDownPayment || 0)), totalContractDisp: fmtMoney(cvOrder.totalContractRaw), totalPaidDisp: fmtMoney(cvOrder.totalPaidFullRaw), totalOutstandingDisp: cvOrder.totalOutstandingDisp, productList: cvOrder.productList + (cvOrder.hasAccessory && cvOrder.accessoryProductList ? ' + ' + cvOrder.accessoryProductList : '') };
+    if (!window.confirm('ยืนยันออกหนังสือเงื่อนไข Salmon Easy Restart (ครั้งที่ ' + letterNo + ') ให้ลูกค้า ' + cvOrder.customerName + ' ?\n\nกำหนดสิ้นสุดการผ่อนตามเงื่อนไขใหม่: ' + fmtDate(draft.newDueDate))) return;
+    state.easyRestartLetterIssuing = orderId;
+    render();
+    var container;
+    getLetterheadBlobUrl()
+      .then(function (letterheadSrc) {
+        container = document.createElement('div');
+        container.style.cssText = 'position:fixed; left:-99999px; top:0; z-index:-1;';
+        container.innerHTML = buildEasyRestartLetterHtml(cvOrder, letterNo, draft, snapshot, letterheadSrc);
+        document.body.appendChild(container);
+        var imgEl = container.querySelector('img');
+        return (imgEl && !imgEl.complete) ? new Promise(function (res) { imgEl.onload = res; imgEl.onerror = res; }) : Promise.resolve();
+      })
+      .then(function () { return window.html2canvas(container, { scale: 2, useCORS: true, backgroundColor: '#ffffff' }); })
+      .then(function (canvas) {
+        var pdf = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4' });
+        var pageWidth = 210, pageHeight = 297;
+        var imgData = canvas.toDataURL('image/jpeg', 0.92);
+        var imgHeight = (canvas.height * pageWidth) / canvas.width;
+        var heightLeft = imgHeight, position = 0;
+        pdf.addImage(imgData, 'JPEG', 0, position, pageWidth, imgHeight);
+        heightLeft -= pageHeight;
+        while (heightLeft > 0) {
+          position = heightLeft - imgHeight;
+          pdf.addPage();
+          pdf.addImage(imgData, 'JPEG', 0, position, pageWidth, imgHeight);
+          heightLeft -= pageHeight;
+        }
+        return pdf.output('blob');
+      })
+      .then(function (blob) {
+        var path = 'easy-restart-letters/' + orderId.replace(/[^a-zA-Z0-9_-]/g, '_') + '-' + letterNo + '.pdf';
+        return db.storage.from(CLOUD_BUCKET).upload(path, blob, { upsert: true, contentType: 'application/pdf', cacheControl: '0' }).then(function (res) {
+          if (res.error) throw res.error;
+          return path;
+        });
+      })
+      .then(function (path) {
+        var entry = { no: letterNo, at: nowTimestamp(), by: currentActorName(), url: path, scope: scope, newDueDate: draft.newDueDate, endDateDisp: fmtDate(draft.newDueDate), downPaymentDisp: snapshot.downPaymentDisp, totalOutstandingDisp: snapshot.totalOutstandingDisp };
+        updateOrderField(orderId, 'easyRestartLetterHistory', history.concat([entry]));
+        state.easyRestartLetterIssuing = null;
+        state.easyRestartModalTarget = null;
+        state.easyRestartDraft = null;
+        if (container.parentNode) document.body.removeChild(container);
+        render();
+        window.alert('ออกหนังสือเงื่อนไข Salmon Easy Restart สำเร็จ (ครั้งที่ ' + letterNo + ')');
+      })
+      .catch(function (err) {
+        state.easyRestartLetterIssuing = null;
+        if (container && container.parentNode) document.body.removeChild(container);
+        window.alert('เกิดข้อผิดพลาดขณะออกเอกสาร: ' + (err && err.message ? err.message : String(err)));
+        render();
+      });
+  }
+  function deleteEasyRestartLetterHistory(orderId, no) {
+    var order = state.orders.find(function (o) { return o.orderId === orderId; });
+    if (!order) return;
+    var entry = (order.easyRestartLetterHistory || []).find(function (h) { return h.no === no; });
+    if (!entry) return;
+    if (!window.confirm('ยืนยันลบประวัติหนังสือเงื่อนไข Salmon Easy Restart ครั้งที่ ' + no + ' ของ SO ' + (order.soDisplay || order.orderId) + ' ?\n\nใช้เฉพาะกรณีเป็นการทดสอบ/ออกผิดพลาดเท่านั้น')) return;
+    updateOrderField(orderId, 'easyRestartLetterHistory', (order.easyRestartLetterHistory || []).filter(function (h) { return h.no !== no; }));
+    if (db && entry.url) {
+      db.storage.from(CLOUD_BUCKET).remove([storagePathFromValue(entry.url)]).catch(function () {});
+    }
+  }
   // ---------- ตัดจำหน่ายหนี้สูญ (PDF + อนุมัติ/เซ็นออนไลน์) ----------
   // Deliberately per-order (writeoffHistory, append-only like postponeHistory/letterHistory) rather
   // than a new top-level state.writeoffBatches array — cloudSaveNow's 3-way merge only ever persists
@@ -7350,6 +7533,29 @@
       });
     return trackingCard('#b3261e', '📄', 'หนังสือบอกเลิกสัญญาเช่าซื้อ', history.length, body);
   }
+  // หนังสือเงื่อนไข Salmon Easy Restart (2026-09-24) — การ์ดใหม่แยกต่างหาก ไม่แก้การ์ดหนังสือบอกเลิก
+  // สัญญาด้านบน คนละเอกสารกัน (ยกเลิกสัญญาเดิม แล้วขอผ่อนต่อแบบ Easy Restart) track-scoped เหมือนกัน
+  // เพื่อให้เลือก scope ตรงกับ SO ที่กำลังดูอยู่ตอนกดปุ่ม.
+  function renderEasyRestartLetterCard(ord, track) {
+    var history = ord.easyRestartLetterHistory || [];
+    var scopeBadgeOf = function (h) {
+      if (h.scope === 'accessory') return ' · <span style="color:#8a6d00;">เฉพาะอุปกรณ์เสริม</span>';
+      if (h.scope === 'main' && ord.hasAccessory) return ' · <span style="color:#8a6d00;">เฉพาะเครื่องหลัก</span>';
+      return '';
+    };
+    var body =
+      '<div style="display:flex; gap:8px; flex-wrap:wrap;">' +
+        '<button data-action="openEasyRestartLetterModal" data-order="' + esc(ord.orderId) + '" data-track="' + esc(track || '') + '" title="ออกหนังสือเงื่อนไข Salmon Easy Restart (PDF)" style="border:1px solid rgba(31,111,120,0.35); background:#fff; color:#1f6f78; padding:6px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:pointer; white-space:nowrap;">📄 ออกหนังสือเงื่อนไข Easy Restart</button>' +
+      '</div>' +
+      trackingHistoryList(history, function (h) {
+        return '<div style="background:rgba(31,111,120,0.05); border:1px solid rgba(31,111,120,0.12); border-radius:10px; padding:8px 10px; font-size:11.5px; color:#212529;">' +
+          '<div style="font-weight:700; color:#1f6f78; margin-bottom:2px;">🕐 ' + esc(h.at) + ' · ครั้งที่ ' + h.no + (h.by ? ' · โดย ' + esc(h.by) : '') + scopeBadgeOf(h) + '</div>' +
+          '<div style="color:#6b7280; margin-bottom:2px;">กำหนดสิ้นสุดผ่อนตามเงื่อนไขใหม่ (พนักงานกรอก): ' + esc(h.endDateDisp || '-') + '</div>' +
+          '<div style="color:#6b7280;"><span data-action="downloadLetterPdf" data-path="' + esc(h.url) + '" style="color:#1f6f78; font-weight:600; cursor:pointer;">⬇ ดาวน์โหลด</span> · <span data-action="deleteEasyRestartLetterHistory" data-order="' + esc(ord.orderId) + '" data-no="' + h.no + '" title="ลบประวัตินี้ — ใช้เฉพาะกรณีทดสอบ/ออกผิดพลาด" style="color:#e03131; font-weight:600; cursor:pointer;">🗑 ลบ</span></div>' +
+        '</div>';
+      });
+    return trackingCard('#1f6f78', '📄', 'หนังสือเงื่อนไข Salmon Easy Restart', history.length, body);
+  }
   // แบบบันทึกข้อตกลงปรับโครงสร้างหนี้ (2026-08-20) — track-scoped like renderSmsCard/renderLetterCard
   // above (installment count/amount are per-track), unlike renderCancelLetterCard which is whole-order.
   function renderRestructureCard(ord, track) {
@@ -7407,7 +7613,7 @@
       '<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px;">' +
         '<div style="font-size:12px; color:#6b7280; font-weight:600; white-space:nowrap;">เลือก SO:</div>' + selectHtml + balanceHtml +
       '</div>' +
-      '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px;">' + renderSmsCard(ord, track) + renderLetterCard(ord, track) + renderRestructureCard(ord, track) + renderCancelLetterCard(ord, track) + '</div>' +
+      '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px;">' + renderSmsCard(ord, track) + renderLetterCard(ord, track) + renderRestructureCard(ord, track) + renderCancelLetterCard(ord, track) + renderEasyRestartLetterCard(ord, track) + '</div>' +
     '</div>';
   }
   // An early full-settlement payment often gets recorded entirely against ONE งวด (e.g. "ยอดชำระ
@@ -11344,6 +11550,9 @@
     if (state.cancelLetterModalTarget) {
       html += renderCancelLetterModal();
     }
+    if (state.easyRestartModalTarget) {
+      html += renderEasyRestartLetterModal();
+    }
 
     html += '</div>';
     return html;
@@ -11770,6 +11979,54 @@
         '<div style="display:flex; justify-content:flex-end; gap:10px;">' +
           '<div data-action="closeCancelLetterModal" style="padding:11px 20px; border-radius:10px; color:#6b7280; font-size:13.5px; font-weight:600; cursor:pointer;">ยกเลิก</div>' +
           '<div data-action="confirmIssueCancelLetter" style="background:' + (state.cancelLetterIssuing ? '#8d93a0' : 'linear-gradient(135deg,#b3261e,#8f1d17)') + '; color:#fff; padding:11px 22px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer;">' + (state.cancelLetterIssuing ? '⏳ กำลังสร้าง...' : '📄 ยืนยันออกเอกสาร') + '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  // หนังสือเงื่อนไข Salmon Easy Restart — ฟอร์มมี scope picker (ถ้าบิลมีอุปกรณ์เสริมแยก SO เหมือนหนังสือ
+  // บอกเลิกสัญญา) และช่องเดียวที่พนักงานกรอกเอง คือ "วันที่ครบกำหนดผ่อนชำระเงื่อนไขใหม่" — เนื้อหาส่วนอื่น
+  // อ้างอิงสัญญาเดิม/เงื่อนไขการผ่อนเดิมจากข้อมูลบัญชีโดยตรง ไม่ต้องกรอก.
+  function renderEasyRestartLetterModal() {
+    var orderId = state.easyRestartModalTarget;
+    var draft = state.easyRestartDraft;
+    var order = state.orders.find(function (o) { return o.orderId === orderId; });
+    if (!order || !draft) { state.easyRestartModalTarget = null; return ''; }
+    var cvOrder = (CV.computedOrders || []).find(function (o) { return o.orderId === orderId; }) || order;
+    var canSplit = !!(cvOrder.hasAccessory && cvOrder.accessoryOrderId);
+    var scope = draft.scope || 'all';
+    var scopedContractDateDisp = cvOrder.contractDateDisp;
+    var scopedDownPaymentDisp = scope === 'accessory' ? fmtMoney(order.accessoryDownPayment) : scope === 'main' ? fmtMoney(order.downPayment) : fmtMoney(Number(order.downPayment || 0) + Number(order.accessoryDownPayment || 0));
+    var scopedContractDisp = scope === 'accessory' ? fmtMoney(cvOrder.accessoryContractRaw) : scope === 'main' ? fmtMoney(cvOrder.mainContractRaw) : fmtMoney(cvOrder.totalContractRaw);
+    var scopedPaidDisp = scope === 'accessory' ? fmtMoney(cvOrder.accessoryPaidFullRaw) : scope === 'main' ? fmtMoney(cvOrder.mainPaidFullRaw) : cvOrder.totalPaidFullDisp;
+    var scopedOutstandingDisp = scope === 'accessory' ? cvOrder.accessoryOutstandingDisp : scope === 'main' ? cvOrder.mainOutstandingDisp : cvOrder.totalOutstandingDisp;
+    var scopedSoLabel = scope === 'accessory' ? (cvOrder.accessoryOrderId || cvOrder.orderId) : (cvOrder.soDisplay || cvOrder.orderId);
+    function field(label, inputHtml) {
+      return '<div style="margin-bottom:12px;"><div style="font-size:12px; color:#6b7280; font-weight:600; margin-bottom:5px;">' + label + '</div>' + inputHtml + '</div>';
+    }
+    var textInputStyle = 'width:100%; box-sizing:border-box; padding:9px 12px; border-radius:10px; border:1px solid rgba(31,111,120,0.3); background:#f6fbfb; font-size:13.5px; color:#212529; outline:none;';
+    function radio(name, value, current, label) {
+      return '<label style="display:inline-flex; align-items:center; gap:5px; margin-right:16px; font-size:13px; color:#212529; cursor:pointer;"><input type="radio" name="' + name + '" data-action="' + name + '" value="' + value + '"' + (current === value ? ' checked' : '') + ' style="cursor:pointer;" />' + label + '</label>';
+    }
+    var scopeFieldHtml = canSplit
+      ? field('รีสตาร์ทส่วนไหน', radio('easyRestartScope', 'main', scope, 'เฉพาะเครื่องหลัก (SO ' + esc(cvOrder.soDisplay || cvOrder.orderId) + ')') +
+          radio('easyRestartScope', 'accessory', scope, 'เฉพาะอุปกรณ์เสริม (SO ' + esc(cvOrder.accessoryOrderId) + ')') +
+          radio('easyRestartScope', 'all', scope, 'ทั้งหมด (ทั้ง 2 SO)'))
+      : '';
+    return '<div style="position:fixed; inset:0; z-index:9999; background:rgba(33,37,41,0.35); display:flex; align-items:center; justify-content:center; padding:20px;">' +
+      '<div style="max-width:520px; width:100%; max-height:90vh; overflow-y:auto; background:#fff; border-radius:20px; padding:26px 26px 22px; box-shadow:0 24px 60px rgba(33,37,41,0.3);">' +
+        '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:18px; color:#1f6f78; margin-bottom:4px;">📄 ออกหนังสือเงื่อนไข Salmon Easy Restart</div>' +
+        '<div style="font-size:12.5px; color:#6b7280; margin-bottom:14px;">' + esc(cvOrder.customerName) + ' · SO ' + esc(scopedSoLabel) + (cvOrder.contractNo ? ' · เลขที่สัญญา ' + esc(cvOrder.contractNo) : '') + '</div>' +
+        scopeFieldHtml +
+        '<div style="background:rgba(31,111,120,0.06); border:1px solid rgba(31,111,120,0.15); border-radius:10px; padding:10px 12px; margin-bottom:16px; font-size:12.5px; line-height:1.6;">' +
+          '<div>สัญญาเดิมลงวันที่ ' + esc(scopedContractDateDisp) + ' · ราคาวางดาวน์เดิม ฿' + esc(scopedDownPaymentDisp) + '</div>' +
+          '<div>ยอดตามสัญญาเดิม ฿' + esc(scopedContractDisp) + ' · ชำระแล้ว ฿' + esc(scopedPaidDisp) + ' · คงเหลือ ฿' + esc(scopedOutstandingDisp) + '</div>' +
+        '</div>' +
+        field('วันที่ครบกำหนดผ่อนชำระเงื่อนไขใหม่ (ภายใน 3 เดือน) <span style="color:#e03131;">*</span>', '<input type="date" value="' + esc(draft.newDueDate) + '" data-action="easyRestartNewDueDate" style="' + textInputStyle + '" />') +
+        '<div style="font-size:11px; color:#6b7280; margin:-4px 0 18px; line-height:1.5;">ระบบเสนอวันที่นี้ให้อัตโนมัติ (ตามงวดสุดท้ายเดิม หรือ 3 เดือนนับจากวันนี้แบบสิ้นเดือน) — พนักงานสามารถแก้ไขวันที่ให้ตรงกับที่ตกลงกับลูกค้าจริงได้</div>' +
+        '<div style="display:flex; justify-content:flex-end; gap:10px;">' +
+          '<div data-action="closeEasyRestartLetterModal" style="padding:11px 20px; border-radius:10px; color:#6b7280; font-size:13.5px; font-weight:600; cursor:pointer;">ยกเลิก</div>' +
+          '<div data-action="confirmIssueEasyRestartLetter" style="background:' + (state.easyRestartLetterIssuing ? '#8d93a0' : 'linear-gradient(135deg,#1f6f78,#154f56)') + '; color:#fff; padding:11px 22px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer;">' + (state.easyRestartLetterIssuing ? '⏳ กำลังสร้าง...' : '📄 ยืนยันออกเอกสาร') + '</div>' +
         '</div>' +
       '</div>' +
     '</div>';
@@ -12793,6 +13050,10 @@
         case 'confirmIssueCancelLetter': confirmIssueCancelLetter(); break;
         case 'deleteCancelLetterHistory': deleteCancelLetterHistory(t.getAttribute('data-order'), Number(t.getAttribute('data-no'))); break;
         case 'restoreCancelLetterBlank': restoreCancelLetterBlank(t.getAttribute('data-order'), Number(t.getAttribute('data-no'))); break;
+        case 'openEasyRestartLetterModal': openEasyRestartLetterModal(t.getAttribute('data-order'), t.getAttribute('data-track')); break;
+        case 'closeEasyRestartLetterModal': closeEasyRestartLetterModal(); break;
+        case 'confirmIssueEasyRestartLetter': confirmIssueEasyRestartLetter(); break;
+        case 'deleteEasyRestartLetterHistory': deleteEasyRestartLetterHistory(t.getAttribute('data-order'), Number(t.getAttribute('data-no'))); break;
         case 'toggleWriteoffSelect': toggleWriteoffSelect(t.getAttribute('data-order')); break;
         case 'confirmSubmitWriteoffBatch': confirmSubmitWriteoffBatch(); break;
         case 'approveWriteoffBatch': decideWriteoffBatch(t.getAttribute('data-batch'), 'approve'); break;
@@ -12965,6 +13226,20 @@
                 : t.value === 'main' ? scopeCvOrder.productList
                 : scopeCvOrder.productList + (scopeCvOrder.hasAccessory && scopeCvOrder.accessoryProductList ? ' + ' + scopeCvOrder.accessoryProductList : '');
               state.cancelLetterDraft.waiveAmount = t.value === 'accessory' ? scopeCvOrder.accessoryOutstandingRaw : t.value === 'main' ? scopeCvOrder.mainOutstandingRaw : scopeCvOrder.totalOutstandingRaw;
+            }
+            render();
+          }
+          break;
+        case 'easyRestartNewDueDate': if (state.easyRestartDraft) state.easyRestartDraft.newDueDate = t.value; break;
+        // Switching scope re-derives the suggested วันที่ครบกำหนด for the new scope's own installment
+        // schedule, same idea as cancelLetterScope above — a staff-edited date is only reset by an
+        // explicit scope change, not preserved across it (the old scope's suggestion may not apply).
+        case 'easyRestartScope':
+          if (state.easyRestartDraft) {
+            var erScopeCvOrder = (CV.computedOrders || []).find(function (o) { return o.orderId === state.easyRestartModalTarget; });
+            state.easyRestartDraft.scope = t.value;
+            if (erScopeCvOrder) {
+              state.easyRestartDraft.newDueDate = easyRestartSuggestedDate(erScopeCvOrder, t.value);
             }
             render();
           }
