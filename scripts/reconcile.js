@@ -30,6 +30,11 @@ function apiUpdateLabel() {
   return 'API Update ' + pad(th.getUTCDate()) + '/' + pad(th.getUTCMonth() + 1) + '/' + th.getUTCFullYear() + ' ' +
     pad(th.getUTCHours()) + ':' + pad(th.getUTCMinutes());
 }
+// CRM เก็บ paymentDate เป็น UTC (เช่น 2026-06-15T21:42Z = 16/06/2026 เวลาไทย) — ต้องแปลงเป็นวันที่เวลาไทยก่อน
+// ไม่ใช่ตัด 10 ตัวอักษรแรกตรงๆ ไม่งั้นธุรกรรมที่จ่ายหลังเที่ยงคืนเวลาไทยจะเลื่อนไปก่อนวันจริง 1 วัน
+function thaiDateOf(iso) {
+  return new Date(new Date(iso).getTime() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
 function employeeCodeToEmail(code) {
   const slug = String(code || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
   return 'staff-' + slug + '@debttracker.internal';
@@ -206,7 +211,7 @@ function close(a, b, tol) { return Math.abs((Number(a) || 0) - (Number(b) || 0))
       let installmentAmt = 0, penaltyAmt = 0;
       if (items) items.forEach(it => { if (it.type === 'INSTALLMENT') installmentAmt += Number(it.amount) || 0; else penaltyAmt += Number(it.amount) || 0; });
       else installmentAmt = Number(x.amount) || 0;
-      installmentTxs.push({ installmentAmt, penaltyAmt, date: x.paymentDate ? x.paymentDate.slice(0, 10) : null });
+      installmentTxs.push({ installmentAmt, penaltyAmt, date: x.paymentDate ? thaiDateOf(x.paymentDate) : null });
     }
 
     const sim = insts.map(inst => ({
