@@ -5020,6 +5020,10 @@
     var docProductList = isAcc ? (order.accessoryProductList || order.productList) : order.productList;
     var now = new Date();
     var todayIso = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+    // ครั้งที่ 2 / 3+ (2026-10-07, per user): deadline = 3 calendar days after issue date, 16.00 น.
+    // ครั้งที่ 3+ is the "final" wording; it's longer, so it uses tighter sizing to stay on one A4 page.
+    var isFinal = shownNo === 3;
+    var deadlineDisp = fmtDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 3));
     // letterheadSrc is a pre-resolved blob: URL (see issueLetter — the bucket is private now, so
     // the caller must .download()+createObjectURL it before we ever get here; a plain state.letterheadImageUrl
     // storage path wouldn't load as a bare <img src>).
@@ -5036,13 +5040,10 @@
     var titleText = isFinalWarning ? 'หนังสือแจ้งเตือนครั้งสุดท้ายก่อนดำเนินคดีตามกฎหมาย' : 'หนังสือทวงถามให้ชำระหนี้ค้างชำระ';
     var subtitleText = isFinalWarning ? 'ครั้งที่ ' + shownNo + ' — แจ้งเตือนครั้งสุดท้าย' : 'ครั้งที่ ' + shownNo;
     var introText = isFinalWarning
-      ? 'ตามที่บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด ("บริษัทฯ") ได้มีหนังสือทวงถามให้ท่านชำระหนี้ค้างชำระตามสัญญาเช่าซื้อสินค้า คำสั่งซื้อเลขที่ ' + esc(docOrderId) + (order.contractNo ? ' เลขที่สัญญา ' + esc(order.contractNo) : '') + ' ลงวันที่ ' + esc(order.contractDateDisp) + ' รายการสินค้า ' + esc(docProductList) + ' มาแล้วก่อนหน้านี้ แต่ท่านยังคงมิได้ชำระหนี้ดังกล่าวแต่อย่างใด บริษัทฯ จึงขอแจ้งเตือนเป็นครั้งสุดท้าย โดยมีรายละเอียดยอดค้างชำระ ดังนี้'
+      ? 'ตามที่บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด ("บริษัทฯ") ได้มีหนังสือทวงถามให้ท่านชำระหนี้ค้างชำระตามสัญญาเช่าซื้อสินค้า คำสั่งซื้อเลขที่ ' + esc(docOrderId) + (order.contractNo ? ' เลขที่สัญญา ' + esc(order.contractNo) : '') + ' ลงวันที่ ' + esc(order.contractDateDisp) + ' รายการสินค้า ' + esc(docProductList) + ' มาแล้วก่อนหน้านี้ แต่ท่านยังคงมิได้ชำระหนี้ดังกล่าว โดยมีรายละเอียดยอดค้างชำระ ดังนี้'
       : 'ตามที่ท่านได้ทำสัญญาเช่าซื้อสินค้ากับบริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด ("บริษัทฯ") ตามคำสั่งซื้อเลขที่ ' + esc(docOrderId) + (order.contractNo ? ' เลขที่สัญญา ' + esc(order.contractNo) : '') + ' ลงวันที่ ' + esc(order.contractDateDisp) + ' รายการสินค้า ' + esc(docProductList) + ' โดยตกลงผ่อนชำระเป็นรายงวดตามที่ระบุในสัญญานั้น</p>' +
         '<p style="margin:0 0 10px; text-indent:2em;">บัดนี้ปรากฏว่าท่านได้ค้างชำระค่างวดดังกล่าว โดยมีรายละเอียดยอดค้างชำระ ดังนี้';
-    var warningText = isFinalWarning
-      ? 'หนังสือฉบับนี้เป็นการแจ้งเตือนครั้งสุดท้าย บริษัทฯ จะไม่มีการแจ้งเตือนเพิ่มเติมอีกก่อนดำเนินการตามกฎหมาย หากพ้นกำหนดระยะเวลาดังกล่าวแล้ว ท่านยังมิได้ชำระหนี้ให้แก่บริษัทฯ บริษัทฯ จะดำเนินการบอกเลิกสัญญาเช่าซื้อ เรียกให้ท่านส่งมอบทรัพย์สินตามสัญญาคืนแก่บริษัทฯ และดำเนินคดีตามกฎหมายเพื่อรักษาสิทธิของบริษัทฯ ทันที โดยไม่ต้องแจ้งให้ทราบล่วงหน้าอีก ซึ่งรวมถึงแต่ไม่จำกัดเพียงการฟ้องร้องดำเนินคดีทางแพ่งเพื่อเรียกค่าเสียหาย ค่าปรับชำระล่าช้า และค่าใช้จ่ายในการติดตามทวงถามและดำเนินคดีตามที่กฎหมายกำหนด'
-      : 'หากพ้นกำหนดระยะเวลาดังกล่าวแล้ว ท่านยังมิได้ชำระหนี้ให้แก่บริษัทฯ บริษัทฯ ขอสงวนสิทธิ์ในการบอกเลิกสัญญาเช่าซื้อ และเรียกให้ท่านส่งมอบทรัพย์สินตามสัญญาคืนแก่บริษัทฯ รวมถึงดำเนินการตามกฎหมายเพื่อรักษาสิทธิของบริษัทฯ ต่อไป โดยไม่ต้องแจ้งให้ทราบล่วงหน้าอีก ซึ่งรวมถึงแต่ไม่จำกัดเพียงการฟ้องร้องดำเนินคดีทางแพ่งเพื่อเรียกค่าเสียหาย ค่าปรับชำระล่าช้า และค่าใช้จ่ายในการติดตามทวงถามและดำเนินคดีตามที่กฎหมายกำหนด';
-    return '<div style="width:794px; box-sizing:border-box; padding:42px 55px; background:#ffffff; font-family:\'Sarabun\',\'Noto Sans Thai\',\'Leelawadee UI\',sans-serif; color:#1c1b19; font-size:14px; line-height:1.55;">' +
+    return '<div style="width:794px; box-sizing:border-box; padding:' + (isFinal ? '30px 50px' : '42px 55px') + '; background:#ffffff; font-family:\'Sarabun\',\'Noto Sans Thai\',\'Leelawadee UI\',sans-serif; color:#1c1b19; font-size:' + (isFinal ? '13px' : '14px') + '; line-height:' + (isFinal ? '1.45' : '1.55') + ';">' +
       headerHtml +
       '<div style="display:flex; justify-content:space-between; font-size:12.5px; color:#5b5750; margin-bottom:18px;">' +
         '<div>เลขที่หนังสือ: ' + esc(docNo || ('DL-' + docOrderId + '-' + letterNo)) + '</div>' +
@@ -5057,7 +5058,9 @@
         '<tr><td style="padding:6px 10px; border:1px solid #efece3; color:#5b5750;">ยอดค้างชำระรวม</td><td style="padding:6px 10px; border:1px solid #efece3; font-weight:700; color:#b3261e;">฿' + esc(snapshot.amountDisp) + '</td></tr>' +
         '<tr><td style="padding:6px 10px; border:1px solid #efece3; color:#5b5750;">ครบกำหนดชำระงวดล่าสุดเมื่อ</td><td style="padding:6px 10px; border:1px solid #efece3; font-weight:700;">' + esc(fmtDate(snapshot.dueDate)) + '</td></tr>' +
       '</table>' +
-      '<p style="margin:0 0 10px; text-align:justify;">อันเป็นการผิดนัดชำระหนี้ตามสัญญาที่ตกลงกันไว้ บริษัทฯ จึงขอแจ้งให้ท่านดำเนินการชำระยอดค้างดังกล่าวแก่บริษัทฯ ให้แล้วเสร็จภายใน 3 วัน นับแต่วันที่ได้รับหนังสือฉบับนี้ ตามช่องทางดังต่อไปนี้</p>' +
+      (isFinal
+        ? '<p style="margin:0 0 8px; text-align:justify; text-indent:2em;">บริษัทฯ ได้มีหนังสือทวงถามถึงท่านมาแล้วก่อนหน้านี้ แต่ท่านยังคงละเลยและผิดนัดชำระหนี้เรื่อยมา บริษัทฯ จึงขอแจ้งให้ท่านทราบเป็น <b>"ครั้งสุดท้าย"</b> ว่าการกระทำของท่านถือเป็นการผิดสัญญาอย่างร้ายแรง และขอให้ท่านชำระยอดหนี้ค้างชำระทั้งหมดให้เสร็จสิ้นภายในวันที่ <b>' + esc(deadlineDisp) + '</b> ก่อนเวลา <b>16.00 น.</b> ตามช่องทางดังต่อไปนี้</p>'
+        : '<p style="margin:0 0 10px; text-align:justify;">อันเป็นการผิดนัดชำระหนี้ตามสัญญาที่ตกลงกันไว้ บริษัทฯ จึงขอแจ้งให้ท่านดำเนินการชำระยอดค้างดังกล่าวแก่บริษัทฯ ให้แล้วเสร็จภายใน 3 วัน นับแต่วันที่ได้รับหนังสือฉบับนี้ ตามช่องทางดังต่อไปนี้</p>') +
       '<div style="background:rgba(31,58,95,0.04); border:1px solid rgba(31,58,95,0.15); border-radius:8px; padding:9px 14px; margin:0 0 12px; font-size:13px; line-height:1.4;">' +
         '<div style="font-weight:700; color:#1f3a5f; margin-bottom:3px;">ช่องทางการชำระเงิน</div>' +
         '<div>ธนาคารกสิกรไทย</div>' +
@@ -5066,11 +5069,24 @@
         '<div style="font-weight:700; color:#1f3a5f; margin-bottom:3px;">ช่องทางติดต่อสอบถาม</div>' +
         '<div>โทร 061-401-5044 ต่อ 108-109</div>' +
       '</div>' +
-      '<p style="margin:0 0 12px; text-align:justify; text-indent:2em;">' + warningText + '</p>' +
-      '<p style="margin:0 0 20px; text-align:justify; text-indent:2em;">จึงเรียนมาเพื่อโปรดพิจารณาดำเนินการชำระหนี้โดยเร็ว ทั้งนี้เพื่อรักษาผลประโยชน์และเครดิตทางการเงินของท่านเอง</p>' +
+      (isFinal
+        ? '<p style="margin:0 0 4px; text-align:justify; text-indent:2em;">หากพ้นกำหนดเวลาดังกล่าว บริษัทฯ มีความจำเป็นต้องดำเนินมาตรการทางกฎหมายโดยเด็ดขาดและโดยไม่แจ้งให้ทราบล่วงหน้าอีก ดังนี้</p>' +
+          '<div style="margin:0 0 8px 2em; text-align:justify;">' +
+            '<div>1. บอกเลิกสัญญาเช่าซื้อทันที และใช้สิทธิเข้ายึด/ติดตามเอาทรัพย์สินตามสัญญาคืนตามกฎหมาย</div>' +
+            '<div>2. ฟ้องร้องดำเนินคดีต่อศาล เพื่อบังคับชำระหนี้ ยึดทรัพย์สิน หรืออายัดเงินเดือน/บัญชีธนาคาร</div>' +
+            '<div>3. เรียกค่าเสียหายเพิ่มเติม ซึ่งรวมถึงดอกเบี้ยผิดนัดชำระตามอัตราสูงสุดที่กฎหมายกำหนด ค่าธรรมเนียมศาล ค่าทนายความ และค่าใช้จ่ายในการติดตามทวงถามหนี้ทั้งหมด ซึ่งท่านจะต้องเป็นผู้รับผิดชอบค่าใช้จ่ายที่เกิดขึ้นแต่เพียงผู้เดียว</div>' +
+            '<div>4. ส่งบันทึกประวัติการผิดนัดชำระหนี้ ซึ่งอาจส่งผลกระทบต่อความน่าเชื่อถือและธุรกรรมทางการเงินของท่านในอนาคต</div>' +
+          '</div>' +
+          '<p style="margin:0 0 10px; text-align:justify; text-indent:2em;">บริษัทฯ หวังเป็นอย่างยิ่งว่าจะได้รับความร่วมมือจากท่านในการชำระหนี้ เพื่อยุติปัญหาและหลีกเลี่ยงการถูกดำเนินคดีตามกฎหมาย จึงเรียนมาเพื่อโปรดดำเนินการโดยด่วนที่สุด</p>' +
+          '<div style="margin:0 0 12px; text-indent:2em;">ขอแสดงความนับถือ</div>'
+        : ('<p style="margin:0 0 12px; text-align:justify; text-indent:2em;">หากพ้นกำหนดระยะเวลาดังกล่าวแล้ว ท่านยังมิได้ชำระหนี้ให้แก่บริษัทฯ บริษัทฯ ขอสงวนสิทธิ์ในการบอกเลิกสัญญาเช่าซื้อ และเรียกให้ท่านส่งมอบทรัพย์สินตามสัญญาคืนแก่บริษัทฯ รวมถึงดำเนินการตามกฎหมายเพื่อรักษาสิทธิของบริษัทฯ ต่อไป โดยไม่ต้องแจ้งให้ทราบล่วงหน้าอีก ซึ่งรวมถึงแต่ไม่จำกัดเพียงการฟ้องร้องดำเนินคดีทางแพ่งเพื่อเรียกค่าเสียหาย ค่าปรับชำระล่าช้า และค่าใช้จ่ายในการติดตามทวงถามและดำเนินคดีตามที่กฎหมายกำหนด</p>' +
+          (shownNo === 2
+            ? '<p style="margin:0 0 12px; text-align:justify; text-indent:2em;">บริษัทฯ ขอเรียนให้ท่านทราบว่า การชำระหนี้ตามกำหนดเป็นหน้าที่ตามสัญญา เพื่อหลีกเลี่ยงการเกิดค่าปรับ ดอกเบี้ยผิดนัดชำระ รวมถึงการเสียประวัติทางการเงิน (Credit) ของท่าน บริษัทฯ จึงขอความร่วมมือจากท่านโปรดดำเนินการชำระยอดเงินดังกล่าวภายในวันที่ <b>' + esc(deadlineDisp) + '</b> เวลา <b>16.00 น.</b></p>'
+            : '') +
+      '<p style="margin:0 0 20px; text-align:justify; text-indent:2em;">จึงเรียนมาเพื่อโปรดพิจารณาดำเนินการชำระหนี้โดยเร็ว ทั้งนี้เพื่อรักษาผลประโยชน์และเครดิตทางการเงินของท่านเอง</p>')) +
       '<div style="display:flex; justify-content:flex-end;">' +
         '<div style="text-align:center; font-size:13px;">' +
-          '<div style="font-weight:700;">แผนกบัญชีเร่งรัดหนี้สิน</div>' +
+          '<div style="font-weight:700;">' + (isFinal ? 'แผนกบัญชีและเร่งรัดหนี้สิน / ฝ่ายกฎหมาย' : 'แผนกบัญชีเร่งรัดหนี้สิน') + '</div>' +
           '<div style="color:#5b5750; font-size:12px;">บริษัท แซลม่อน เอ็นเตอร์ไพรส์ จำกัด</div>' +
         '</div>' +
       '</div>' +
