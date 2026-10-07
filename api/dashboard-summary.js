@@ -86,7 +86,13 @@ function withEffectiveStatus(list, collectorTag) {
   return (list || []).map((i) => {
     let status = effectiveStatusOf(i);
     const owing = Math.max(0, Number(i.amountDue || 0) - Number(i.discount || 0) - Number(i.amountPaid || 0)) > 0.005;
-    if (collectorTag && !LEGAL_STATUS_EXEMPT[status] && (owing || status === 'จำหน่ายชื่อให้บริษัทติดตามหนี้')) status = 'จำหน่ายชื่อให้บริษัทติดตามหนี้';
+    const paid = Number(i.amountPaid || 0);
+    if (collectorTag && !LEGAL_STATUS_EXEMPT[status]) {
+      // Same payment rule as index.html (2026-10-07): a payment updates only the งวด paid; the rest keep the sold status.
+      if (Number(i.amountDue || 0) > 0 && !owing) status = 'ชำระแล้ว';
+      else if (paid > 0.005 && owing) status = 'ชำระบางส่วน';
+      else if (owing || status === 'จำหน่ายชื่อให้บริษัทติดตามหนี้') status = 'จำหน่ายชื่อให้บริษัทติดตามหนี้';
+    }
     return Object.assign({}, i, { effectiveStatus: status });
   });
 }
@@ -106,7 +112,8 @@ function computeOrders(state) {
     const totalDue = mainDue + accDue;
     const totalPaid = mainPaid + accPaid;
     const isCancelled = !!o.wasCancelled || allInstallments.some((i) => i.effectiveStatus === 'ยกเลิกสัญญา คืนเครื่อง');
-    const isSold = !!o.collectorHold || !!o.wasSold || allInstallments.some((i) => i.effectiveStatus === 'จำหน่ายชื่อให้บริษัทติดตามหนี้' || i.effectiveStatus === 'รอดำเนินคดี');
+    const storedSold = (o.installments || []).concat(o.accessoryInstallments || []).some((i) => i.statusOverride && i.status === 'จำหน่ายชื่อให้บริษัทติดตามหนี้');
+    const isSold = !!o.collectorHold || !!o.wasSold || storedSold || allInstallments.some((i) => i.effectiveStatus === 'จำหน่ายชื่อให้บริษัทติดตามหนี้' || i.effectiveStatus === 'รอดำเนินคดี');
     const isBillCancelled = !!o.wasBillCancelled || allInstallments.some((i) => i.effectiveStatus === 'ยกเลิกบิล');
     return Object.assign({}, o, {
       installments, accessoryInstallments,
