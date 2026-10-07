@@ -21,7 +21,7 @@ const STATUS_GROUP_META = [
   { label: 'ชำระแล้ว', statuses: ['ชำระแล้ว', 'ชำระบางส่วน'] },
   { label: 'ค้างชำระ', statuses: ['ค้างชำระ', 'เกินกำหนดชำระ', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'ดำเนินคดีทางกฎหมาย'] },
   { label: 'หนี้สงสัยจะสูญ', statuses: ['หนี้สงสัยจะสูญ'] },
-  { label: 'จำหน่ายชื่อให้บริษัทติดตามหนี้', statuses: ['จำหน่ายชื่อให้บริษัทติดตามหนี้'] },
+  { label: 'รอดำเนินคดี', statuses: ['รอดำเนินคดี', 'จำหน่ายชื่อให้บริษัทติดตามหนี้'] }, // renamed for display 2026-10-07; stored status stays the legacy string
   { label: 'ยกเลิกสัญญา คืนเครื่อง', statuses: ['ยกเลิกสัญญา คืนเครื่อง'] },
   { label: 'ยกเลิกบิล', statuses: ['ยกเลิกบิล'] }
 ];
@@ -97,7 +97,7 @@ function computeOrders(state) {
     const totalDue = mainDue + accDue;
     const totalPaid = mainPaid + accPaid;
     const isCancelled = !!o.wasCancelled || allInstallments.some((i) => i.effectiveStatus === 'ยกเลิกสัญญา คืนเครื่อง');
-    const isSold = !!o.wasSold || allInstallments.some((i) => i.effectiveStatus === 'จำหน่ายชื่อให้บริษัทติดตามหนี้');
+    const isSold = !!o.wasSold || allInstallments.some((i) => i.effectiveStatus === 'จำหน่ายชื่อให้บริษัทติดตามหนี้' || i.effectiveStatus === 'รอดำเนินคดี');
     const isBillCancelled = !!o.wasBillCancelled || allInstallments.some((i) => i.effectiveStatus === 'ยกเลิกบิล');
     return Object.assign({}, o, {
       installments, accessoryInstallments,

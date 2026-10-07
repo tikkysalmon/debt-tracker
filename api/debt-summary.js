@@ -58,7 +58,7 @@ function remainingOf(i) {
 function summarizeOrder(o, state) {
   const insts = (o.installments || []).concat(o.accessoryInstallments || []).map((i) => Object.assign({}, i, { eff: effectiveStatusOf(i) }));
   const closed = !!(o.wasCancelled || o.wasSold || o.wasBillCancelled || insts.some((i) =>
-    i.eff === 'ยกเลิกสัญญา คืนเครื่อง' || i.eff === 'จำหน่ายชื่อให้บริษัทติดตามหนี้' || i.eff === 'ยกเลิกบิล'));
+    i.eff === 'ยกเลิกสัญญา คืนเครื่อง' || i.eff === 'จำหน่ายชื่อให้บริษัทติดตามหนี้' || i.eff === 'รอดำเนินคดี' || i.eff === 'ยกเลิกบิล'));
   let remainingTotal = 0;
   const arrears = [];
   insts.forEach((i) => {
