@@ -18,7 +18,9 @@ module.exports = async function handler(req, res) {
     // Audit trail in Vercel logs (no data, just when/from where).
     console.log('[state-export] link issued', new Date().toISOString(), String(req.headers['x-forwarded-for'] || ''));
     res.setHeader('Cache-Control', 'no-store');
-    res.status(200).json({ url: url, expiresInSeconds: EXPIRES_SECONDS });
+    // Since 2026-10-07 state.json is stored gzip-compressed (50 MB per-object limit) — consumers must gunzip when the
+    // first two bytes are 0x1f 0x8b (older plain-JSON copies are still possible, so sniff, don't assume).
+    res.status(200).json({ url: url, expiresInSeconds: EXPIRES_SECONDS, encoding: 'gzip (ตรวจ 2 ไบต์แรก 1f 8b — ถ้าใช่ให้ gunzip ก่อนอ่าน ไม่เช่นนั้นเป็น JSON ธรรมดา)' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -122,17 +122,21 @@ async function releaseLock(token) {
     method: 'PATCH', headers: restHeaders(token), body: JSON.stringify({ locked_by: null, locked_at: null }),
   }).catch(() => {});
 }
+// state.json is stored gzip-compressed since 2026-10-07 (50 MB per-object limit); sniff magic bytes so plain JSON still works.
+const zlib = require('zlib');
 async function downloadState(token) {
   const url = SUPABASE_URL + '/storage/v1/object/app-data/state.json?_=' + Date.now();
   const res = await fetch(url, { cache: 'no-store', headers: { Authorization: 'Bearer ' + token, apikey: SUPABASE_ANON_KEY } });
   if (!res.ok) throw new Error('download state.json failed: ' + res.status);
-  return res.json();
+  const buf = Buffer.from(await res.arrayBuffer());
+  const isGzip = buf.length > 2 && buf[0] === 0x1f && buf[1] === 0x8b;
+  return JSON.parse((isGzip ? zlib.gunzipSync(buf) : buf).toString('utf8'));
 }
 async function uploadState(token, stateObj) {
   const res = await fetch(SUPABASE_URL + '/storage/v1/object/app-data/state.json', {
     method: 'PUT',
     headers: { Authorization: 'Bearer ' + token, apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json', 'x-upsert': 'true', 'cache-control': '0' },
-    body: JSON.stringify(stateObj),
+    body: zlib.gzipSync(Buffer.from(JSON.stringify(stateObj), 'utf8')),
   });
   if (!res.ok) throw new Error('upload state.json failed: ' + res.status + ' ' + (await res.text()));
 }
