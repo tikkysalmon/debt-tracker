@@ -129,8 +129,9 @@ function computeSummary(state) {
   // installment's remaining into soldRemainingSum regardless of status/dueDate. Now gated on the same
   // isOwedStatus+dueReached condition as index.html, since a sold order's unpaid งวด spanning multiple
   // months should only count once each งวด is genuinely due, not all at once.
-  let paidSum = 0, totalContract = 0, soldRemainingSum = 0, cancelledRemainingSum = 0;
+  let paidSum = 0, totalContract = 0, soldRemainingSum = 0, cancelledRemainingSum = 0, legalDonutSum = 0;
   contractOrders.forEach((o) => {
+    const isLegalOrder = isCustomerLegalAction(o, state);
     // Order-level full-settlement check (2026-08-31, mirrors index.html's isOrderFullySettled exactly)
     // — see that file's comment for the real workflow this covers: an early full settlement paid into
     // one งวด, with staff manually marking the OTHER งวด ชำระแล้ว without updating their own amountPaid.
@@ -156,6 +157,10 @@ function computeSummary(state) {
       // active orders too — the 2nd loop further down re-derives isOrderFullySettled per order to gate
       // its own overdueSum/legalDonutSum catch-all the same way, but doesn't touch paidSum/netRemaining.
       if (isCatchAll && isOrderFullySettled) { paidSum += remaining; return; }
+      // Re-synced 2026-10-07 to index.html: a legal-tagged customer's ENTIRE real remaining balance (any
+      // status, due or not, including orders also flagged จำหน่ายชื่อฯ) counts as ดำเนินคดีทางกฎหมาย;
+      // ยกเลิกสัญญา orders already returned above.
+      if (isLegalOrder) { legalDonutSum += remaining; return; }
       if (o.isSold) {
         const isOwedStatus = isExplicitOwed || isCatchAll;
         const dueReached = isDueDateReached(i) || isNaN(new Date(i.dueDate).getTime());
@@ -178,10 +183,11 @@ function computeSummary(state) {
   // matched the donut). totalDebtSum used to double-count by adding legalActionSum on top of an
   // already-legal-exclusive overdueSum — now sums overdueSum + legalDonutSum + soldSum instead,
   // reconciling by construction.
-  let overdueSum = 0, legalDonutSum = 0;
+  let overdueSum = 0;
   const overdueCustomerSet = {};
   activeOrders.forEach((o) => {
     const isLegal = isCustomerLegalAction(o, state);
+    if (isLegal) return; // legal-tagged orders are fully accounted in legalDonutSum above (2026-10-07)
     const ck = customerKey(o);
     // Mirrors index.html's isOrderFullySettled (2026-08-31) — gates the catch-all below the same way.
     let orderNetDueTotal = 0, orderPaidTotal = 0;
@@ -206,8 +212,7 @@ function computeSummary(state) {
       // its real due date isn't genuinely overdue yet, per explicit user confirmation.
       const dueReached = isDueDateReached(i) || isNaN(new Date(i.dueDate).getTime());
       if (isOwedStatus && dueReached) {
-        if (isLegal) legalDonutSum += remaining;
-        else { overdueSum += remaining; overdueCustomerSet[ck] = true; }
+        overdueSum += remaining; overdueCustomerSet[ck] = true;
       }
     });
   });
