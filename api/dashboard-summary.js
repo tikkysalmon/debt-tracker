@@ -21,7 +21,8 @@ const STATUS_GROUP_META = [
   { label: 'ชำระแล้ว', statuses: ['ชำระแล้ว', 'ชำระบางส่วน'] },
   { label: 'ค้างชำระ', statuses: ['ค้างชำระ', 'เกินกำหนดชำระ', 'ล็อคเครื่อง', 'ล็อคเครื่อง (ระบบ)', 'เปลี่ยนภาพพักหน้าจอ', 'เปลี่ยนภาพพักหน้าจอ (ระบบ)', 'ค้างชำระ ล็อคเครื่องไม่ได้', 'ดำเนินคดีทางกฎหมาย'] },
   { label: 'หนี้สงสัยจะสูญ', statuses: ['หนี้สงสัยจะสูญ'] },
-  { label: 'รอดำเนินคดี', statuses: ['รอดำเนินคดี', 'จำหน่ายชื่อให้บริษัทติดตามหนี้'] }, // renamed for display 2026-10-07; stored status stays the legacy string
+  { label: 'จำหน่ายชื่อให้บริษัทติดตามหนี้', statuses: ['จำหน่ายชื่อให้บริษัทติดตามหนี้'] },
+  { label: 'รอดำเนินคดี', statuses: ['รอดำเนินคดี'] }, // 2026-10-07: stored status is the legacy string; shown as รอดำเนินคดี unless the customer is on the collector list
   { label: 'ยกเลิกสัญญา คืนเครื่อง', statuses: ['ยกเลิกสัญญา คืนเครื่อง'] },
   { label: 'ยกเลิกบิล', statuses: ['ยกเลิกบิล'] }
 ];
@@ -78,14 +79,22 @@ function effectiveStatusOf(i) {
   return ((i.statusOverride && !overrideStale) && i.status) ? i.status : computeStatus(i);
 }
 
-function withEffectiveStatus(list) {
-  return (list || []).map((i) => Object.assign({}, i, { effectiveStatus: effectiveStatusOf(i) }));
+// Mirrors index.html's withEffectiveStatus collector rule (2026-10-07): an order flagged collectorHold (customer is on the
+// 'ลูกหนี้ที่อยู่กับบริษัทติดตามหนี้' list) shows every unpaid งวด as the sold status.
+const LEGAL_STATUS_EXEMPT = { 'ชำระแล้ว': true, 'ยกเลิกสัญญา คืนเครื่อง': true, 'ยกเลิกบิล': true };
+function withEffectiveStatus(list, collectorTag) {
+  return (list || []).map((i) => {
+    let status = effectiveStatusOf(i);
+    const owing = Math.max(0, Number(i.amountDue || 0) - Number(i.discount || 0) - Number(i.amountPaid || 0)) > 0.005;
+    if (collectorTag && !LEGAL_STATUS_EXEMPT[status] && (owing || status === 'จำหน่ายชื่อให้บริษัทติดตามหนี้')) status = 'จำหน่ายชื่อให้บริษัทติดตามหนี้';
+    return Object.assign({}, i, { effectiveStatus: status });
+  });
 }
 
 function computeOrders(state) {
   return (state.orders || []).map((o) => {
-    const installments = withEffectiveStatus(o.installments);
-    const accessoryInstallments = withEffectiveStatus(o.accessoryInstallments || []);
+    const installments = withEffectiveStatus(o.installments, !!o.collectorHold);
+    const accessoryInstallments = withEffectiveStatus(o.accessoryInstallments || [], !!o.collectorHold);
     const allInstallments = installments.concat(accessoryInstallments);
     const mainDue = installments.reduce((s, i) => s + Number(i.amountDue || 0), 0);
     const mainPaid = installments.reduce((s, i) => s + Number(i.amountPaid || 0), 0);
@@ -97,14 +106,14 @@ function computeOrders(state) {
     const totalDue = mainDue + accDue;
     const totalPaid = mainPaid + accPaid;
     const isCancelled = !!o.wasCancelled || allInstallments.some((i) => i.effectiveStatus === 'ยกเลิกสัญญา คืนเครื่อง');
-    const isSold = !!o.wasSold || allInstallments.some((i) => i.effectiveStatus === 'จำหน่ายชื่อให้บริษัทติดตามหนี้' || i.effectiveStatus === 'รอดำเนินคดี');
+    const isSold = !!o.collectorHold || !!o.wasSold || allInstallments.some((i) => i.effectiveStatus === 'จำหน่ายชื่อให้บริษัทติดตามหนี้' || i.effectiveStatus === 'รอดำเนินคดี');
     const isBillCancelled = !!o.wasBillCancelled || allInstallments.some((i) => i.effectiveStatus === 'ยกเลิกบิล');
     return Object.assign({}, o, {
       installments, accessoryInstallments,
       totalOutstandingRaw: mainOutstanding + accOutstanding,
       totalPaidFullRaw: Number(o.downPayment || 0) + Number(o.accessoryDownPayment || 0) + totalPaid,
       totalContractRaw: Number(o.downPayment || 0) + Number(o.accessoryDownPayment || 0) + totalDue,
-      isCancelled, isSold, isBillCancelled
+      isCancelled, isSold, isCollectorSold: isSold && !!o.collectorHold, isBillCancelled
     });
   });
 }
@@ -116,7 +125,8 @@ function computeSummary(state) {
   const legalActionOrders = orders.filter((o) => isCustomerLegalAction(o, state));
   // Mirrors index.html's computeDashboard exactly (unfiltered orders, not just contractOrders/activeOrders).
   const cancelledOrders = orders.filter((o) => o.isCancelled);
-  const soldOrders = orders.filter((o) => o.isSold);
+  const soldOrders = orders.filter((o) => o.isSold && o.isCollectorSold); // still with the collection company
+  const pendingOrders = orders.filter((o) => o.isSold && !o.isCollectorSold); // รอดำเนินคดี
 
   // Re-synced 2026-08-28 to index.html's computeDashboard round-4 rewrite (see that file's big
   // comment on the same identity) — totalContract/paidSum now guarantee reconciliation with the
@@ -129,7 +139,7 @@ function computeSummary(state) {
   // installment's remaining into soldRemainingSum regardless of status/dueDate. Now gated on the same
   // isOwedStatus+dueReached condition as index.html, since a sold order's unpaid งวด spanning multiple
   // months should only count once each งวด is genuinely due, not all at once.
-  let paidSum = 0, totalContract = 0, soldRemainingSum = 0, cancelledRemainingSum = 0, legalDonutSum = 0;
+  let paidSum = 0, totalContract = 0, soldRemainingSum = 0, pendingRemainingSum = 0, cancelledRemainingSum = 0, legalDonutSum = 0;
   contractOrders.forEach((o) => {
     const isLegalOrder = isCustomerLegalAction(o, state);
     // Order-level full-settlement check (2026-08-31, mirrors index.html's isOrderFullySettled exactly)
@@ -164,7 +174,7 @@ function computeSummary(state) {
       if (o.isSold) {
         const isOwedStatus = isExplicitOwed || isCatchAll;
         const dueReached = isDueDateReached(i) || isNaN(new Date(i.dueDate).getTime());
-        if (isOwedStatus && dueReached) soldRemainingSum += remaining;
+        if (isOwedStatus && dueReached) { if (o.isCollectorSold) soldRemainingSum += remaining; else pendingRemainingSum += remaining; }
       }
     });
   });
@@ -218,7 +228,8 @@ function computeSummary(state) {
   });
 
   const soldSum = soldRemainingSum;
-  const totalDebtSum = overdueSum + legalDonutSum + soldSum;
+  const pendingSum = pendingRemainingSum;
+  const totalDebtSum = overdueSum + legalDonutSum + soldSum + pendingSum;
 
   return {
     asOf: new Date().toISOString(),
@@ -228,7 +239,9 @@ function computeSummary(state) {
     totalDebt: { amountRaw: totalDebtSum, amountDisp: fmtMoney(totalDebtSum) },
     overdue: { amountRaw: overdueSum, amountDisp: fmtMoney(overdueSum), customerCount: Object.keys(overdueCustomerSet).length },
     cancelled: { amountRaw: cancelledRemainingSum, amountDisp: fmtMoney(cancelledRemainingSum), count: cancelledOrders.length },
+    // sold = ยังอยู่กับบริษัทติดตามหนี้ (จำหน่ายชื่อให้บริษัทติดตามหนี้); pendingLegal = รอดำเนินคดี (added 2026-10-07)
     sold: { amountRaw: soldRemainingSum, amountDisp: fmtMoney(soldRemainingSum), count: soldOrders.length },
+    pendingLegal: { amountRaw: pendingSum, amountDisp: fmtMoney(pendingSum), count: pendingOrders.length },
     // legalAction amount re-synced 2026-08-28 follow-up to match the donut's narrower legalDonutSum
     // (ค้างชำระ/หนี้สงสัยจะสูญ/ชำระบางส่วน only) instead of totalOutstandingRaw across ALL statuses —
     // per user request, this card should equal the donut segment exactly, not a separately-scoped figure.
