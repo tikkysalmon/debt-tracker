@@ -102,6 +102,8 @@ function parseLarkRow(fields) {
 function buildOrder(lark, so, txs) {
   if (!so || !so.saleOrderId) return { skip: 'crm_not_found' };
   if (so.installmentType === 'FULL_PAYMENT') return { skip: 'full_payment' };
+  // ดาวน์+อุปกรณ์เสริม มีตารางงวดของอุปกรณ์เสริมอีกชุด (accessoryInstallments) ซึ่งสคริปต์นี้ยังไม่สร้าง
+  if (/อุปกรณ์เสริม/.test(lark.purchaseType || '')) return { skip: 'accessory_bundle_not_supported_yet' };
   const price = Number(so.productPrice) || 0;
   const discount = round2((so.discounts || []).reduce((s, d) => s + (Number(d.amount) || 0), 0));
   if (discount > 0) return { skip: 'has_discount_needs_review' };
