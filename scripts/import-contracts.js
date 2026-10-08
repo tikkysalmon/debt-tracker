@@ -302,7 +302,7 @@ async function main() {
   const skipped = {}; results.filter(r => r.skip).forEach(r => { (skipped[r.skip] = skipped[r.skip] || []).push(r.so); });
   log('พร้อมนำเข้า ' + ready.length + ' · ยอดคงเหลือไม่ตรง CRM ' + mismatch.length + ' · ข้าม ' + results.filter(r => r.skip).length);
   Object.keys(skipped).forEach(k => log('  ข้าม ' + k + ': ' + skipped[k].length + ' (' + skipped[k].slice(0, 5).join(', ') + (skipped[k].length > 5 ? ' ...' : '') + ')'));
-  mismatch.slice(0, 20).forEach(m => log('  ไม่ตรง ' + m.so + ' CRM=' + m.crmRemaining + ' tracker=' + m.trackerRemaining));
+  mismatch.forEach(m => log('  ไม่ตรง ' + m.so + ' | ' + m.order.customerName + ' | ' + m.order.customerId + ' | สัญญา ' + m.order.contractDate + ' | ' + m.order.purchaseType + ' | ราคา ' + m.order.productPrice + ' ดาวน์ ' + m.order.downPayment + ' ส่วนลด ' + m.order.discount + ' | CRM=' + m.crmRemaining + ' tracker=' + m.trackerRemaining + ' ต่าง ' + round2(m.trackerRemaining - m.crmRemaining)));
   ready.slice(0, 5).forEach(r => log('  ตัวอย่าง ' + r.so + ' ' + r.order.customerName + ' | ' + r.order.productList + ' | ราคา ' + r.order.productPrice + ' ดาวน์ ' + r.order.downPayment + ' ' + r.order.installments.length + ' งวด x ' + r.order.installments[0].amountDue + ' | คงเหลือ CRM ' + r.crmRemaining + ' = tracker ' + r.trackerRemaining));
 
   if (DRY_RUN) { log('DRY-RUN: ไม่เขียนข้อมูล'); return; }
