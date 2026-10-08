@@ -405,6 +405,7 @@ async function main() {
   const existing = new Set(state0.orders.map(o => o.orderId));
   state0.orders.forEach(o => { (o.previousOrderIds || []).forEach(p => existing.add(p)); if (o.accessoryOrderId) existing.add(o.accessoryOrderId); });
 
+  log('ระบบติดตามหนี้: ออเดอร์ทั้งหมด ' + state0.orders.length + ' · ที่ AI นำเข้า (Lark+CRM) ' + state0.orders.filter(o => o.importedFrom === 'lark-contract-import').length + ' · ในนั้นมีตารางอุปกรณ์เสริม ' + state0.orders.filter(o => o.importedFrom === 'lark-contract-import' && (o.accessoryInstallments || []).length).length);
   const rows = (await fetchLarkRows(await larkToken())).map(parseLarkRow);
   let cands = rows.filter(r => r.soNumber && r.contractDate >= DATE_FROM && r.contractDate <= DATE_TO);
   log('Lark: สถานะ 5. ทั้งหมด ' + rows.length + ' · อยู่ในช่วงวันที่ ' + cands.length);
