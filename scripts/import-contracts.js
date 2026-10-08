@@ -9,7 +9,7 @@
 // ออเดอร์ที่นำเข้าจะมี importedFrom='lark-contract-import' เพื่อแสดงป้าย "🤖 AI นำเข้า" ให้ staff ตรวจสอบ
 //
 // ENV: CRM_USERNAME CRM_PASSWORD LARK_APP_ID LARK_APP_SECRET
-//      DATE_FROM (2026-08-01) DATE_TO (2026-09-30)  ONLY_SO (คั่นด้วย ,)  LIMIT  DRY_RUN (ค่าเริ่มต้น true)
+//      PURCHASE_TYPE (เช่น 'วางดาวน์ เครื่อง' — เว้นว่าง = ทุกประเภท)  DATE_FROM (2026-08-01) DATE_TO (2026-09-30)  ONLY_SO (คั่นด้วย ,)  LIMIT  DRY_RUN (ค่าเริ่มต้น true)
 // ห้าม hardcode รหัสผ่านจริง — ตั้งเป็น GitHub Actions Secrets เท่านั้น
 
 const zlib = require('zlib');
@@ -86,6 +86,7 @@ function parseLarkRow(fields) {
     phone: larkText(f['เบอร์ติดต่อ']).trim(),
     email: String(email).trim(),
     age: Math.round(larkNumber(f['อายุลูกค้า'])) || 0,
+    purchaseType: larkText(f['ประเภทการซื้อ']).trim(),
     contractNo: larkText(f['เลขที่สัญญา']).trim(),
     contractDate: larkDateMs(f['วันที่ที่ออกสัญญา']) ? thaiDateOf(larkDateMs(f['วันที่ที่ออกสัญญา'])) : '',
     firstDueDate: firstMs ? thaiDateOf(firstMs) : '',
@@ -143,7 +144,7 @@ function buildOrder(lark, so, txs) {
     contractDate: lark.contractDate,
     productList: so.productName || '',
     downPayment, productPrice: price, discount,
-    purchaseType: so.installmentType === 'DOWN_PAYMENT' ? 'วางดาวน์ เครื่อง' : 'ผ่อน เครื่อง',
+    purchaseType: lark.purchaseType || (so.installmentType === 'DOWN_PAYMENT' ? 'วางดาวน์ เครื่อง' : 'ผ่อน เครื่อง'),
     age: lark.age, phone: lark.phone, email: lark.email,
     contractNo: lark.contractNo, shippedAt: '', referenceName: lark.referenceName, referencePhone: lark.referencePhone,
     firstDueDate: lark.firstDueDate, payDay: lark.payDay,
@@ -262,7 +263,8 @@ async function main() {
   const DRY_RUN = String(process.env.DRY_RUN || 'true').toLowerCase() !== 'false';
   const ONLY = (process.env.ONLY_SO || '').split(',').map(s => s.trim()).filter(Boolean);
   const LIMIT = Number(process.env.LIMIT) || 0;
-  log('โหมด: ' + (DRY_RUN ? 'DRY-RUN (ไม่เขียนข้อมูล)' : 'เขียนจริง') + ' · ช่วงวันที่ ' + DATE_FROM + ' ถึง ' + DATE_TO + (ONLY.length ? ' · เฉพาะ ' + ONLY.join(',') : '') + (LIMIT ? ' · limit ' + LIMIT : ''));
+  const PURCHASE_TYPE = (process.env.PURCHASE_TYPE || '').trim();
+  log('โหมด: ' + (DRY_RUN ? 'DRY-RUN (ไม่เขียนข้อมูล)' : 'เขียนจริง') + ' · ช่วงวันที่ ' + DATE_FROM + ' ถึง ' + DATE_TO + (ONLY.length ? ' · เฉพาะ ' + ONLY.join(',') : '') + (LIMIT ? ' · limit ' + LIMIT : '') + (PURCHASE_TYPE ? ' · ประเภทการซื้อ: ' + PURCHASE_TYPE : ' · ทุกประเภทการซื้อ'));
 
   crmToken = await crmLogin();
   const dtToken = await debtTrackerLogin();
@@ -273,6 +275,9 @@ async function main() {
   const rows = (await fetchLarkRows(await larkToken())).map(parseLarkRow);
   let cands = rows.filter(r => r.soNumber && r.contractDate >= DATE_FROM && r.contractDate <= DATE_TO);
   log('Lark: สถานะ 5. ทั้งหมด ' + rows.length + ' · อยู่ในช่วงวันที่ ' + cands.length);
+  const typeCount = {}; cands.forEach(r => { const k = r.purchaseType || '(ไม่ระบุ)'; typeCount[k] = (typeCount[k] || 0) + 1; });
+  log('แยกตามประเภทการซื้อ (ในช่วงวันที่): ' + Object.keys(typeCount).map(k => k + '=' + typeCount[k]).join(' · '));
+  if (PURCHASE_TYPE) cands = cands.filter(r => r.purchaseType === PURCHASE_TYPE);
   if (ONLY.length) cands = cands.filter(r => ONLY.includes(r.soNumber));
   const already = cands.filter(r => existing.has(r.soNumber)).length;
   cands = cands.filter(r => !existing.has(r.soNumber));

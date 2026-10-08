@@ -6,6 +6,9 @@ on:
       only_so:
         description: 'เฉพาะ SO (คั่นด้วย ,) — เว้นว่างถ้าต้องการทั้งช่วง'
         default: ''
+      purchase_type:
+        description: 'ประเภทการซื้อ (ตรงกับใน Lark เป๊ะ) — เว้นว่าง = ทุกประเภท'
+        default: 'วางดาวน์ เครื่อง'
       date_from:
         description: 'ทำสัญญาตั้งแต่วันที่ (YYYY-MM-DD)'
         default: '2026-08-01'
@@ -33,6 +36,7 @@ jobs:
           CRM_PASSWORD: ${{ secrets.CRM_PASSWORD }}
           LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
           LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
+          PURCHASE_TYPE: ${{ inputs.purchase_type }}
           ONLY_SO: ${{ inputs.only_so }}
           DATE_FROM: ${{ inputs.date_from }}
           DATE_TO: ${{ inputs.date_to }}
