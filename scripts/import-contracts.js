@@ -8,6 +8,7 @@
 //      DATE_FROM (2026-08-01) DATE_TO (2026-09-30)  ONLY_SO (คั่นด้วย ,)  LIMIT  DRY_RUN (ค่าเริ่มต้น true)
 // ห้าม hardcode รหัสผ่านจริง — ตั้งเป็น GitHub Actions Secrets เท่านั้น
 
+const zlib = require('zlib');
 const CRM_BASE = 'https://api.salmonphone.com';
 const LARK_BASE = 'https://open.larksuite.com';
 const LARK_APP_TOKEN = 'H8n6bxctqaYgxCsQkvhlJa8mglc';
@@ -235,10 +236,13 @@ async function releaseLock(t) {
 async function downloadState(t) {
   const res = await fetch(SUPABASE_URL + '/storage/v1/object/app-data/state.json?_=' + Date.now(), { cache: 'no-store', headers: { Authorization: 'Bearer ' + t, apikey: SUPABASE_ANON_KEY } });
   if (!res.ok) throw new Error('download state.json failed: ' + res.status);
-  return res.json();
+  // state.json ถูกเก็บแบบ gzip ตั้งแต่ 2026-10-07 — ตรวจ magic bytes 1f 8b ก่อนอ่าน
+  const buf = Buffer.from(await res.arrayBuffer());
+  const isGzip = buf.length > 2 && buf[0] === 0x1f && buf[1] === 0x8b;
+  return JSON.parse((isGzip ? zlib.gunzipSync(buf) : buf).toString('utf8'));
 }
 async function uploadState(t, obj) {
-  const res = await fetch(SUPABASE_URL + '/storage/v1/object/app-data/state.json', { method: 'PUT', headers: { Authorization: 'Bearer ' + t, apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json', 'x-upsert': 'true', 'cache-control': '0' }, body: JSON.stringify(obj) });
+  const res = await fetch(SUPABASE_URL + '/storage/v1/object/app-data/state.json', { method: 'PUT', headers: { Authorization: 'Bearer ' + t, apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json', 'x-upsert': 'true', 'cache-control': '0' }, body: zlib.gzipSync(Buffer.from(JSON.stringify(obj), 'utf8')) });
   if (!res.ok) throw new Error('upload state.json failed: ' + res.status);
 }
 async function mapWithConcurrency(items, limit, worker) {
