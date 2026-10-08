@@ -72,6 +72,23 @@ function splitEvenlyRounded(total, n) {
   return out;
 }
 
+// ---------- ทำความสะอาดข้อมูลจาก Lark ----------
+// ตัวอักษรควบคุมที่มองไม่เห็น (เช่น U+202A) ที่ติดมากับช่อง SO ตอน copy/paste
+const INVISIBLE = /[\u200b-\u200f\u202a-\u202e\u2060\ufeff]/g;
+// ตัดวงเล็บท้ายชื่อ/รหัส เช่น "CUS-202600041231(2)" -> "CUS-202600041231" (Lark ใช้ (2) แยกแถวของลูกค้าคนเดิม)
+function stripParen(t) { return String(t || '').replace(INVISIBLE, '').replace(/\s*[\(（][^)）]*[\)）]\s*/g, '').trim(); }
+// ดึงเลข SO ทุกตัวจากช่อง "เลข SO" ที่กรอกไม่เป็นระเบียบ: คั่นด้วย / , ขึ้นบรรทัดใหม่ มีวงเล็บ ช่องว่าง หรือตกตัว S ("O-2026...")
+function parseSoList(raw) {
+  const t = String(raw || '').replace(INVISIBLE, '').toUpperCase();
+  const out = [];
+  (t.match(/S?O-\d{8,}/g) || []).forEach(m => { const id = m[0] === 'S' ? m : 'S' + m; if (out.indexOf(id) === -1) out.push(id); });
+  return out;
+}
+// ปรับชื่อให้เทียบกันได้: ตัดคำนำหน้า ช่องว่าง วงเล็บ และรวม "เเ" (เ สองตัว) เป็น "แ"
+function normName(s) {
+  return stripParen(s).replace(/^(นางสาว|น\.ส\.|นาย|นาง|เด็กชาย|เด็กหญิง|ด\.ช\.|ด\.ญ\.|คุณ)\s*/, '').replace(/\s+/g, '').replace(/เเ/g, 'แ');
+}
+
 // ---------- แปลงแถว Lark -> ข้อมูลลูกค้า ----------
 function parseLarkRow(fields) {
   const f = fields || {};
@@ -84,12 +101,12 @@ function parseLarkRow(fields) {
   return {
     soNumber: soRaw.toUpperCase(),
     // ช่อง เลข SO ของ "ดาวน์+อุปกรณ์เสริม" มักมี 2 เลข คั่นด้วย / (เครื่องหลัก + อุปกรณ์เสริม)
-    soList: soRaw.toUpperCase().split(/\s*\/+\s*/).map(s => s.trim()).filter(Boolean),
+    soList: parseSoList(soRaw),
     accFirstDueDate: accMs ? thaiDateOf(accMs) : '',
     netMainPrice: larkNumber(f['ราคาสุทธิ์ (ดาวน์)']),
     netAccPrice: larkNumber(f['ราคาสุทธิ (อุปกรณ์เสริม)']),
-    customerId: larkText(f['รหัสลูกค้า']).trim(),
-    customerName: larkText(f['ชื่อ-นามสกุลลูกค้า']).trim(),
+    customerId: stripParen(larkText(f['รหัสลูกค้า'])),
+    customerName: stripParen(larkText(f['ชื่อ-นามสกุลลูกค้า'])),
     phone: larkText(f['เบอร์ติดต่อ']).trim(),
     email: String(email).trim(),
     age: Math.round(larkNumber(f['อายุลูกค้า'])) || 0,
@@ -111,7 +128,7 @@ function installmentPortion(x, preCredit) {
   if (x.type === 'INSTALLMENT') return Number(x.amount);
   // ค่าหักเปลี่ยนการผ่อน (amount ติดลบ) — CRM นับหักจากยอดสะสมก่อนอนุมัติเครดิต
   if (/^CHANGE_/.test(x.type || '')) return preCredit ? Number(x.amount) : null; // CHANGE_INSTALLMENT_TYPE / CHANGE_PRODUCT (ค่าหักเปลี่ยน)
-  if (x.type === 'OVERDUE_FEE') return 0;
+  if (x.type === 'OVERDUE_FEE' || x.type === 'PAUSE_FEE') return 0; // ค่าปรับ/ค่าธรรมเนียมพักการผ่อน ไม่นับเป็นยอดสะสม
   if (/OVERDUE_FEE|PENALTY/.test(x.type || '') && x.paymentData && Array.isArray(x.paymentData.items)) {
     return x.paymentData.items.filter(i => i.type === 'INSTALLMENT').reduce((s, i) => s + Number(i.amount), 0);
   }
@@ -196,7 +213,6 @@ function orderFromTrack(lark, so, t) {
 function buildOrder(lark, so, txs) {
   if (!so || !so.saleOrderId) return { skip: 'crm_not_found' };
   if (so.installmentType === 'FULL_PAYMENT') return { skip: 'full_payment' };
-  if (/อุปกรณ์เสริม/.test(lark.purchaseType || '')) return { skip: 'accessory_bundle_use_buildBundleOrder' };
   const t = buildTrack(lark.firstDueDate, lark.payDay, so, txs);
   if (t.skip) return t;
   return { order: orderFromTrack(lark, so, t), crmRemaining: t.crmRemaining, trackerRemaining: t.trackerRemaining, match: t.match };
@@ -259,10 +275,26 @@ async function fetchAllTx(so) {
   }
   return all;
 }
-const normName = s => String(s || '').replace(/\s+/g, '');
 // ตรวจชื่อ+รหัสลูกค้าในใบสั่งขายของ CRM เทียบกับ Lark
 function customerMatches(lark, so) {
   return !!so && so.customerId === lark.customerId && normName((so.customerFirstName || '') + (so.customerLastName || '')) === normName(lark.customerName);
+}
+// ใบสั่งขายถูกยกเลิกแล้วเปิดเลขใหม่ / Lark พิมพ์ SO ผิด: หาใบที่ยังใช้งานของลูกค้าคนเดียวกัน (รหัสลูกค้าใน Lark) ที่สร้างช่วงวันที่ทำสัญญา (−3 ถึง +14 วัน)
+// ต้องเจอใบเดียวเท่านั้น และถ้ารู้ใบเดิม ราคาสินค้าต้องเท่ากัน — ไม่แน่ใจ = ไม่เดา
+async function findReplacementSo(lark, orig) {
+  if (!lark.customerId) return null;
+  const c = await crmGet('/crm/customer/' + encodeURIComponent(lark.customerId));
+  if (!c || c.__httpError || c.__crmError) return null;
+  const base = new Date(lark.contractDate + 'T00:00:00+07:00').getTime();
+  const cands = (c.saleOrders || []).filter(s => {
+    if (s.status === 'CANCELLED') return false;
+    if (orig && s.saleOrderId === orig.saleOrderId) return false;
+    const t = new Date(s.createdAt).getTime();
+    if (t < base - 3 * 86400000 || t > base + 15 * 86400000) return false;
+    if (orig && Math.abs(Number(s.productPrice) - Number(orig.productPrice)) >= 1) return false;
+    return true;
+  });
+  return cands.length === 1 ? cands[0].saleOrderId : null;
 }
 // หาใบสั่งขายอุปกรณ์เสริมของลูกค้า เมื่อ Lark ระบุ SO มาแค่เลขเดียว: ใบอื่นของลูกค้าคนเดียวกันที่สร้างภายใน 1 วันกับเครื่องหลัก
 async function findAccessorySo(lark, mainSo) {
@@ -374,33 +406,56 @@ async function main() {
   log('มีในระบบติดตามหนี้อยู่แล้ว ' + already + ' · จะประมวลผล ' + cands.length);
 
   const getSo = async id => { const s = await crmGet('/crm/sale-order/' + encodeURIComponent(id)); return (s.__httpError || s.__crmError) ? null : s; };
+  const sameCustomerId = (lark, so) => !!so && so.customerId === lark.customerId;
   const results = await mapWithConcurrency(cands, CONCURRENCY, async (lark) => {
-    const label = lark.soList.join(' / ') || lark.soNumber;
-    const isBundle = /อุปกรณ์เสริม/.test(lark.purchaseType || '');
-    if (lark.soList.length > 2 || (lark.soList.length === 2 && !isBundle)) return { so: label, skip: 'multiple_so_unsupported' };
-    if (!isBundle) {
-      const so = await getSo(lark.soList[0] || lark.soNumber);
-      if (!so) return { so: label, skip: 'crm_error' };
-      const txs = await fetchAllTx(so.saleOrderId);
-      return Object.assign({ so: label }, buildOrder(lark, so, txs));
+    const label = lark.soList.join(' / ') || lark.soNumber || lark.customerId;
+    const isBundle = /\+\s*อุปกรณ์เสริม/.test(lark.purchaseType || '');
+    const isAccOnly = /อุปกรณ์เสริม/.test(lark.purchaseType || '') && !isBundle; // "ดาวน์อุปกรณ์เสริม" = ซื้ออุปกรณ์เสริมเดี่ยว (ไม่มีเครื่องหลักในแถวเดียวกัน)
+
+    // ---- ดาวน์+อุปกรณ์เสริม: 2 ใบสั่งขาย ----
+    if (isBundle) {
+      if (lark.soList.length > 2) return { so: label, skip: 'multiple_so_unsupported' };
+      let sos = [];
+      for (const id of lark.soList) { const s = await getSo(id); if (!s) return { so: label, skip: 'crm_error' }; sos.push(s); }
+      if (!sos.length) return { so: label, skip: 'no_so_in_lark' };
+      if (sos.length === 2) {
+        // เครื่องหลัก = ใบที่ราคาตรงกับ ราคาสุทธิ์ (ดาวน์) ใน Lark ไม่เช่นนั้นใบที่แพงกว่า
+        const byNet = sos.filter(s => Math.abs(Number(s.productPrice) - lark.netMainPrice) < 1);
+        const main = byNet.length === 1 ? byNet[0] : sos.slice().sort((a, b) => Number(b.productPrice) - Number(a.productPrice))[0];
+        sos = [main, sos.find(s => s !== main)];
+      } else {
+        const accId = await findAccessorySo(lark, sos[0]);
+        if (!accId) return { so: label, skip: 'accessory_so_not_found' };
+        const acc = await getSo(accId); if (!acc) return { so: label, skip: 'crm_error' };
+        sos.push(acc);
+      }
+      if (!sos.every(s => customerMatches(lark, s))) return { so: label, skip: 'customer_name_or_id_mismatch_with_crm' };
+      const [mainTxs, accTxs] = [await fetchAllTx(sos[0].saleOrderId), await fetchAllTx(sos[1].saleOrderId)];
+      return Object.assign({ so: label }, buildBundleOrder(lark, sos[0], mainTxs, sos[1], accTxs));
     }
-    // ดาวน์+อุปกรณ์เสริม — ตรวจชื่อ+รหัสลูกค้าใน CRM ก่อน แล้วค่อยนำเข้า (เครื่องหลัก + อุปกรณ์เสริม)
-    let sos = [];
-    for (const id of lark.soList) { const s = await getSo(id); if (!s) return { so: label, skip: 'crm_error' }; sos.push(s); }
-    if (sos.length === 2) {
-      // เครื่องหลัก = ใบที่ราคาตรงกับ ราคาสุทธิ์ (ดาวน์) ใน Lark ไม่เช่นนั้นใบที่แพงกว่า
-      const byNet = sos.filter(s => Math.abs(Number(s.productPrice) - lark.netMainPrice) < 1);
-      const main = byNet.length === 1 ? byNet[0] : sos.slice().sort((a, b) => Number(b.productPrice) - Number(a.productPrice))[0];
-      sos = [main, sos.find(s => s !== main)];
-    } else {
-      const accId = await findAccessorySo(lark, sos[0]);
-      if (!accId) return { so: label, skip: 'accessory_so_not_found' };
-      const acc = await getSo(accId); if (!acc) return { so: label, skip: 'crm_error' };
-      sos.push(acc);
+
+    // ---- ใบสั่งขายเดี่ยว (ผ่อน/วางดาวน์/อุปกรณ์เสริมเดี่ยว) ----
+    let candidates = [];
+    for (const id of lark.soList) { const s = await getSo(id); if (s) candidates.push(s); }
+    // เลือกใบที่ยังใช้งานอยู่ (ไม่ถูกยกเลิก) และเป็นของลูกค้าคนนี้
+    let usable = candidates.filter(s => s.status !== 'CANCELLED' && sameCustomerId(lark, s));
+    let so = usable.length === 1 ? usable[0] : null;
+    let replacedFrom = null;
+    if (!so && usable.length > 1) return { so: label, skip: 'multiple_active_so_needs_review' };
+    if (!so) {
+      // SO ใน Lark ไม่พบ/ถูกยกเลิก/เป็นของลูกค้าคนอื่น (หรือพิมพ์รหัสลูกค้าแทน SO) — หาใบที่เปิดใหม่จากรหัสลูกค้าใน CRM
+      const orig = candidates.find(s => sameCustomerId(lark, s)) || null;
+      const newId = await findReplacementSo(lark, orig);
+      if (!newId) return { so: label, skip: candidates.length ? 'no_replacement_so_found' : 'crm_error' };
+      so = await getSo(newId); if (!so) return { so: label, skip: 'crm_error' };
+      if (orig) replacedFrom = orig.saleOrderId;
     }
-    if (!sos.every(s => customerMatches(lark, s))) return { so: label, skip: 'customer_name_or_id_mismatch_with_crm' };
-    const [mainTxs, accTxs] = [await fetchAllTx(sos[0].saleOrderId), await fetchAllTx(sos[1].saleOrderId)];
-    return Object.assign({ so: label }, buildBundleOrder(lark, sos[0], mainTxs, sos[1], accTxs));
+    if (existing.has(so.saleOrderId)) return { so: label, skip: 'already_in_system' };
+    if (isAccOnly && !customerMatches(lark, so)) return { so: label, skip: 'customer_name_or_id_mismatch_with_crm' };
+    const txs = await fetchAllTx(so.saleOrderId);
+    const r = buildOrder(lark, so, txs);
+    if (r.order && replacedFrom) r.order.previousOrderIds = [replacedFrom];
+    return Object.assign({ so: label + (replacedFrom ? ' → ' + so.saleOrderId : (label !== so.saleOrderId ? ' → ' + so.saleOrderId : '')) }, r);
   });
 
   const ready = results.filter(r => r.order && r.match);
