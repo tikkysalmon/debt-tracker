@@ -1,0 +1,41 @@
+name: Import New Contracts (Lark + CRM)
+
+on:
+  workflow_dispatch:
+    inputs:
+      only_so:
+        description: 'เฉพาะ SO (คั่นด้วย ,) — เว้นว่างถ้าต้องการทั้งช่วง'
+        default: 'SO-2026080100238'
+      date_from:
+        description: 'ทำสัญญาตั้งแต่วันที่ (YYYY-MM-DD)'
+        default: '2026-08-01'
+      date_to:
+        description: 'ถึงวันที่ (YYYY-MM-DD)'
+        default: '2026-09-30'
+      limit:
+        description: 'จำกัดจำนวน (0 = ไม่จำกัด)'
+        default: '0'
+      dry_run:
+        description: 'dry-run = ตรวจอย่างเดียวไม่เขียนข้อมูล (true/false)'
+        default: 'true'
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Import contracts
+        env:
+          CRM_USERNAME: ${{ secrets.CRM_USERNAME }}
+          CRM_PASSWORD: ${{ secrets.CRM_PASSWORD }}
+          LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
+          LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
+          ONLY_SO: ${{ inputs.only_so }}
+          DATE_FROM: ${{ inputs.date_from }}
+          DATE_TO: ${{ inputs.date_to }}
+          LIMIT: ${{ inputs.limit }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: node scripts/import-contracts.js
