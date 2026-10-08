@@ -183,7 +183,7 @@ async function crmGet(p, retried) {
 }
 async function fetchAllTx(so) {
   let all = [];
-  for (let page = 1; page <= 15; page++) {
+  for (let page = 1; page <= 300; page++) {
     const r = await crmGet('/crm/sale-order/' + encodeURIComponent(so) + '/payment-transaction?page=' + page);
     if (r.__httpError || r.__crmError) break;
     all = all.concat(r.paymentTransactions || []);
