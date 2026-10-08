@@ -79,8 +79,15 @@ function parseLarkRow(fields) {
   const firstMs = larkDateMs(f['วันที่เริ่มส่งยอด']) || larkDateMs(f['งวดที่ 1']);
   const dates = [];
   for (let k = 1; k <= 24; k++) { const d = larkDateMs(f['งวดที่ ' + k]); if (d) dates.push(thaiDateOf(d)); }
+  const soRaw = larkText(f['เลข SO']).trim();
+  const accMs = larkDateMs(f['วันที่เริ่มส่งยอด (อุปกรณ์เสริม)']);
   return {
-    soNumber: larkText(f['เลข SO']).trim(),
+    soNumber: soRaw,
+    // ช่อง เลข SO ของ "ดาวน์+อุปกรณ์เสริม" มักมี 2 เลข คั่นด้วย / (เครื่องหลัก + อุปกรณ์เสริม)
+    soList: soRaw.split(/\s*\/+\s*/).map(s => s.trim()).filter(Boolean),
+    accFirstDueDate: accMs ? thaiDateOf(accMs) : '',
+    netMainPrice: larkNumber(f['ราคาสุทธิ์ (ดาวน์)']),
+    netAccPrice: larkNumber(f['ราคาสุทธิ (อุปกรณ์เสริม)']),
     customerId: larkText(f['รหัสลูกค้า']).trim(),
     customerName: larkText(f['ชื่อ-นามสกุลลูกค้า']).trim(),
     phone: larkText(f['เบอร์ติดต่อ']).trim(),
@@ -98,49 +105,57 @@ function parseLarkRow(fields) {
 }
 
 // ---------- สร้าง order จาก Lark + CRM (pure function — ทดสอบแยกได้) ----------
-// คืน { order } หรือ { skip: 'เหตุผล' }
-function buildOrder(lark, so, txs) {
-  if (!so || !so.saleOrderId) return { skip: 'crm_not_found' };
-  if (so.installmentType === 'FULL_PAYMENT') return { skip: 'full_payment' };
-  // ดาวน์+อุปกรณ์เสริม มีตารางงวดของอุปกรณ์เสริมอีกชุด (accessoryInstallments) ซึ่งสคริปต์นี้ยังไม่สร้าง
-  if (/อุปกรณ์เสริม/.test(lark.purchaseType || '')) return { skip: 'accessory_bundle_not_supported_yet' };
+// ส่วนของรายการชำระที่นับเป็น "ผ่อน" — ค่าปรับ/ค่าธรรมเนียม (OVERDUE_FEE) ไม่นำเข้าระบบ (ตามคำสั่ง user)
+// คืน null ถ้าชนิดรายการไม่รู้จัก/ไม่มีรายละเอียด (ให้คนตรวจ)
+function installmentPortion(x, preCredit) {
+  if (x.type === 'INSTALLMENT') return Number(x.amount);
+  // ค่าหักเปลี่ยนการผ่อน (amount ติดลบ) — CRM นับหักจากยอดสะสมก่อนอนุมัติเครดิต
+  if (x.type === 'CHANGE_INSTALLMENT_TYPE') return preCredit ? Number(x.amount) : null;
+  if (x.type === 'OVERDUE_FEE') return 0;
+  if (/OVERDUE_FEE|PENALTY/.test(x.type || '') && x.paymentData && Array.isArray(x.paymentData.items)) {
+    return x.paymentData.items.filter(i => i.type === 'INSTALLMENT').reduce((s, i) => s + Number(i.amount), 0);
+  }
+  return null;
+}
+
+// สร้างตารางผ่อน 1 ใบสั่งขาย (ใช้ทั้งเครื่องหลักและอุปกรณ์เสริม) — คืน { skip } หรือ { price, discount, downPayment, installments, crmRemaining, trackerRemaining, match }
+function buildTrack(firstDueDate, payDay, so, txs) {
   const price = Number(so.productPrice) || 0;
   const discount = round2((so.discounts || []).reduce((s, d) => s + (Number(d.amount) || 0), 0));
   // ส่วนลดจาก CRM (เช่น "โปร100ลด1,000") ใส่ในช่อง ส่วนลด ของออเดอร์ และหักออกก่อนแบ่งงวด
   // (ราคา − ส่วนลด − ยอดวางดาวน์) ÷ จำนวนงวด — เหมือนที่ updateOrderField ในหน้าเว็บทำ
   const ok = (txs || []).filter(x => x.paymentStatus === 'SUCCESSFUL' && Number(x.amount) !== 0);
-  // งวดที่นับเป็น "ผ่อนจริง" = มีเลข no "X/Y"; รายการ INSTALLMENT ที่ no=null ก่อนนั้น = ยอดวางดาวน์
-  const numbered = ok.filter(x => /^\d+\/\d+$/.test(String(x.no || '')));
-  const preCredit = ok.filter(x => !/^\d+\/\d+$/.test(String(x.no || '')));
-  // ยอดสะสมก่อนอนุมัติเครดิต (= ยอดวางดาวน์) ตามวิธีที่ CRM นับ accumulatedAmount:
-  //  - INSTALLMENT นับเต็มจำนวน
-  //  - CHANGE_INSTALLMENT_TYPE (ค่าหักเปลี่ยนการผ่อน, amount ติดลบ) นับรวมเป็นยอดหัก
-  //  - INSTALLMENT_AND_OVERDUE_FEE นับเฉพาะส่วนที่เป็น INSTALLMENT ใน paymentData.items (ค่าปรับ OVERDUE_FEE ไม่นับ)
-  // ชนิดอื่น/ไม่มีรายละเอียด = ข้ามให้คนตรวจ — และยอดคงเหลือสุดท้ายต้องตรง CRM อยู่ดีจึงจะถูกเขียน
+  // งวดที่นับเป็น "ผ่อนจริง" = มีเลข no "X/Y"; รายการที่ no=null ก่อนนั้น = ยอดสะสมก่อนอนุมัติเครดิต (= ยอดวางดาวน์)
+  const isNumbered = x => /^\d+\/\d+$/.test(String(x.no || ''));
   let downPayment = 0;
-  for (const x of preCredit) {
-    if (x.type === 'INSTALLMENT' || x.type === 'CHANGE_INSTALLMENT_TYPE') downPayment += Number(x.amount);
-    else if (x.type === 'INSTALLMENT_AND_OVERDUE_FEE' && x.paymentData && Array.isArray(x.paymentData.items)) {
-      downPayment += x.paymentData.items.filter(i => i.type === 'INSTALLMENT').reduce((s, i) => s + Number(i.amount), 0);
-    } else return { skip: 'has_fee_transactions_needs_review' };
+  for (const x of ok.filter(x => !isNumbered(x))) {
+    const part = installmentPortion(x, true);
+    if (part === null) return { skip: 'has_fee_transactions_needs_review' };
+    downPayment += part;
   }
   downPayment = round2(downPayment);
-  if (numbered.some(x => x.type !== 'INSTALLMENT')) return { skip: 'has_fee_in_installments_needs_review' };
-  const paidNos = new Set(numbered.map(x => String(x.no)));
-  const totalFromNo = numbered.length ? Math.max.apply(null, numbered.map(x => Number(String(x.no).split('/')[1]))) : 0;
+  const numbered = [];
+  for (const x of ok.filter(isNumbered)) {
+    const part = installmentPortion(x, false);
+    if (part === null) return { skip: 'has_fee_in_installments_needs_review' };
+    numbered.push({ no: String(x.no), amount: part, paymentDate: x.paymentDate });
+  }
+  const paidNos = new Set(numbered.map(x => x.no));
+  const totalFromNo = numbered.length ? Math.max.apply(null, numbered.map(x => Number(x.no.split('/')[1]))) : 0;
   const term = totalFromNo || ((Number(so.installmentCount) || 0) + paidNos.size);
   if (!term) return { skip: 'no_term' };
-  if (!lark.firstDueDate || !lark.payDay) return { skip: 'lark_missing_first_due_or_payday' };
+  if (!firstDueDate || !payDay) return { skip: 'lark_missing_first_due_or_payday' };
 
   const amounts = splitEvenlyRounded(round2(price - discount - downPayment), term);
   const installments = amounts.map((amt, i) => ({
     no: i + 1,
-    dueDate: recalcDueDate(lark.firstDueDate, i, lark.payDay),
+    dueDate: recalcDueDate(firstDueDate, i, payDay),
     amountDue: amt, amountPaid: 0, paidDate: '', status: '', statusOverride: false, discount: 0, note: '',
   }));
   // เติมยอดที่ชำระจริงตามลำดับเวลาแบบ FIFO (หลักเดียวกับ reconcile.js)
   numbered.slice().sort((a, b) => new Date(a.paymentDate) - new Date(b.paymentDate)).forEach(tx => {
     let amt = Number(tx.amount); const date = tx.paymentDate ? thaiDateOf(tx.paymentDate) : '';
+    if (amt <= 0.005) return;
     for (let i = 0; i < installments.length && amt > 0.005; i++) {
       const it = installments[i];
       const room = round2(it.amountDue - it.amountPaid);
@@ -150,29 +165,64 @@ function buildOrder(lark, so, txs) {
     }
     if (amt > 0.005) { const last = installments[installments.length - 1]; last.amountPaid = round2(last.amountPaid + amt); last.paidDate = date; }
   });
+  const crmRemaining = round2(price - discount - (Number(so.accumulatedAmount) || 0));
+  const paidTotal = installments.reduce((s, i) => s + i.amountPaid, 0);
+  const trackerRemaining = round2(price - discount - (downPayment + paidTotal));
+  return { price, discount, downPayment, installments, crmRemaining, trackerRemaining, match: Math.abs(crmRemaining - trackerRemaining) <= 0.5 };
+}
 
-  const order = {
+function orderFromTrack(lark, so, t) {
+  return {
     customerId: lark.customerId || so.customerId || '',
     customerName: lark.customerName || ((so.customerFirstName || '') + ' ' + (so.customerLastName || '')).trim(),
     orderId: so.saleOrderId, soUnknown: false,
     contractDate: lark.contractDate,
     productList: so.productName || '',
-    downPayment, productPrice: price, discount,
+    downPayment: t.downPayment, productPrice: t.price, discount: t.discount,
     purchaseType: lark.purchaseType || (so.installmentType === 'DOWN_PAYMENT' ? 'วางดาวน์ เครื่อง' : 'ผ่อน เครื่อง'),
     age: lark.age, phone: lark.phone, email: lark.email,
     contractNo: lark.contractNo, shippedAt: '', referenceName: lark.referenceName, referencePhone: lark.referencePhone,
     firstDueDate: lark.firstDueDate, payDay: lark.payDay,
-    installments,
+    installments: t.installments,
     accessoryOrderId: '', accessoryProductList: '', accessoryProductPrice: 0, accessoryDownPayment: 0,
     accessoryFirstDueDate: '', accessoryPayDay: null, accessoryInstallments: [],
     // บอกระบบว่าส่วนลดถูกหักเข้า amountDue ของงวดแล้ว ห้ามหักซ้ำตอนคำนวณยอดคงเหลือ (ดู updateOrderField)
-    _discountAppliedToInstallments: discount > 0 ? true : undefined,
+    _discountAppliedToInstallments: t.discount > 0 ? true : undefined,
     importedFrom: 'lark-contract-import', importedAt: new Date().toISOString(),
   };
-  const crmRemaining = round2(price - discount - (Number(so.accumulatedAmount) || 0));
-  const paidTotal = installments.reduce((s, i) => s + i.amountPaid, 0);
-  const trackerRemaining = round2(price - discount - (downPayment + paidTotal));
-  return { order, crmRemaining, trackerRemaining, match: Math.abs(crmRemaining - trackerRemaining) <= 0.5 };
+}
+
+// คืน { order } หรือ { skip: 'เหตุผล' }
+function buildOrder(lark, so, txs) {
+  if (!so || !so.saleOrderId) return { skip: 'crm_not_found' };
+  if (so.installmentType === 'FULL_PAYMENT') return { skip: 'full_payment' };
+  if (/อุปกรณ์เสริม/.test(lark.purchaseType || '')) return { skip: 'accessory_bundle_use_buildBundleOrder' };
+  const t = buildTrack(lark.firstDueDate, lark.payDay, so, txs);
+  if (t.skip) return t;
+  return { order: orderFromTrack(lark, so, t), crmRemaining: t.crmRemaining, trackerRemaining: t.trackerRemaining, match: t.match };
+}
+
+// ดาวน์+อุปกรณ์เสริม: 2 ใบสั่งขาย (เครื่องหลัก + อุปกรณ์เสริม) ของลูกค้าคนเดียวกัน — ยอดคงเหลือทั้งสองฝั่งต้องตรง CRM
+function buildBundleOrder(lark, mainSo, mainTxs, accSo, accTxs) {
+  if (!mainSo || !mainSo.saleOrderId || !accSo || !accSo.saleOrderId) return { skip: 'crm_not_found' };
+  if (mainSo.installmentType === 'FULL_PAYMENT') return { skip: 'full_payment' };
+  const m = buildTrack(lark.firstDueDate, lark.payDay, mainSo, mainTxs);
+  if (m.skip) return m;
+  const a = buildTrack(lark.accFirstDueDate || lark.firstDueDate, lark.payDay, accSo, accTxs);
+  if (a.skip) return { skip: 'accessory_' + a.skip };
+  if (a.discount > 0) return { skip: 'accessory_has_discount_needs_review' };
+  const order = orderFromTrack(lark, mainSo, m);
+  order.accessoryOrderId = accSo.saleOrderId;
+  order.accessoryProductList = accSo.productName || '';
+  order.accessoryProductPrice = a.price;
+  order.accessoryDownPayment = a.downPayment;
+  order.accessoryFirstDueDate = lark.accFirstDueDate || lark.firstDueDate;
+  order.accessoryPayDay = lark.payDay;
+  order.accessoryInstallments = a.installments;
+  return {
+    order, crmRemaining: round2(m.crmRemaining + a.crmRemaining), trackerRemaining: round2(m.trackerRemaining + a.trackerRemaining),
+    match: m.match && a.match,
+  };
 }
 
 // ---------- CRM ----------
@@ -200,7 +250,29 @@ async function fetchAllTx(so) {
     all = all.concat(r.paymentTransactions || []);
     if (!r.pagination || !r.pagination.hasNextPage) break;
   }
+  // รายการประเภทค่าปรับที่ list ไม่แจกแจงมา (paymentData=null) — ดึงรายละเอียดเพื่อแยกส่วนผ่อนออกจากค่าปรับ
+  for (const x of all) {
+    if (/OVERDUE_FEE|PENALTY/.test(x.type || '') && x.type !== 'OVERDUE_FEE' && !(x.paymentData && x.paymentData.items) && x.paymentTransactionId) {
+      const d = await crmGet('/crm/payment-transaction/' + x.paymentTransactionId);
+      if (d && d.invoiceItems) x.paymentData = { items: d.invoiceItems };
+    }
+  }
   return all;
+}
+const normName = s => String(s || '').replace(/\s+/g, '');
+// ตรวจชื่อ+รหัสลูกค้าในใบสั่งขายของ CRM เทียบกับ Lark
+function customerMatches(lark, so) {
+  return !!so && so.customerId === lark.customerId && normName((so.customerFirstName || '') + (so.customerLastName || '')) === normName(lark.customerName);
+}
+// หาใบสั่งขายอุปกรณ์เสริมของลูกค้า เมื่อ Lark ระบุ SO มาแค่เลขเดียว: ใบอื่นของลูกค้าคนเดียวกันที่สร้างภายใน 1 วันกับเครื่องหลัก
+async function findAccessorySo(lark, mainSo) {
+  const c = await crmGet('/crm/customer/' + encodeURIComponent(mainSo.customerId));
+  if (!c || c.__httpError || c.__crmError) return null;
+  const t0 = new Date(mainSo.createdAt).getTime();
+  const cands = (c.saleOrders || []).filter(s => s.saleOrderId !== mainSo.saleOrderId && Math.abs(new Date(s.createdAt).getTime() - t0) <= 24 * 3600 * 1000);
+  const byPrice = lark.netAccPrice ? cands.filter(s => Math.abs(Number(s.productPrice) - lark.netAccPrice) < 1) : [];
+  const pick = byPrice.length === 1 ? byPrice : (cands.length === 1 ? cands : []);
+  return pick.length === 1 ? pick[0].saleOrderId : null;
 }
 
 // ---------- Lark ----------
@@ -286,7 +358,7 @@ async function main() {
   const dtToken = await debtTrackerLogin();
   const state0 = await downloadState(dtToken);
   const existing = new Set(state0.orders.map(o => o.orderId));
-  state0.orders.forEach(o => (o.previousOrderIds || []).forEach(p => existing.add(p)));
+  state0.orders.forEach(o => { (o.previousOrderIds || []).forEach(p => existing.add(p)); if (o.accessoryOrderId) existing.add(o.accessoryOrderId); });
 
   const rows = (await fetchLarkRows(await larkToken())).map(parseLarkRow);
   let cands = rows.filter(r => r.soNumber && r.contractDate >= DATE_FROM && r.contractDate <= DATE_TO);
@@ -294,18 +366,41 @@ async function main() {
   const typeCount = {}; cands.forEach(r => { const k = r.purchaseType || '(ไม่ระบุ)'; typeCount[k] = (typeCount[k] || 0) + 1; });
   log('แยกตามประเภทการซื้อ (ในช่วงวันที่): ' + Object.keys(typeCount).map(k => k + '=' + typeCount[k]).join(' · '));
   if (PURCHASE_TYPE) cands = cands.filter(r => r.purchaseType === PURCHASE_TYPE);
-  if (ONLY.length) cands = cands.filter(r => ONLY.includes(r.soNumber));
-  const already = cands.filter(r => existing.has(r.soNumber)).length;
-  cands = cands.filter(r => !existing.has(r.soNumber));
+  if (ONLY.length) cands = cands.filter(r => r.soList.some(s => ONLY.includes(s)) || ONLY.includes(r.soNumber));
+  const isExisting = r => r.soList.some(s => existing.has(s)) || existing.has(r.soNumber);
+  const already = cands.filter(isExisting).length;
+  cands = cands.filter(r => !isExisting(r));
   if (LIMIT) cands = cands.slice(0, LIMIT);
   log('มีในระบบติดตามหนี้อยู่แล้ว ' + already + ' · จะประมวลผล ' + cands.length);
 
+  const getSo = async id => { const s = await crmGet('/crm/sale-order/' + encodeURIComponent(id)); return (s.__httpError || s.__crmError) ? null : s; };
   const results = await mapWithConcurrency(cands, CONCURRENCY, async (lark) => {
-    const so = await crmGet('/crm/sale-order/' + encodeURIComponent(lark.soNumber));
-    if (so.__httpError || so.__crmError) return { so: lark.soNumber, skip: 'crm_error' };
-    const txs = await fetchAllTx(lark.soNumber);
-    const r = buildOrder(lark, so, txs);
-    return Object.assign({ so: lark.soNumber }, r);
+    const label = lark.soList.join(' / ') || lark.soNumber;
+    const isBundle = /อุปกรณ์เสริม/.test(lark.purchaseType || '');
+    if (lark.soList.length > 2 || (lark.soList.length === 2 && !isBundle)) return { so: label, skip: 'multiple_so_unsupported' };
+    if (!isBundle) {
+      const so = await getSo(lark.soList[0] || lark.soNumber);
+      if (!so) return { so: label, skip: 'crm_error' };
+      const txs = await fetchAllTx(so.saleOrderId);
+      return Object.assign({ so: label }, buildOrder(lark, so, txs));
+    }
+    // ดาวน์+อุปกรณ์เสริม — ตรวจชื่อ+รหัสลูกค้าใน CRM ก่อน แล้วค่อยนำเข้า (เครื่องหลัก + อุปกรณ์เสริม)
+    let sos = [];
+    for (const id of lark.soList) { const s = await getSo(id); if (!s) return { so: label, skip: 'crm_error' }; sos.push(s); }
+    if (sos.length === 2) {
+      // เครื่องหลัก = ใบที่ราคาตรงกับ ราคาสุทธิ์ (ดาวน์) ใน Lark ไม่เช่นนั้นใบที่แพงกว่า
+      const byNet = sos.filter(s => Math.abs(Number(s.productPrice) - lark.netMainPrice) < 1);
+      const main = byNet.length === 1 ? byNet[0] : sos.slice().sort((a, b) => Number(b.productPrice) - Number(a.productPrice))[0];
+      sos = [main, sos.find(s => s !== main)];
+    } else {
+      const accId = await findAccessorySo(lark, sos[0]);
+      if (!accId) return { so: label, skip: 'accessory_so_not_found' };
+      const acc = await getSo(accId); if (!acc) return { so: label, skip: 'crm_error' };
+      sos.push(acc);
+    }
+    if (!sos.every(s => customerMatches(lark, s))) return { so: label, skip: 'customer_name_or_id_mismatch_with_crm' };
+    const [mainTxs, accTxs] = [await fetchAllTx(sos[0].saleOrderId), await fetchAllTx(sos[1].saleOrderId)];
+    return Object.assign({ so: label }, buildBundleOrder(lark, sos[0], mainTxs, sos[1], accTxs));
   });
 
   const ready = results.filter(r => r.order && r.match);
@@ -331,5 +426,5 @@ async function main() {
   } finally { await releaseLock(dtToken); }
 }
 
-module.exports = { parseLarkRow, buildOrder, recalcDueDate, splitEvenlyRounded };
+module.exports = { parseLarkRow, buildOrder, buildBundleOrder, recalcDueDate, splitEvenlyRounded };
 if (require.main === module) main().catch(e => { log('FATAL: ' + e.message); process.exit(1); });
