@@ -8,13 +8,13 @@ on:
         default: ''
       purchase_type:
         description: 'ประเภทการซื้อ (ตรงกับใน Lark เป๊ะ) — เว้นว่าง = ทุกประเภท'
-        default: 'วางดาวน์ เครื่อง'
+        default: ''
       date_from:
         description: 'ทำสัญญาตั้งแต่วันที่ (YYYY-MM-DD)'
         default: '2026-08-01'
       date_to:
         description: 'ถึงวันที่ (YYYY-MM-DD)'
-        default: '2026-09-30'
+        default: '2026-08-31'
       limit:
         description: 'จำกัดจำนวน (0 = ไม่จำกัด)'
         default: '0'
