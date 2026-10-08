@@ -106,7 +106,8 @@ function buildOrder(lark, so, txs) {
   if (/อุปกรณ์เสริม/.test(lark.purchaseType || '')) return { skip: 'accessory_bundle_not_supported_yet' };
   const price = Number(so.productPrice) || 0;
   const discount = round2((so.discounts || []).reduce((s, d) => s + (Number(d.amount) || 0), 0));
-  if (discount > 0) return { skip: 'has_discount_needs_review' };
+  // ส่วนลดจาก CRM (เช่น "โปร100ลด1,000") ใส่ในช่อง ส่วนลด ของออเดอร์ และหักออกก่อนแบ่งงวด
+  // (ราคา − ส่วนลด − ยอดวางดาวน์) ÷ จำนวนงวด — เหมือนที่ updateOrderField ในหน้าเว็บทำ
   const ok = (txs || []).filter(x => x.paymentStatus === 'SUCCESSFUL' && Number(x.amount) !== 0);
   // งวดที่นับเป็น "ผ่อนจริง" = มีเลข no "X/Y"; รายการ INSTALLMENT ที่ no=null ก่อนนั้น = ยอดวางดาวน์
   const numbered = ok.filter(x => /^\d+\/\d+$/.test(String(x.no || '')));
@@ -153,6 +154,8 @@ function buildOrder(lark, so, txs) {
     installments,
     accessoryOrderId: '', accessoryProductList: '', accessoryProductPrice: 0, accessoryDownPayment: 0,
     accessoryFirstDueDate: '', accessoryPayDay: null, accessoryInstallments: [],
+    // บอกระบบว่าส่วนลดถูกหักเข้า amountDue ของงวดแล้ว ห้ามหักซ้ำตอนคำนวณยอดคงเหลือ (ดู updateOrderField)
+    _discountAppliedToInstallments: discount > 0 ? true : undefined,
     importedFrom: 'lark-contract-import', importedAt: new Date().toISOString(),
   };
   const crmRemaining = round2(price - discount - (Number(so.accumulatedAmount) || 0));
