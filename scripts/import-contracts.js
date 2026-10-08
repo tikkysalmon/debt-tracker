@@ -117,6 +117,9 @@ function parseLarkRow(fields) {
     firstDueDate: firstMs ? thaiDateOf(firstMs) : (accMs ? thaiDateOf(accMs) : ''),
     payDay: Math.round(larkNumber(f['*ชำระทุกวันที่'])) || null,
     larkDueDates: dates,
+    // แถวที่ใส่หลาย SO (คนละสัญญา) จะมีวันเริ่มส่งยอด/วันชำระเป็นรายการเรียงตามลำดับ SO
+    firstDueList: (Array.isArray(f['วันที่เริ่มส่งยอด'] && f['วันที่เริ่มส่งยอด'].value) ? f['วันที่เริ่มส่งยอด'].value : []).map(thaiDateOf),
+    payDayList: (f['*ชำระทุกวันที่'] && Array.isArray(f['*ชำระทุกวันที่'].value) ? f['*ชำระทุกวันที่'].value : []).map(Number).filter(Boolean),
     referenceName: larkText(f['ชื่อบุคคลที่ติดต่อได้คนที่หนึ่ง']).trim(),
     referencePhone: larkText(f['เบอร์ติดต่อบุคคลอ้างอิงที่1']).trim(),
   };
@@ -206,6 +209,7 @@ function orderFromTrack(lark, so, t) {
     accessoryFirstDueDate: '', accessoryPayDay: null, accessoryInstallments: [],
     // บอกระบบว่าส่วนลดถูกหักเข้า amountDue ของงวดแล้ว ห้ามหักซ้ำตอนคำนวณยอดคงเหลือ (ดู updateOrderField)
     _discountAppliedToInstallments: t.discount > 0 ? true : undefined,
+    crmCustomerName: (function () { const n = ((so.customerFirstName || '') + (so.customerLastName || '')); return n && normName(n) !== normName(lark.customerName) ? ((so.customerFirstName || '') + ' ' + (so.customerLastName || '')).replace(/\s+/g, ' ').trim() : undefined; })(),
     importedFrom: 'lark-contract-import', importedAt: new Date().toISOString(),
   };
 }
@@ -278,7 +282,8 @@ async function fetchAllTx(so) {
 }
 // ตรวจชื่อ+รหัสลูกค้าในใบสั่งขายของ CRM เทียบกับ Lark
 function customerMatches(lark, so) {
-  return !!so && so.customerId === lark.customerId && normName((so.customerFirstName || '') + (so.customerLastName || '')) === normName(lark.customerName);
+  // รหัสลูกค้าต้องตรงกัน; ชื่อในสัญญาอาจต่างจากชื่อลูกค้าใน CRM ได้ (ลูกค้าคนเดียวทำสัญญาคนละชื่อ เช่น ผู้ปกครอง) — เก็บชื่อ CRM ไว้ในออเดอร์เพื่อตรวจย้อนหลัง
+  return !!so && so.customerId === lark.customerId;
 }
 // ใบสั่งขายถูกยกเลิกแล้วเปิดเลขใหม่ / Lark พิมพ์ SO ผิด: หาใบที่ยังใช้งานของลูกค้าคนเดียวกัน (รหัสลูกค้าใน Lark) ที่สร้างช่วงวันที่ทำสัญญา (−3 ถึง +14 วัน)
 // ต้องเจอใบเดียวเท่านั้น และถ้ารู้ใบเดิม ราคาสินค้าต้องเท่ากัน — ไม่แน่ใจ = ไม่เดา
@@ -442,7 +447,15 @@ async function main() {
     let usable = candidates.filter(s => s.status !== 'CANCELLED' && sameCustomerId(lark, s));
     let so = usable.length === 1 ? usable[0] : null;
     let replacedFrom = null;
-    if (!so && usable.length > 1) return { so: label, skip: 'multiple_active_so_needs_review' };
+    if (!so && usable.length > 1) {
+      // หลายสัญญาในแถวเดียว: เลือกใบที่สร้างใกล้วันที่ทำสัญญาของแถวนี้ (−3 ถึง +15 วัน) ต้องเจอใบเดียว
+      const base = new Date(lark.contractDate + 'T00:00:00+07:00').getTime();
+      const near = usable.filter(s => { const t = new Date(s.createdAt).getTime(); return t >= base - 3 * 86400000 && t <= base + 15 * 86400000; });
+      if (near.length !== 1) return { so: label, skip: 'multiple_active_so_needs_review' };
+      so = near[0];
+      const i = lark.soList.indexOf(so.saleOrderId);
+      lark = Object.assign({}, lark, { firstDueDate: lark.firstDueList[i] || lark.firstDueDate, payDay: lark.payDayList[i] || lark.payDay });
+    }
     if (!so) {
       // SO ใน Lark ไม่พบ/ถูกยกเลิก/เป็นของลูกค้าคนอื่น (หรือพิมพ์รหัสลูกค้าแทน SO) — หาใบที่เปิดใหม่จากรหัสลูกค้าใน CRM
       const orig = candidates.find(s => sameCustomerId(lark, s)) || null;
