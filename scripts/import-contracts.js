@@ -297,17 +297,24 @@ async function findReplacementSo(lark, orig) {
     if (orig && s.saleOrderId === orig.saleOrderId) return false;
     const t = new Date(s.createdAt).getTime();
     if (t < base - 3 * 86400000 || t > base + 15 * 86400000) return false;
-    if (orig && Math.abs(Number(s.productPrice) - Number(orig.productPrice)) >= 1) return false;
     return true;
   });
-  return cands.length === 1 ? cands[0].saleOrderId : null;
+  // ราคาเท่าเดิมได้ก่อน; ถ้าไม่มี (ลูกค้าเปลี่ยนสินค้า/เพิ่มเงิน ต้องยกเลิกบิลเก่าแล้วเปิดใหม่) ใช้ใบเดียวที่เหลือในช่วงวันที่
+  const samePrice = orig ? cands.filter(s => Math.abs(Number(s.productPrice) - Number(orig.productPrice)) < 1) : [];
+  const pick = samePrice.length ? samePrice : cands;
+  return pick.length === 1 ? pick[0].saleOrderId : null;
 }
 // หาใบสั่งขายอุปกรณ์เสริมของลูกค้า เมื่อ Lark ระบุ SO มาแค่เลขเดียว: ใบอื่นของลูกค้าคนเดียวกันที่สร้างภายใน 1 วันกับเครื่องหลัก
 async function findAccessorySo(lark, mainSo) {
   const c = await crmGet('/crm/customer/' + encodeURIComponent(mainSo.customerId));
   if (!c || c.__httpError || c.__crmError) return null;
-  const t0 = new Date(mainSo.createdAt).getTime();
-  const cands = (c.saleOrders || []).filter(s => s.saleOrderId !== mainSo.saleOrderId && Math.abs(new Date(s.createdAt).getTime() - t0) <= 24 * 3600 * 1000);
+  // ผ่อนพร้อมกันตามสัญญาเดียว — ไม่จำกัดว่าสร้างเอกสารห่างกันกี่วัน: ใช้ช่วงวันที่ทำสัญญา (−3 ถึง +15 วัน) และไม่นับใบที่ยกเลิก
+  const base = new Date(lark.contractDate + 'T00:00:00+07:00').getTime();
+  const cands = (c.saleOrders || []).filter(s => {
+    if (s.saleOrderId === mainSo.saleOrderId || s.status === 'CANCELLED') return false;
+    const t = new Date(s.createdAt).getTime();
+    return t >= base - 3 * 86400000 && t <= base + 15 * 86400000;
+  });
   const byPrice = lark.netAccPrice ? cands.filter(s => Math.abs(Number(s.productPrice) - lark.netAccPrice) < 1) : [];
   const pick = byPrice.length === 1 ? byPrice : (cands.length === 1 ? cands : []);
   return pick.length === 1 ? pick[0].saleOrderId : null;
@@ -445,6 +452,8 @@ async function main() {
     for (const id of lark.soList) { const s = await getSo(id); if (s) candidates.push(s); }
     // เลือกใบที่ยังใช้งานอยู่ (ไม่ถูกยกเลิก) และเป็นของลูกค้าคนนี้
     let usable = candidates.filter(s => s.status !== 'CANCELLED' && sameCustomerId(lark, s));
+    // แถวที่มีหลาย SO: ลงข้อมูลเฉพาะใบที่ต้องผ่อน (ตัดใบซื้อสดออก เช่น อะแดปเตอร์ที่ซื้อพร้อมกัน)
+    if (usable.length > 1) { const inst = usable.filter(s => s.installmentType !== 'FULL_PAYMENT'); if (inst.length >= 1) usable = inst; }
     let so = usable.length === 1 ? usable[0] : null;
     let replacedFrom = null;
     if (!so && usable.length > 1) {
