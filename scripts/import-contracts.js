@@ -113,7 +113,8 @@ function parseLarkRow(fields) {
     purchaseType: larkText(f['ประเภทการซื้อ']).trim(),
     contractNo: larkText(f['เลขที่สัญญา']).trim(),
     contractDate: larkDateMs(f['วันที่ที่ออกสัญญา']) ? thaiDateOf(larkDateMs(f['วันที่ที่ออกสัญญา'])) : '',
-    firstDueDate: firstMs ? thaiDateOf(firstMs) : '',
+    // ซื้ออุปกรณ์เสริมเดี่ยว (ดาวน์อุปกรณ์เสริม) ไม่มี วันที่เริ่มส่งยอด ของเครื่องหลัก — ใช้วันที่เริ่มส่งยอด (อุปกรณ์เสริม) แทน
+    firstDueDate: firstMs ? thaiDateOf(firstMs) : (accMs ? thaiDateOf(accMs) : ''),
     payDay: Math.round(larkNumber(f['*ชำระทุกวันที่'])) || null,
     larkDueDates: dates,
     referenceName: larkText(f['ชื่อบุคคลที่ติดต่อได้คนที่หนึ่ง']).trim(),
