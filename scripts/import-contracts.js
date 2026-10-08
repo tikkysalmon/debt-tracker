@@ -112,8 +112,19 @@ function buildOrder(lark, so, txs) {
   // งวดที่นับเป็น "ผ่อนจริง" = มีเลข no "X/Y"; รายการ INSTALLMENT ที่ no=null ก่อนนั้น = ยอดวางดาวน์
   const numbered = ok.filter(x => /^\d+\/\d+$/.test(String(x.no || '')));
   const preCredit = ok.filter(x => !/^\d+\/\d+$/.test(String(x.no || '')));
-  if (preCredit.some(x => x.type !== 'INSTALLMENT')) return { skip: 'has_fee_transactions_needs_review' };
-  const downPayment = round2(preCredit.reduce((s, x) => s + Number(x.amount), 0));
+  // ยอดสะสมก่อนอนุมัติเครดิต (= ยอดวางดาวน์) ตามวิธีที่ CRM นับ accumulatedAmount:
+  //  - INSTALLMENT นับเต็มจำนวน
+  //  - CHANGE_INSTALLMENT_TYPE (ค่าหักเปลี่ยนการผ่อน, amount ติดลบ) นับรวมเป็นยอดหัก
+  //  - INSTALLMENT_AND_OVERDUE_FEE นับเฉพาะส่วนที่เป็น INSTALLMENT ใน paymentData.items (ค่าปรับ OVERDUE_FEE ไม่นับ)
+  // ชนิดอื่น/ไม่มีรายละเอียด = ข้ามให้คนตรวจ — และยอดคงเหลือสุดท้ายต้องตรง CRM อยู่ดีจึงจะถูกเขียน
+  let downPayment = 0;
+  for (const x of preCredit) {
+    if (x.type === 'INSTALLMENT' || x.type === 'CHANGE_INSTALLMENT_TYPE') downPayment += Number(x.amount);
+    else if (x.type === 'INSTALLMENT_AND_OVERDUE_FEE' && x.paymentData && Array.isArray(x.paymentData.items)) {
+      downPayment += x.paymentData.items.filter(i => i.type === 'INSTALLMENT').reduce((s, i) => s + Number(i.amount), 0);
+    } else return { skip: 'has_fee_transactions_needs_review' };
+  }
+  downPayment = round2(downPayment);
   if (numbered.some(x => x.type !== 'INSTALLMENT')) return { skip: 'has_fee_in_installments_needs_review' };
   const paidNos = new Set(numbered.map(x => String(x.no)));
   const totalFromNo = numbered.length ? Math.max.apply(null, numbered.map(x => Number(String(x.no).split('/')[1]))) : 0;
