@@ -82,9 +82,9 @@ function parseLarkRow(fields) {
   const soRaw = larkText(f['เลข SO']).trim();
   const accMs = larkDateMs(f['วันที่เริ่มส่งยอด (อุปกรณ์เสริม)']);
   return {
-    soNumber: soRaw,
+    soNumber: soRaw.toUpperCase(),
     // ช่อง เลข SO ของ "ดาวน์+อุปกรณ์เสริม" มักมี 2 เลข คั่นด้วย / (เครื่องหลัก + อุปกรณ์เสริม)
-    soList: soRaw.split(/\s*\/+\s*/).map(s => s.trim()).filter(Boolean),
+    soList: soRaw.toUpperCase().split(/\s*\/+\s*/).map(s => s.trim()).filter(Boolean),
     accFirstDueDate: accMs ? thaiDateOf(accMs) : '',
     netMainPrice: larkNumber(f['ราคาสุทธิ์ (ดาวน์)']),
     netAccPrice: larkNumber(f['ราคาสุทธิ (อุปกรณ์เสริม)']),
@@ -110,7 +110,7 @@ function parseLarkRow(fields) {
 function installmentPortion(x, preCredit) {
   if (x.type === 'INSTALLMENT') return Number(x.amount);
   // ค่าหักเปลี่ยนการผ่อน (amount ติดลบ) — CRM นับหักจากยอดสะสมก่อนอนุมัติเครดิต
-  if (x.type === 'CHANGE_INSTALLMENT_TYPE') return preCredit ? Number(x.amount) : null;
+  if (/^CHANGE_/.test(x.type || '')) return preCredit ? Number(x.amount) : null; // CHANGE_INSTALLMENT_TYPE / CHANGE_PRODUCT (ค่าหักเปลี่ยน)
   if (x.type === 'OVERDUE_FEE') return 0;
   if (/OVERDUE_FEE|PENALTY/.test(x.type || '') && x.paymentData && Array.isArray(x.paymentData.items)) {
     return x.paymentData.items.filter(i => i.type === 'INSTALLMENT').reduce((s, i) => s + Number(i.amount), 0);
