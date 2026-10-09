@@ -259,6 +259,34 @@ function pendingAlerts(ord, today) {
   return out;
 }
 
+// ---------- คิวแจ้งเตือนให้ routine ส่งตอน 09:00 (reports/easy-restart-alerts.json) ----------
+// ทำงานเหมือนรายงานสรุปรายวัน: สคริปต์นี้เตรียมไฟล์ใน repo แล้ว routine ของ Claude (ตั้งเวลาแม่น) อ่านไฟล์และส่งการ์ดเข้า Lark เอง
+// repo นี้เป็น public — ไฟล์จึงมีเฉพาะเลข SO / เลขเอกสาร / วันที่ ห้ามมีชื่อลูกค้าและยอดเงิน (ดูรายละเอียดในเมนู Easy Restart)
+// routine ส่งเฉพาะรายการที่ alertDate = วันนี้ (เวลาไทย) จึงไม่ส่งซ้ำและไม่ต้องจำสถานะ:
+//  - expired: alertDate = วันสุดท้ายของช่วงรอลูกค้า (งวดสุดท้าย + 3 วันทำการ) — ใส่ในคิวตั้งแต่วันครบกำหนดงวดสุดท้ายเพื่อให้ไฟล์พร้อมก่อน 09:00; ถ้าลูกค้าผ่อนครบก่อน จะหลุดจากคิวเอง
+//  - paidFull: alertDate = วันที่ตรวจพบผ่อนครบ ถ้าตรวจพบก่อน 09:00 (ไทย) ส่งวันนั้น ไม่งั้นส่งวันถัดไป (จดไว้ที่ er.alerts.paidFullQueued)
+function addCalendarDays(iso, k) {
+  const p = parseIso(iso); const d = new Date(Date.UTC(p.y, p.m, p.d + k));
+  return isoDate(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}
+function buildAlertQueue(orders, today, hourThai) {
+  const items = [];
+  for (const o of orders) {
+    const er = o.easyRestart; if (!er) continue;
+    const out = outstandingOf(o);
+    const base = { newSo: o.orderId, oldSo: er.fromOrderId, docNo: er.letterDocNo || '', lastDueDate: er.lastDueDate || '' };
+    if (out <= 0.5) {
+      er.alerts = er.alerts || {};
+      if (!er.alerts.paidFullQueued) er.alerts.paidFullQueued = hourThai < ALERT_SEND_HOUR_THAI ? today : addCalendarDays(today, 1);
+      if (er.alerts.paidFullQueued >= today) items.push(Object.assign({ kind: 'paidFull', alertDate: er.alerts.paidFullQueued }, base));
+    } else if (er.lastDueDate) {
+      const graceEnd = addBusinessDays(er.lastDueDate, GRACE_BUSINESS_DAYS);
+      if (today >= er.lastDueDate && today <= graceEnd) items.push(Object.assign({ kind: 'expired', alertDate: graceEnd, graceEnd }, base));
+    }
+  }
+  return items;
+}
+
 // ---------- Lark ----------
 async function larkSend(chatId, msg) {
   const tr = await fetch('https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ app_id: process.env.LARK_APP_ID, app_secret: process.env.LARK_APP_SECRET }) });
@@ -404,13 +432,23 @@ else if (require.main === module) (async () => {
   log('ข้อความแจ้งเตือนที่ต้องส่ง: ' + messages.length);
   messages.forEach(m => console.log('---- [' + m.kind + '] ' + m.orderId + '\n' + m.msg.title + '\n' + m.msg.body + '\n----'));
 
+  // คิวแจ้งเตือนสำหรับ routine 09:00 (เฉพาะบิลที่หนังสือยังอยู่) — เขียนไฟล์เมื่อกำหนด ALERT_FILE (ใน dry-run ก็เขียนได้ เพื่อดูผล)
+  const queueOrders = work.orders.filter(o => o.easyRestart && latestLetter(work.orders.find(x => x.orderId === o.easyRestart.fromOrderId) || {}));
+  const queue = buildAlertQueue(queueOrders, TODAY, thaiHourNow());
+  log('คิวแจ้งเตือนสำหรับ routine: ' + queue.length + ' รายการ ' + JSON.stringify(queue.map(q => q.kind + '@' + q.alertDate + ':' + q.newSo)));
+  if (process.env.ALERT_FILE) {
+    require('fs').mkdirSync(require('path').dirname(process.env.ALERT_FILE), { recursive: true });
+    require('fs').writeFileSync(process.env.ALERT_FILE, JSON.stringify({ generatedAt: new Date().toISOString(), today: TODAY, items: queue }, null, 1));
+    log('เขียนไฟล์คิวแล้ว: ' + process.env.ALERT_FILE);
+  }
   if (DRY_RUN) { log('DRY RUN — ไม่เขียนข้อมูล ไม่ส่งข้อความ'); return; }
-  if (!p.creates.length && !p.refreshes.length && !messages.length) { log('ไม่มีอะไรต้องทำรอบนี้'); return; }
+  if (!p.creates.length && !p.refreshes.length && !messages.length && !work.orders.some(o => o.easyRestart && o.easyRestart.alerts && o.easyRestart.alerts.paidFullQueued && !(state0.orders.find(x => x.orderId === o.orderId) || { easyRestart: { alerts: {} } }).easyRestart.alerts.paidFullQueued)) { log('ไม่มีอะไรต้องทำรอบนี้'); return; }
 
   const chats = alertChats();
   const sentKinds = []; // { orderId, kind, chat }
-  const beforeSendHour = thaiHourNow() < ALERT_SEND_HOUR_THAI && !process.env.FORCE_SEND;
-  if (messages.length && beforeSendHour) log('ยังไม่ถึง ' + pad(ALERT_SEND_HOUR_THAI) + ':00 น. (ไทย) — เก็บแจ้งเตือน ' + messages.length + ' รายการไว้ส่งรอบหลังเวลานี้');
+  // ส่งตรงจากสคริปต์ปิดไว้เป็นค่าเริ่มต้น (routine 09:00 เป็นผู้ส่ง) — เปิดด้วย DIRECT_SEND=1 เท่านั้น
+  const beforeSendHour = process.env.DIRECT_SEND !== '1' || (thaiHourNow() < ALERT_SEND_HOUR_THAI && !process.env.FORCE_SEND);
+  if (messages.length && beforeSendHour) log('ไม่ส่งตรงจากสคริปต์ (routine 09:00 เป็นผู้ส่ง หรือยังไม่ถึงเวลา) — ' + messages.length + ' รายการอยู่ในคิว');
   for (const m of beforeSendHour ? [] : messages) {
     if (!chats.length || !process.env.LARK_APP_ID || !process.env.LARK_APP_SECRET) { log('ไม่มี LARK_* — ข้ามการส่งแจ้งเตือน'); break; }
     const ordNow = work.orders.find(x => x.orderId === m.orderId);
@@ -422,9 +460,15 @@ else if (require.main === module) (async () => {
   }
 
   if (!(await acquireLock(dtToken))) { log('ขอ lock ไม่สำเร็จ — ข้ามการเขียน (ข้อความที่ส่งแล้วอาจถูกส่งซ้ำรอบหน้า)'); process.exit(1); }
+  let stateTouched = false;
   try {
     const state = await downloadState(dtToken);
     const changed = apply(state);
+    work.orders.forEach(wo => {
+      const q = wo.easyRestart && wo.easyRestart.alerts && wo.easyRestart.alerts.paidFullQueued;
+      const so = q && state.orders.find(x => x.orderId === wo.orderId);
+      if (so && so.easyRestart) { so.easyRestart.alerts = so.easyRestart.alerts || {}; if (!so.easyRestart.alerts.paidFullQueued) { so.easyRestart.alerts.paidFullQueued = q; stateTouched = true; } }
+    });
     const stamp = TODAY + ' ' + new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(11, 16);
     // จดว่าส่งไปกลุ่มไหนแล้ว (กันส่งซ้ำเมื่อบางกลุ่มส่งไม่สำเร็จ) — ครบทุกกลุ่มแล้วค่อยปิดเหตุการณ์ (paidFullAt/expiredAt)
     sentKinds.forEach(m => {
@@ -435,8 +479,8 @@ else if (require.main === module) (async () => {
       al.sent[m.kind + ':' + m.chat] = stamp;
       if (alertChats().every(c => al.sent[m.kind + ':' + c])) al[m.kind === 'paidFull' ? 'paidFullAt' : 'expiredAt'] = stamp;
     });
-    if (changed || sentKinds.length) { await uploadState(dtToken, state); log('อัปโหลดสำเร็จ: เปลี่ยน ' + changed + ' บิล · บันทึกแจ้งเตือน ' + sentKinds.length); }
+    if (changed || sentKinds.length || stateTouched) { await uploadState(dtToken, state); log('อัปโหลดสำเร็จ: เปลี่ยน ' + changed + ' บิล · บันทึกแจ้งเตือน ' + sentKinds.length); }
   } finally { await releaseLock(dtToken); }
 })().catch(err => { log('FATAL: ' + err.message); process.exit(1); });
 
-module.exports = { buildScheduleDates, buildInstallments, paymentsFromTxs, allocatePayments, addBusinessDays, pendingAlerts, paidFullMessage, expiredMessage, outstandingOf, buildEasyRestartOrder, refreshEasyRestartOrder, plan };
+module.exports = { buildAlertQueue, buildScheduleDates, buildInstallments, paymentsFromTxs, allocatePayments, addBusinessDays, pendingAlerts, paidFullMessage, expiredMessage, outstandingOf, buildEasyRestartOrder, refreshEasyRestartOrder, plan };
