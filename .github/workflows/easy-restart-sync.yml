@@ -1,0 +1,62 @@
+name: Easy Restart Sync
+
+# ซิงค์ลูกค้าโครงการ Salmon Easy Restart: โยง SO ใหม่จาก CRM, สร้าง/อัปเดตตารางผ่อนตามหนังสือ, ลงยอดชำระ และส่งแจ้งเตือน
+# (ผ่อนครบ / พ้นกำหนดงวดสุดท้าย+3 วันทำการ) เข้า Lark กลุ่ม AR/Cost&Stock — ดู scripts/easy-restart-sync.js
+# ยังไม่เปิด schedule: ทดสอบแบบ dry-run ก่อน แล้วค่อยเอา # หน้า 2 บรรทัดข้างล่างออก (GitHub หน่วง cron ได้หลายชั่วโมง จึงตั้งหลายรอบต่อวัน)
+on:
+  # schedule:
+  #   - cron: '0 1,5,9 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'dry run (true = ไม่เขียนข้อมูล ไม่ส่งแจ้งเตือน แค่แสดงผลใน log)'
+        required: true
+        default: 'true'
+      only_order:
+        description: 'เฉพาะ SO เดิม (เว้นว่าง = ทั้งหมด)'
+        required: false
+        default: ''
+      lark_chat_id:
+        description: 'chat_id ปลายทางแจ้งเตือน (ค่าเริ่มต้น = กลุ่ม AR/Cost&Stock; ทดสอบใช้ testbot oc_5dd5006993680634d83a7d30344939fe)'
+        required: false
+        default: 'oc_a8883cf200cf7c7de97d5c8945f3b156,oc_c17c2664870430e64413b80a605130bd'
+
+      test_sample:
+        description: 'ส่งการ์ดทดสอบ (ออเดอร์ตัวอย่าง) เข้า lark_chat_id เท่านั้น ไม่แตะข้อมูลจริง (1 = เปิด)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Sync Easy Restart bills
+        env:
+          CRM_USERNAME: ${{ secrets.CRM_USERNAME }}
+          CRM_PASSWORD: ${{ secrets.CRM_PASSWORD }}
+          LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
+          LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
+          LARK_CHAT_ID: ${{ inputs.lark_chat_id || 'oc_a8883cf200cf7c7de97d5c8945f3b156,oc_c17c2664870430e64413b80a605130bd' }}
+          TEST_SAMPLE: ${{ inputs.test_sample }}
+          ONLY_ORDER: ${{ inputs.only_order }}
+          DRY_RUN: ${{ (github.event_name != 'workflow_dispatch' || inputs.dry_run == 'true') && '1' || '' }}
+          ALERT_FILE: reports/easy-restart-alerts.json
+        run: node scripts/easy-restart-sync.js
+      # คิวแจ้งเตือน (เลข SO/วันที่เท่านั้น ไม่มีชื่อลูกค้า/ยอดเงิน) ให้ routine ของ Claude อ่านแล้วส่งเข้า Lark ตอน 09:00 — เหมือนรายงานสรุปรายวัน
+      - name: Commit alert queue
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add reports/easy-restart-alerts.json
+          git diff --cached --quiet && echo "No changes" && exit 0
+          git commit -m "Update Easy Restart alert queue [skip ci]"
+          git pull --rebase
+          git push
