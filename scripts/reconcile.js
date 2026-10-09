@@ -12,6 +12,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const USERNAME = process.env.CRM_USERNAME;
 const PASSWORD = process.env.CRM_PASSWORD;
 const CONCURRENCY = 8;
+const ONLY_SO = (process.env.ONLY_SO || '').split(',').map(x => x.trim()).filter(Boolean);
 const DRY_RUN = process.env.DRY_RUN === '1';
 const MY_CLIENT_ID = 'gh-actions-reconcile-' + Date.now();
 const STALE_MS = 25000;
@@ -458,6 +459,8 @@ if (require.main === module) (async () => {
   const skip = k => { bySkip[k] = (bySkip[k] || 0) + 1; };
   const accessorySpecs = {};
   for (const o of state0.orders) {
+    if (o.easyRestart) { skip('easy_restart_bill'); continue; } // บิล Easy Restart ซิงค์โดย scripts/easy-restart-sync.js แยกต่างหาก
+    if (ONLY_SO.length && !ONLY_SO.includes(o.orderId)) continue; // โหมดรันเฉพาะ SO ที่ระบุ
     if (isTrackerCancelled(o)) { skip('tracker_cancelled_or_sold'); continue; } // สถานะที่พนักงานตั้งเอง (รวม ยกเลิกสัญญา คืนเครื่อง) ไม่แตะ
     const accSo = ACCESSORY_ALLOWLIST[o.orderId];
     if (accSo && !(o.accessoryInstallments || []).length) {

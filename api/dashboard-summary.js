@@ -98,7 +98,8 @@ function withEffectiveStatus(list, collectorTag) {
 }
 
 function computeOrders(state) {
-  return (state.orders || []).map((o) => {
+  // Easy Restart bills (o.easyRestart) are reported separately and never counted in the debtor totals (2026-10-09)
+  return (state.orders || []).filter((o) => !o.easyRestart).map((o) => {
     const installments = withEffectiveStatus(o.installments, !!o.collectorHold);
     const accessoryInstallments = withEffectiveStatus(o.accessoryInstallments || [], !!o.collectorHold);
     const allInstallments = installments.concat(accessoryInstallments);

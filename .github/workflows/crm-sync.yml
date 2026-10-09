@@ -10,6 +10,10 @@ on:
         description: 'dry run (true = ไม่เขียนข้อมูล แค่สรุปผล)'
         required: true
         default: 'true'
+      only_so:
+        description: 'เลข SO เฉพาะที่ต้องการซิงก์ (คั่นด้วย , — เว้นว่าง = ทุกออเดอร์)'
+        required: false
+        default: ''
 
 jobs:
   reconcile:
@@ -25,4 +29,5 @@ jobs:
           CRM_USERNAME: ${{ secrets.CRM_USERNAME }}
           CRM_PASSWORD: ${{ secrets.CRM_PASSWORD }}
           DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run == 'true') && '1' || '' }}
+          ONLY_SO: ${{ github.event_name == 'workflow_dispatch' && inputs.only_so || '' }}
         run: node scripts/reconcile.js

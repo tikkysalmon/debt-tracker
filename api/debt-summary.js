@@ -102,6 +102,7 @@ module.exports = async function handler(req, res) {
 
     const state = await downloadState();
     const matched = (state.orders || []).filter((o) => {
+      if (o.easyRestart) return false; // Easy Restart bills are reported separately, never chased as debt
       if (customerId && String(o.customerId || '').trim() === customerId) return true;
       return !!phone && digits(o.phone) === phone;
     });
