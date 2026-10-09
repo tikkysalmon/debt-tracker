@@ -195,7 +195,8 @@ function planTrack(t, crm, details) {
 
   // fast path: nothing differs at all -> no need to pull payment history
   const quickOk = close(appRemaining(t), crmRem, 0.5) && close(t.price, newPrice) && close(t.disc, newDisc) &&
-    (t.kind !== 'main' || t.flag || newDisc === 0);
+    (t.kind !== 'main' || t.flag || newDisc === 0) &&
+    !(t.kind === 'main' && MANUAL_DOWN_OVERRIDES[t.soId] != null && !close(t.down, MANUAL_DOWN_OVERRIDES[t.soId]));
   if (quickOk && !crm.forceFull) return { skip: 'already_matches', crmRem };
 
   if (!crm.complete) return { skip: 'crm_tx_incomplete' };
@@ -217,7 +218,19 @@ function planTrack(t, crm, details) {
     txList.push({ instAmt, pen, date: x.paymentDate ? thaiDateOf(x.paymentDate) : null });
   }
   // down payment = whatever CRM counted that is not a numbered installment (pre-"N/M" payments)
-  const newDown = r2(accum - numberedTotal);
+  let newDown = r2(accum - numberedTotal);
+  // SO ที่พนักงานยืนยันเงื่อนไขสัญญาเอง (CRM ไม่มีการกดอนุมัติเครดิต จึงนับยอดผ่อนทั้งก้อนเป็นดาวน์):
+  // ใช้ยอดดาวน์ตามที่กำหนด แล้วถือว่ายอดสะสมส่วนที่เกินเป็นยอดผ่อนที่ชำระแล้ว (ลงงวดตามลำดับ)
+  const ov = t.kind === 'main' ? MANUAL_DOWN_OVERRIDES[t.soId] : null;
+  if (ov != null) {
+    const extra = r2(accum - numberedTotal - ov);
+    newDown = ov;
+    if (extra > 0.005) {
+      const dated = txList.filter(x => x.date).map(x => x.date).sort();
+      const lastDate = dated.length ? dated[dated.length - 1] : (ok.length && ok[ok.length - 1].paymentDate ? thaiDateOf(ok[ok.length - 1].paymentDate) : null);
+      txList.unshift({ instAmt: extra, pen: 0, date: lastDate });
+    }
+  }
   if (newDown < -0.5) return { skip: 'review', reason: 'negative_down', newDown };
 
   const dues = splitEvenlyRounded(Math.max(0, newPrice - newDisc - newDown), insts.length);
@@ -300,6 +313,8 @@ const ACCESSORY_ALLOWLIST = {
   'SO-2026050200192': 'SO-2026050200193', 'SO-2026050400005': 'SO-2026050400006', 'SO-2026050300002': 'SO-2026050300004',
   'SO-2026050100053': 'SO-2026050100054',
 };
+// SO -> ยอดดาวน์/ยอดผ่อนสะสมที่ยืนยันแล้ว (ใช้แทนค่าที่คำนวณจาก CRM)
+const MANUAL_DOWN_OVERRIDES = { 'SO-2025092900288': 10700 };
 function isTrackerCancelled(o) {
   if (o.wasCancelled || o.wasSold) return true;
   return (o.installments || []).concat(o.accessoryInstallments || []).some(i => i.status === 'ยกเลิกสัญญา คืนเครื่อง');
