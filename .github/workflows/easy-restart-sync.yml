@@ -21,6 +21,11 @@ on:
         required: false
         default: 'oc_a8883cf200cf7c7de97d5c8945f3b156'
 
+      test_sample:
+        description: 'ส่งการ์ดทดสอบ (ออเดอร์ตัวอย่าง) เข้า lark_chat_id เท่านั้น ไม่แตะข้อมูลจริง (1 = เปิด)'
+        required: false
+        default: ''
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -37,6 +42,7 @@ jobs:
           LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
           LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
           LARK_CHAT_ID: ${{ inputs.lark_chat_id || 'oc_a8883cf200cf7c7de97d5c8945f3b156' }}
+          TEST_SAMPLE: ${{ inputs.test_sample }}
           ONLY_ORDER: ${{ inputs.only_order }}
           DRY_RUN: ${{ (github.event_name != 'workflow_dispatch' || inputs.dry_run == 'true') && '1' || '' }}
         run: node scripts/easy-restart-sync.js

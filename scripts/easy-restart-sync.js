@@ -347,7 +347,23 @@ async function plan(state) {
   return { creates, refreshes, unlinked };
 }
 
-if (require.main === module) (async () => {
+// ทดสอบการส่งแจ้งเตือน: TEST_SAMPLE=1 → ส่งการ์ด "ผ่อนไม่ครบ" ของออเดอร์ตัวอย่างเข้า LARK_CHAT_ID เท่านั้น
+// (ไม่ login CRM/Supabase ไม่อ่าน/เขียน state) — งวดสุดท้าย 07/04/2027, จำลองวันนี้ SIM_TODAY (ค่าเริ่มต้น 2027-04-12)
+async function runSample() {
+  const today = process.env.SIM_TODAY || '2027-04-12';
+  const ord = {
+    customerName: 'ลูกค้าตัวอย่าง (ทดสอบ)', customerId: 'CUS-TEST', orderId: 'SO-TEST-0001', productList: 'สินค้าตัวอย่าง', productPrice: 13200, downPayment: 10700,
+    installments: [{ amountDue: 1300, amountPaid: 650 }],
+    easyRestart: { fromOrderId: 'SO-TEST-OLD', letterDocNo: 'ER-TEST', firstDueDate: '2027-01-07', lastDueDate: '2027-04-07', alerts: {} },
+  };
+  const alerts = pendingAlerts(ord, today);
+  log('วันนี้(จำลอง) ' + today + ' → แจ้งเตือนที่ต้องส่ง: ' + alerts.map(a => a.kind).join(',') + (alerts.length ? '' : ' (ไม่มี)'));
+  const before = pendingAlerts(ord, addBusinessDays('2027-04-07', 2));
+  log('เช็ควันก่อนครบกำหนด (' + addBusinessDays('2027-04-07', 2) + ') → ' + (before.length ? 'ส่ง (ผิด!)' : 'ยังไม่ส่ง (ถูกต้อง)'));
+  for (const a of alerts) { await larkSend(process.env.LARK_CHAT_ID, { title: '[ทดสอบ] ' + a.msg.title, body: a.msg.body }); log('ส่งการ์ดทดสอบแล้ว: ' + a.kind); }
+}
+if (require.main === module && process.env.TEST_SAMPLE === '1') runSample().catch(e => { log('FATAL: ' + e.message); process.exit(1); });
+else if (require.main === module) (async () => {
   if (!process.env.CRM_USERNAME || !process.env.CRM_PASSWORD) { log('ต้องตั้งค่า env CRM_USERNAME / CRM_PASSWORD'); process.exit(1); }
   crmToken = await crmLogin();
   const needDt = !process.env.LOCAL_STATE;
