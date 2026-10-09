@@ -5,7 +5,10 @@ name: Publish daily debt summary
 # only allows api.github.com) can read fresh numbers via the GitHub Contents API.
 on:
   schedule:
-    - cron: '50 10 * * *' # 17:50 Asia/Bangkok (UTC+7), every day — 10 min before the 18:00 Lark send
+    # GitHub delays scheduled runs by 4-8h in practice (a lone 17:50 run landed ~00:30 next day, so the 18:00 Lark card always read
+    # yesterday's numbers — found 2026-10-09). Fire several times earlier in the day so one lands before 18:00 Bangkok (11:00 UTC).
+    - cron: '0 0,2,4,6,8 * * *'
+    - cron: '50 10 * * *'
   workflow_dispatch: {}
 
 permissions:
