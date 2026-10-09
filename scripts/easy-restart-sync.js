@@ -3,7 +3,7 @@
 //      ราคาในหนังสือ ประเภท FULL_PAY_THEN_RECEIVE เปิดหลังวันออกหนังสือ; เจอใบเดียวเท่านั้นถึงโยง ไม่แน่ใจ = ไม่เดา (รายงานให้ตรวจ)
 //   2) สร้าง/อัปเดตบิลใหม่ (order.easyRestart) พร้อมตารางผ่อนรายเดือนตามวันที่ในหนังสือ (งวดแรก..งวดสุดท้าย) + ลงยอดชำระจาก CRM
 //      ยอดวางดาวน์ = initAmount ของ SO ใหม่ (ซึ่งรวมเงินที่จ่ายไปแล้วใน SO เดิม) — ตารางผ่อนคือยอดคงเหลือที่เหลือ
-//   3) สร้างข้อความแจ้งเตือนเข้า Lark กลุ่ม AR/Cost&Stock: (ก) ผ่อนครบ  (ข) ถึงวันครบ 3 วันทำการหลังงวดสุดท้าย (วันนั้นเลย) แต่ยังผ่อนไม่ครบ (ตัดสิทธิ์)
+//   3) สร้างข้อความแจ้งเตือนเข้า Lark กลุ่ม AR/Cost&Stock: (ก) ผ่อนครบ  (ข) ถึงวันครบ 3 วันตามปฏิทินหลังงวดสุดท้าย (วันนั้นเลย) แต่ยังผ่อนไม่ครบ (ตัดสิทธิ์)
 //      ส่งครั้งเดียวต่อเหตุการณ์ (เก็บเวลาที่ส่งไว้ใน order.easyRestart.alerts)
 //
 // โหมด: DRY_RUN=1 (ไม่เขียน state / ไม่ส่งข้อความ แค่พิมพ์ผล) · LOCAL_STATE=<ไฟล์ state.json> อ่านจากไฟล์แทน Supabase (ไม่เขียนกลับ)
@@ -18,7 +18,7 @@ const STALE_MS = 25000;
 const MY_CLIENT_ID = 'gh-actions-easy-restart-' + Date.now();
 const DRY_RUN = process.env.DRY_RUN === '1' || !!process.env.LOCAL_STATE;
 const NEW_SO_BUSINESS_DAYS = 3;   // SO ใหม่ต้องเปิดภายใน 3 วันทำการ นับจากวันออกหนังสือ
-const GRACE_BUSINESS_DAYS = 3;    // เลยวันงวดสุดท้ายแล้วรอลูกค้าติดต่อได้อีก 3 วันทำการ
+const GRACE_CALENDAR_DAYS = 3;    // เลยวันงวดสุดท้ายแล้วรอลูกค้าติดต่อได้อีก 3 วันตามปฏิทิน (วันทำการใช้เฉพาะการตรวจสอบของพนักงาน)
 const MIN_LAST_GAP_DAYS = 15;     // งวดสุดท้ายห่างจากงวดก่อนหน้าน้อยกว่านี้ → รวมเข้ากับงวดสุดท้าย
 const TODAY = thaiDateOf(Date.now());
 // กลุ่ม Lark ที่รับแจ้งเตือน (ส่งทุกเหตุการณ์ไปทุกกลุ่ม): AR/Cost&Stock + เร่งรัดหนี้สิน — override ด้วย env LARK_CHAT_ID (คั่นด้วย ,)
@@ -241,7 +241,7 @@ function expiredMessage(ord, outstanding, graceEnd) {
       '🧾 SO ใหม่: ' + ord.orderId + ' (SO เดิม ' + er.fromOrderId + (er.letterDocNo ? ' · ' + er.letterDocNo : '') + ')',
       '📦 สินค้า: ' + (ord.productList || '-'),
       '💰 ราคา ฿' + fmtBaht(ord.productPrice) + ' · ยอดคงเหลือ ฿' + fmtBaht(outstanding),
-      '📅 วันครบกำหนดงวดสุดท้าย: ' + fmtThai(er.lastDueDate) + ' · ครบ ' + GRACE_BUSINESS_DAYS + ' วันทำการ ' + fmtThai(graceEnd),
+      '📅 วันครบกำหนดงวดสุดท้าย: ' + fmtThai(er.lastDueDate) + ' · ครบ ' + GRACE_CALENDAR_DAYS + ' วัน ' + fmtThai(graceEnd),
       '',
       'ลูกค้าไม่ผ่อนให้ครบและไม่ได้ติดต่อกลับภายในกำหนด — บริษัทมีสิทธิ์ตัดสิทธิ์ตามเงื่อนไขในหนังสือ (ยึดเงินผ่อนและเครื่อง) ขอให้ทีมที่เกี่ยวข้องดำเนินการต่อ',
     ].join('\n'),
@@ -254,7 +254,7 @@ function pendingAlerts(ord, today) {
   const out_ = outstandingOf(ord);
   if (out_ <= 0.5 && !(er.alerts && er.alerts.paidFullAt)) out.push({ kind: 'paidFull', msg: paidFullMessage(ord) });
   if (out_ > 0.5 && er.lastDueDate && !(er.alerts && er.alerts.expiredAt)) {
-    const graceEnd = addBusinessDays(er.lastDueDate, GRACE_BUSINESS_DAYS);
+    const graceEnd = addCalendarDays(er.lastDueDate, GRACE_CALENDAR_DAYS);
     if (today >= graceEnd) out.push({ kind: 'expired', msg: expiredMessage(ord, out_, graceEnd) });
   }
   return out;
@@ -264,7 +264,7 @@ function pendingAlerts(ord, today) {
 // ทำงานเหมือนรายงานสรุปรายวัน: สคริปต์นี้เตรียมไฟล์ใน repo แล้ว routine ของ Claude (ตั้งเวลาแม่น) อ่านไฟล์และส่งการ์ดเข้า Lark เอง
 // repo นี้เป็น public — ไฟล์จึงมีเฉพาะเลข SO / เลขเอกสาร / วันที่ ห้ามมีชื่อลูกค้าและยอดเงิน (ดูรายละเอียดในเมนู Easy Restart)
 // routine ส่งเฉพาะรายการที่ alertDate = วันนี้ (เวลาไทย) จึงไม่ส่งซ้ำและไม่ต้องจำสถานะ:
-//  - expired: alertDate = วันสุดท้ายของช่วงรอลูกค้า (งวดสุดท้าย + 3 วันทำการ) — ใส่ในคิวตั้งแต่วันครบกำหนดงวดสุดท้ายเพื่อให้ไฟล์พร้อมก่อน 09:00; ถ้าลูกค้าผ่อนครบก่อน จะหลุดจากคิวเอง
+//  - expired: alertDate = วันสุดท้ายของช่วงรอลูกค้า (งวดสุดท้าย + 3 วันตามปฏิทิน) — ใส่ในคิวตั้งแต่วันครบกำหนดงวดสุดท้ายเพื่อให้ไฟล์พร้อมก่อน 09:00; ถ้าลูกค้าผ่อนครบก่อน จะหลุดจากคิวเอง
 //  - paidFull: alertDate = วันที่ตรวจพบผ่อนครบ ถ้าตรวจพบก่อน 09:00 (ไทย) ส่งวันนั้น ไม่งั้นส่งวันถัดไป (จดไว้ที่ er.alerts.paidFullQueued)
 function addCalendarDays(iso, k) {
   const p = parseIso(iso); const d = new Date(Date.UTC(p.y, p.m, p.d + k));
@@ -281,7 +281,7 @@ function buildAlertQueue(orders, today, hourThai) {
       if (!er.alerts.paidFullQueued) er.alerts.paidFullQueued = hourThai < ALERT_SEND_HOUR_THAI ? today : addCalendarDays(today, 1);
       if (er.alerts.paidFullQueued >= today) items.push(Object.assign({ kind: 'paidFull', alertDate: er.alerts.paidFullQueued }, base));
     } else if (er.lastDueDate) {
-      const graceEnd = addBusinessDays(er.lastDueDate, GRACE_BUSINESS_DAYS);
+      const graceEnd = addCalendarDays(er.lastDueDate, GRACE_CALENDAR_DAYS);
       if (today >= er.lastDueDate && today <= graceEnd) items.push(Object.assign({ kind: 'expired', alertDate: graceEnd, graceEnd }, base));
     }
   }
