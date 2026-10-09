@@ -19,7 +19,7 @@ on:
       lark_chat_id:
         description: 'chat_id ปลายทางแจ้งเตือน (ค่าเริ่มต้น = กลุ่ม AR/Cost&Stock; ทดสอบใช้ testbot oc_5dd5006993680634d83a7d30344939fe)'
         required: false
-        default: 'oc_a8883cf200cf7c7de97d5c8945f3b156'
+        default: 'oc_a8883cf200cf7c7de97d5c8945f3b156,oc_c17c2664870430e64413b80a605130bd'
 
       test_sample:
         description: 'ส่งการ์ดทดสอบ (ออเดอร์ตัวอย่าง) เข้า lark_chat_id เท่านั้น ไม่แตะข้อมูลจริง (1 = เปิด)'
@@ -41,7 +41,7 @@ jobs:
           CRM_PASSWORD: ${{ secrets.CRM_PASSWORD }}
           LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
           LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
-          LARK_CHAT_ID: ${{ inputs.lark_chat_id || 'oc_a8883cf200cf7c7de97d5c8945f3b156' }}
+          LARK_CHAT_ID: ${{ inputs.lark_chat_id || 'oc_a8883cf200cf7c7de97d5c8945f3b156,oc_c17c2664870430e64413b80a605130bd' }}
           TEST_SAMPLE: ${{ inputs.test_sample }}
           ONLY_ORDER: ${{ inputs.only_order }}
           DRY_RUN: ${{ (github.event_name != 'workflow_dispatch' || inputs.dry_run == 'true') && '1' || '' }}

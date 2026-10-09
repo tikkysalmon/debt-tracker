@@ -21,6 +21,11 @@ const NEW_SO_BUSINESS_DAYS = 3;   // SO ใหม่ต้องเปิดภ�
 const GRACE_BUSINESS_DAYS = 3;    // เลยวันงวดสุดท้ายแล้วรอลูกค้าติดต่อได้อีก 3 วันทำการ
 const MIN_LAST_GAP_DAYS = 15;     // งวดสุดท้ายห่างจากงวดก่อนหน้าน้อยกว่านี้ → รวมเข้ากับงวดสุดท้าย
 const TODAY = thaiDateOf(Date.now());
+// กลุ่ม Lark ที่รับแจ้งเตือน (ส่งทุกเหตุการณ์ไปทุกกลุ่ม): AR/Cost&Stock + เร่งรัดหนี้สิน — override ด้วย env LARK_CHAT_ID (คั่นด้วย ,)
+const ALERT_CHATS_DEFAULT = ['oc_a8883cf200cf7c7de97d5c8945f3b156', 'oc_c17c2664870430e64413b80a605130bd'];
+const ALERT_SEND_HOUR_THAI = 9;   // ส่งแจ้งเตือนตั้งแต่ 09:00 น. (เวลาไทย) เป็นต้นไป — รอบที่รันก่อน 09:00 จะเก็บไว้ส่งรอบถัดไป
+function alertChats() { const v = process.env.LARK_CHAT_ID; return v ? v.split(',').map(x => x.trim()).filter(Boolean) : ALERT_CHATS_DEFAULT; }
+function thaiHourNow() { return new Date(Date.now() + 7 * 3600 * 1000).getUTCHours(); }
 
 function log(msg) { console.log('[' + new Date().toISOString() + '] ' + msg); }
 function n(x) { return Number(x) || 0; }
@@ -360,7 +365,7 @@ async function runSample() {
   log('วันนี้(จำลอง) ' + today + ' → แจ้งเตือนที่ต้องส่ง: ' + alerts.map(a => a.kind).join(',') + (alerts.length ? '' : ' (ไม่มี)'));
   const before = pendingAlerts(ord, addBusinessDays('2027-04-07', 2));
   log('เช็ควันก่อนครบกำหนด (' + addBusinessDays('2027-04-07', 2) + ') → ' + (before.length ? 'ส่ง (ผิด!)' : 'ยังไม่ส่ง (ถูกต้อง)'));
-  for (const a of alerts) { await larkSend(process.env.LARK_CHAT_ID, { title: '[ทดสอบ] ' + a.msg.title, body: a.msg.body }); log('ส่งการ์ดทดสอบแล้ว: ' + a.kind); }
+  for (const a of alerts) for (const c of alertChats()) { await larkSend(c, { title: '[ทดสอบ] ' + a.msg.title, body: a.msg.body }); log('ส่งการ์ดทดสอบแล้ว: ' + a.kind + ' → ' + c); }
 }
 if (require.main === module && process.env.TEST_SAMPLE === '1') runSample().catch(e => { log('FATAL: ' + e.message); process.exit(1); });
 else if (require.main === module) (async () => {
@@ -402,11 +407,18 @@ else if (require.main === module) (async () => {
   if (DRY_RUN) { log('DRY RUN — ไม่เขียนข้อมูล ไม่ส่งข้อความ'); return; }
   if (!p.creates.length && !p.refreshes.length && !messages.length) { log('ไม่มีอะไรต้องทำรอบนี้'); return; }
 
-  const chatId = process.env.LARK_CHAT_ID;
-  const sentKinds = [];
-  for (const m of messages) {
-    if (!chatId || !process.env.LARK_APP_ID || !process.env.LARK_APP_SECRET) { log('ไม่มี LARK_* — ข้ามการส่งแจ้งเตือน'); break; }
-    try { await larkSend(chatId, m.msg); sentKinds.push(m); log('ส่งแจ้งเตือนแล้ว: ' + m.kind + ' ' + m.orderId); } catch (e) { log('ส่งแจ้งเตือนไม่สำเร็จ ' + m.orderId + ': ' + e.message); }
+  const chats = alertChats();
+  const sentKinds = []; // { orderId, kind, chat }
+  const beforeSendHour = thaiHourNow() < ALERT_SEND_HOUR_THAI && !process.env.FORCE_SEND;
+  if (messages.length && beforeSendHour) log('ยังไม่ถึง ' + pad(ALERT_SEND_HOUR_THAI) + ':00 น. (ไทย) — เก็บแจ้งเตือน ' + messages.length + ' รายการไว้ส่งรอบหลังเวลานี้');
+  for (const m of beforeSendHour ? [] : messages) {
+    if (!chats.length || !process.env.LARK_APP_ID || !process.env.LARK_APP_SECRET) { log('ไม่มี LARK_* — ข้ามการส่งแจ้งเตือน'); break; }
+    const ordNow = work.orders.find(x => x.orderId === m.orderId);
+    const done = (ordNow && ordNow.easyRestart && ordNow.easyRestart.alerts && ordNow.easyRestart.alerts.sent) || {};
+    for (const c of chats) {
+      if (done[m.kind + ':' + c]) continue;
+      try { await larkSend(c, m.msg); sentKinds.push({ orderId: m.orderId, kind: m.kind, chat: c }); log('ส่งแจ้งเตือนแล้ว: ' + m.kind + ' ' + m.orderId + ' → ' + c); } catch (e) { log('ส่งแจ้งเตือนไม่สำเร็จ ' + m.orderId + ' → ' + c + ': ' + e.message); }
+    }
   }
 
   if (!(await acquireLock(dtToken))) { log('ขอ lock ไม่สำเร็จ — ข้ามการเขียน (ข้อความที่ส่งแล้วอาจถูกส่งซ้ำรอบหน้า)'); process.exit(1); }
@@ -414,9 +426,14 @@ else if (require.main === module) (async () => {
     const state = await downloadState(dtToken);
     const changed = apply(state);
     const stamp = TODAY + ' ' + new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(11, 16);
+    // จดว่าส่งไปกลุ่มไหนแล้ว (กันส่งซ้ำเมื่อบางกลุ่มส่งไม่สำเร็จ) — ครบทุกกลุ่มแล้วค่อยปิดเหตุการณ์ (paidFullAt/expiredAt)
     sentKinds.forEach(m => {
       const o = state.orders.find(x => x.orderId === m.orderId);
-      if (o && o.easyRestart) { o.easyRestart.alerts = o.easyRestart.alerts || {}; o.easyRestart.alerts[m.kind === 'paidFull' ? 'paidFullAt' : 'expiredAt'] = stamp; }
+      if (!o || !o.easyRestart) return;
+      const al = o.easyRestart.alerts = o.easyRestart.alerts || {};
+      al.sent = al.sent || {};
+      al.sent[m.kind + ':' + m.chat] = stamp;
+      if (alertChats().every(c => al.sent[m.kind + ':' + c])) al[m.kind === 'paidFull' ? 'paidFullAt' : 'expiredAt'] = stamp;
     });
     if (changed || sentKinds.length) { await uploadState(dtToken, state); log('อัปโหลดสำเร็จ: เปลี่ยน ' + changed + ' บิล · บันทึกแจ้งเตือน ' + sentKinds.length); }
   } finally { await releaseLock(dtToken); }
