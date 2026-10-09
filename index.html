@@ -2317,7 +2317,7 @@
   function erDraftWarnings(draft) {
     var w = [], today = erIsoToday();
     var f = draft && draft.firstDueDate, l = draft && draft.lastDueDate;
-    if (f && f < today) w.push('วันครบกำหนดงวดแรก (' + fmtDate(f) + ') เป็นวันที่ผ่านมาแล้ว — งวดแรกจะถูกนับว่าเลยกำหนดทันทีเมื่อสร้างตารางผ่อน');
+    if (f && f < today) w.push('วันครบกำหนดงวดแรก (' + fmtDate(f) + ') เป็นวันที่ผ่านมาแล้ว — ตารางผ่อนจะเริ่มจากวันที่นี้ ตรวจสอบว่าไม่ได้พิมพ์ผิด');
     if (l && l < today) w.push('วันครบกำหนดงวดสุดท้าย (' + fmtDate(l) + ') เป็นวันที่ผ่านมาแล้ว');
     if (f && l && l <= f) w.push('วันครบกำหนดงวดสุดท้ายต้องอยู่หลังวันครบกำหนดงวดแรก');
     return w;
