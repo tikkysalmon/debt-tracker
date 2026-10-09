@@ -3,7 +3,7 @@
 //      ราคาในหนังสือ ประเภท FULL_PAY_THEN_RECEIVE เปิดหลังวันออกหนังสือ; เจอใบเดียวเท่านั้นถึงโยง ไม่แน่ใจ = ไม่เดา (รายงานให้ตรวจ)
 //   2) สร้าง/อัปเดตบิลใหม่ (order.easyRestart) พร้อมตารางผ่อนรายเดือนตามวันที่ในหนังสือ (งวดแรก..งวดสุดท้าย) + ลงยอดชำระจาก CRM
 //      ยอดวางดาวน์ = initAmount ของ SO ใหม่ (ซึ่งรวมเงินที่จ่ายไปแล้วใน SO เดิม) — ตารางผ่อนคือยอดคงเหลือที่เหลือ
-//   3) สร้างข้อความแจ้งเตือนเข้า Lark กลุ่ม AR/Cost&Stock: (ก) ผ่อนครบ  (ข) เลยวันงวดสุดท้าย + 3 วันทำการ ยังไม่ครบ (ตัดสิทธิ์)
+//   3) สร้างข้อความแจ้งเตือนเข้า Lark กลุ่ม AR/Cost&Stock: (ก) ผ่อนครบ  (ข) ถึงวันครบ 3 วันทำการหลังงวดสุดท้าย (วันนั้นเลย) แต่ยังผ่อนไม่ครบ (ตัดสิทธิ์)
 //      ส่งครั้งเดียวต่อเหตุการณ์ (เก็บเวลาที่ส่งไว้ใน order.easyRestart.alerts)
 //
 // โหมด: DRY_RUN=1 (ไม่เขียน state / ไม่ส่งข้อความ แค่พิมพ์ผล) · LOCAL_STATE=<ไฟล์ state.json> อ่านจากไฟล์แทน Supabase (ไม่เขียนกลับ)
@@ -249,7 +249,7 @@ function pendingAlerts(ord, today) {
   if (out_ <= 0.5 && !(er.alerts && er.alerts.paidFullAt)) out.push({ kind: 'paidFull', msg: paidFullMessage(ord) });
   if (out_ > 0.5 && er.lastDueDate && !(er.alerts && er.alerts.expiredAt)) {
     const graceEnd = addBusinessDays(er.lastDueDate, GRACE_BUSINESS_DAYS);
-    if (today > graceEnd) out.push({ kind: 'expired', msg: expiredMessage(ord, out_, graceEnd) });
+    if (today >= graceEnd) out.push({ kind: 'expired', msg: expiredMessage(ord, out_, graceEnd) });
   }
   return out;
 }
