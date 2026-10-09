@@ -176,7 +176,7 @@ function buildEasyRestartOrder(oldOrder, letter, so, txsInfo) {
     customerId: oldOrder.customerId, customerName: oldOrder.customerName, orderId: so.saleOrderId, soUnknown: false,
     contractDate: thaiDateOf(so.orderDate || so.createdAt), productList: so.productName || oldOrder.productList || '',
     downPayment: down, productPrice: price, discount: 0, purchaseType: 'Easy Restart (ผ่อนครบรับของ)',
-    age: oldOrder.age, phone: oldOrder.phone, email: oldOrder.email, contractNo: oldOrder.contractNo || null, shippedAt: '',
+    age: oldOrder.age, phone: oldOrder.phone, email: oldOrder.email, contractNo: letter.docNo || '', shippedAt: '', // เลขที่สัญญา = เลขที่เอกสารหนังสือเงื่อนไข Easy Restart
     firstDueDate: insts[0].dueDate, payDay: parseIso(firstIso).d, installments: insts,
     accessoryOrderId: '', accessoryProductList: '', accessoryProductPrice: 0, accessoryDownPayment: 0,
     accessoryFirstDueDate: '', accessoryPayDay: null, accessoryInstallments: [],
@@ -204,6 +204,7 @@ function refreshEasyRestartOrder(ord, letter, so, txsInfo) {
   const before = JSON.stringify(ord.installments.map(i => [i.amountPaid, i.paidDate]));
   allocatePayments(ord.installments, txsInfo.payments);
   if (JSON.stringify(ord.installments.map(i => [i.amountPaid, i.paidDate])) !== before) changed = true;
+  if (letter && letter.docNo && ord.contractNo !== letter.docNo) { ord.contractNo = letter.docNo; changed = true; }
   if (er.crmStatus !== (so.status || '')) { er.crmStatus = so.status || ''; changed = true; }
   return changed;
 }
