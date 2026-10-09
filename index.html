@@ -2396,7 +2396,7 @@
       if (x.alerts && x.alerts.paidFullAt) sent.push('แจ้งผ่อนครบแล้ว ' + esc(x.alerts.paidFullAt));
       if (x.alerts && x.alerts.expiredAt) sent.push('แจ้งตัดสิทธิ์แล้ว ' + esc(x.alerts.expiredAt));
       return '<tr>' +
-        td('<div style="font-weight:600;">' + esc(x.customerName) + '</div><div style="font-size:11px; color:#8d93a0;">' + esc(x.customerId) + '</div>' + tag) +
+        td('<div style="font-weight:600;">' + esc(x.customerName) + '</div><div style="font-size:11px; color:#8d93a0;">' + esc(x.customerId) + '</div>' + tag, 'min-width:170px;') +
         td('<div>' + esc(x.soDisp) + '</div><div style="font-size:11px; color:#8d93a0;">เดิม ' + esc(x.oldOrderId) + (x.docNo ? ' · ' + esc(x.docNo) : '') + '</div>') +
         td('฿' + fmtMoney(x.price), 'text-align:right;') +
         td('฿' + fmtMoney(x.paidTotal), 'text-align:right;') +
