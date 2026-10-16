@@ -1,9 +1,8 @@
 name: CRM Debt Reconciliation
 
 on:
-  # ปิด schedule ไว้ก่อนระหว่างทดสอบ — หลังตรวจผล dry-run แล้วให้เอา # หน้า 2 บรรทัดนี้ออก
-  # schedule:
-  #   - cron: '0 */2 * * *'
+  schedule:
+    - cron: '0 */2 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
