@@ -4416,6 +4416,10 @@
     // this count feeds the customer-header badge so it also surfaces a partial closure ("ปิดยอด N
     // บิล") instead of staying silent until 100%.
     var selectedCustomerSettledCount = selectedCustomerOrders.filter(function (o) { return o.totalOutstandingRaw <= 0.005; }).length;
+    // รอดำเนินคดี / ติดตามโดยบริษัทติดตามหนี้ are order-level (isSold) statuses, so without these counts
+    // the customer header showed no trace of them even though the SO card below carried the tag.
+    var selectedCustomerPendingLegalCount = selectedCustomerOrders.filter(function (o) { return o.isSold && !o.isCollectorSold; }).length;
+    var selectedCustomerCollectorCount = selectedCustomerOrders.filter(function (o) { return o.isSold && o.isCollectorSold; }).length;
     if (hasSelectedCustomer) {
       var activeSel = selectedCustomerOrders.filter(function (o) { return !o.isCancelled && !o.isSold && !o.isBillCancelled; });
       if (activeSel.some(function (o) { return o.lateCount >= 2; })) selectedCustomerGrade = 'หนี้สงสัยจะสูญ';
@@ -4451,6 +4455,8 @@
       selectedCustomerGradeLabel: GRADE_LABELS[selectedCustomerGrade],
       selectedCustomerGradeColor: GRADE_COLORS[selectedCustomerGrade],
       selectedCustomerSettledCount: selectedCustomerSettledCount,
+      selectedCustomerPendingLegalCount: selectedCustomerPendingLegalCount,
+      selectedCustomerCollectorCount: selectedCustomerCollectorCount,
       billCount: selectedCustomerOrders.length,
       customerNoteEntries: hasSelectedCustomer ? noteEntries(state.customerNotes[state.selectedCustomerId]) : [],
       // Scans ALL orders (computedOrders), not filteredOrders — must surface regardless of the
@@ -13349,7 +13355,10 @@
           // actually closed showed nothing here at all. Always includes
           // the count ("ปิดยอด N บิล") once at least 1 bill is settled, rather than a bare "ปิดยอด"
           // that doesn't say how many of the customer's bills that covers.
-          '<div style="background:' + CV.selectedCustomerGradeColor + '1a; color:' + CV.selectedCustomerGradeColor + '; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700;">' + esc(CV.selectedCustomerGradeLabel) + '</div>' + (CV.selectedCustomerSettledCount > 0 ? '<div style="background:rgba(18,184,134,0.14); color:#12b886; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700;">✅ ปิดยอด ' + CV.selectedCustomerSettledCount + ' บิล</div>' : '') + trackingReturnTagHtml + legalActionTagHtml + '</div>' +
+          '<div style="background:' + CV.selectedCustomerGradeColor + '1a; color:' + CV.selectedCustomerGradeColor + '; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700;">' + esc(CV.selectedCustomerGradeLabel) + '</div>' + (CV.selectedCustomerSettledCount > 0 ? '<div style="background:rgba(18,184,134,0.14); color:#12b886; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700;">✅ ปิดยอด ' + CV.selectedCustomerSettledCount + ' บิล</div>' : '') +
+          (CV.selectedCustomerPendingLegalCount > 0 ? '<div style="background:' + hexToRgba('#d9480f', 0.14) + '; color:#d9480f; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">📤 รอดำเนินคดี ' + CV.selectedCustomerPendingLegalCount + ' บิล</div>' : '') +
+          (CV.selectedCustomerCollectorCount > 0 ? '<div style="background:' + hexToRgba('#f7823b', 0.14) + '; color:#f7823b; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">📤 ติดตามโดยบริษัทติดตามหนี้ ' + CV.selectedCustomerCollectorCount + ' บิล</div>' : '') +
+          trackingReturnTagHtml + legalActionTagHtml + '</div>' +
           '<div style="font-size:13px; color:#6b7280; margin-top:4px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">รหัสลูกค้า: ' +
           (state.editingCustomerId
             ? '<input type="text" value="' + esc(state.customerIdDraft) + '" data-action="customerIdDraft" style="font-size:13px; color:#212529; border:1px solid rgba(247,130,59,0.35); border-radius:6px; padding:2px 8px; outline:none; min-width:120px;" />' +
