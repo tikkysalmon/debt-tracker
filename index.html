@@ -712,7 +712,9 @@
       }
       var ck = customerKey(o);
       var raw = trackingReturn[ck];
-      if (raw === true || raw === 'tracking') {
+      // 2026-10-22: tag every cancelled-and-returned customer, not only ones being tracked. raw === undefined
+      // means never set; a staff dismissal stores '' (see toggleCustomerTrackingReturn) so it is not re-added.
+      if (raw === undefined || raw === true || raw === 'tracking') {
         trPatch[ck] = 'received';
         trAtPatch[ck] = nowTimestamp();
         trChanged = true;
@@ -7555,7 +7557,7 @@
           orderPatch = Object.assign({}, orderPatch, { lockSystemMode: newMode, lockSystemUpdatedAt: nowTimestamp() });
         }
       }
-      if (cascadeAll && value === 'ยกเลิกสัญญา คืนเครื่อง' && trackingReturnState(o) === 'tracking') {
+      if (cascadeAll && value === 'ยกเลิกสัญญา คืนเครื่อง' && trackingReturnState(o) !== 'received') {
         markReturnReceivedKey = customerKey(o);
       }
       var patch2 = {};
