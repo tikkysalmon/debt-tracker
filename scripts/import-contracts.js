@@ -22,6 +22,8 @@ const LARK_STATUS_VALUE = '5.แจ้งเลข EMIE แล้ว';
 const SUPABASE_URL = 'https://mddtfcganbuxzfendgfi.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kZHRmY2dhbmJ1eHpmZW5kZ2ZpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM2ODc3NzQsImV4cCI6MjA5OTI2Mzc3NH0.eseoVPBdM9fPOh8J8HyqVsBWCIjtG4eTGCRC1scVsTg';
 const STALE_MS = 25000;
+// SO ที่ผู้ใช้สั่งลบออกแล้ว (เช่น ทำสัญญาแต่ลูกค้ายังไม่ได้รับสินค้า) — ห้ามนำเข้ากลับมาอีก
+const EXCLUDED_SOS = ['SO-2026052100120'];
 const CONCURRENCY = 6;
 const MY_CLIENT_ID = 'gh-actions-import-contracts-' + Date.now();
 
@@ -496,7 +498,7 @@ async function main() {
   if (!(await acquireLock(dtToken))) { log('ขอ lock ไม่สำเร็จ — ข้ามรอบนี้'); return; }
   try {
     const state = await downloadState(dtToken);
-    const have = new Set(state.orders.map(o => o.orderId));
+    const have = new Set(state.orders.map(o => o.orderId).concat(EXCLUDED_SOS));
     let added = 0;
     ready.forEach(r => { if (!have.has(r.order.orderId)) { state.orders.push(r.order); added++; } });
     await uploadState(dtToken, state);

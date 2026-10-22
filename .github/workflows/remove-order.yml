@@ -1,0 +1,31 @@
+name: Remove Order (ลบออเดอร์ระบุเลข SO)
+
+on:
+  workflow_dispatch:
+    inputs:
+      only_so:
+        description: 'เลข SO ที่จะลบ (ทีละ 1 รายการ) เช่น SO-2026052100120'
+        required: true
+      dry_run:
+        description: 'dry-run = ดูสรุปอย่างเดียวไม่ลบ (true/false)'
+        default: 'true'
+      force:
+        description: 'ลบแม้มีงวดที่ชำระแล้ว (true/false) — ปกติปล่อย false'
+        default: 'false'
+
+jobs:
+  remove:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Remove order
+        env:
+          CRM_USERNAME: ${{ secrets.CRM_USERNAME }}
+          CRM_PASSWORD: ${{ secrets.CRM_PASSWORD }}
+          ONLY_SO: ${{ inputs.only_so }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          FORCE: ${{ inputs.force }}
+        run: node scripts/remove-order.js
