@@ -82,9 +82,10 @@ function effectiveStatusOf(i) {
 // Mirrors index.html's withEffectiveStatus collector rule (2026-10-07): an order flagged collectorHold (customer is on the
 // 'ลูกหนี้ที่อยู่กับบริษัทติดตามหนี้' list) shows every unpaid งวด as the sold status.
 const LEGAL_STATUS_EXEMPT = { 'ชำระแล้ว': true, 'ยกเลิกสัญญา คืนเครื่อง': true, 'ยกเลิกบิล': true };
-function withEffectiveStatus(list, collectorTag) {
+function withEffectiveStatus(list, collectorTag, trackSold) {
   return (list || []).map((i) => {
     let status = effectiveStatusOf(i);
+    let derivedTrackSold = false;
     const owing = Math.max(0, Number(i.amountDue || 0) - Number(i.discount || 0) - Number(i.amountPaid || 0)) > 0.005;
     const paid = Number(i.amountPaid || 0);
     if (collectorTag && !LEGAL_STATUS_EXEMPT[status]) {
@@ -93,15 +94,25 @@ function withEffectiveStatus(list, collectorTag) {
       else if (paid > 0.005 && owing) status = 'ชำระบางส่วน';
       else if (owing || status === 'จำหน่ายชื่อให้บริษัทติดตามหนี้') status = 'จำหน่ายชื่อให้บริษัทติดตามหนี้';
     }
-    return Object.assign({}, i, { effectiveStatus: status });
+    // Track-level รอดำเนินคดี (2026-10-22, mirrors index.html's withEffectiveStatus trackSold): one track (main / อุปกรณ์เสริม) tagged on its own.
+    if (trackSold && !collectorTag && !LEGAL_STATUS_EXEMPT[status]) {
+      if (Number(i.amountDue || 0) > 0 && !owing) status = 'ชำระแล้ว';
+      else if (paid > 0.005 && owing) status = 'ชำระบางส่วน';
+      else if (owing) { status = 'รอดำเนินคดี'; derivedTrackSold = true; }
+    }
+    return Object.assign({}, i, { effectiveStatus: status, trackSold: derivedTrackSold });
   });
 }
 
 function computeOrders(state) {
   // Easy Restart bills (o.easyRestart) are reported separately and never counted in the debtor totals (2026-10-09)
   return (state.orders || []).filter((o) => !o.easyRestart).map((o) => {
-    const installments = withEffectiveStatus(o.installments, !!o.collectorHold);
-    const accessoryInstallments = withEffectiveStatus(o.accessoryInstallments || [], !!o.collectorHold);
+    const rawStoredSold = (o.installments || []).concat(o.accessoryInstallments || []).some((i) => i.statusOverride && i.status === 'จำหน่ายชื่อให้บริษัทติดตามหนี้');
+    const trackFlagsOk = !isCustomerLegalAction(o, state) && !o.collectorHold && !o.wasSold && !rawStoredSold && !o.wasCancelled;
+    const soldMainTrack = trackFlagsOk && !!o.wasSoldMain && (o.installments || []).length > 0;
+    const soldAccessoryTrack = trackFlagsOk && !!o.wasSoldAccessory && (o.accessoryInstallments || []).length > 0;
+    const installments = withEffectiveStatus(o.installments, !!o.collectorHold, soldMainTrack);
+    const accessoryInstallments = withEffectiveStatus(o.accessoryInstallments || [], !!o.collectorHold, soldAccessoryTrack);
     const allInstallments = installments.concat(accessoryInstallments);
     const mainDue = installments.reduce((s, i) => s + Number(i.amountDue || 0), 0);
     const mainPaid = installments.reduce((s, i) => s + Number(i.amountPaid || 0), 0);
@@ -114,14 +125,14 @@ function computeOrders(state) {
     const totalPaid = mainPaid + accPaid;
     const isCancelled = !!o.wasCancelled || allInstallments.some((i) => i.effectiveStatus === 'ยกเลิกสัญญา คืนเครื่อง');
     const storedSold = (o.installments || []).concat(o.accessoryInstallments || []).some((i) => i.statusOverride && i.status === 'จำหน่ายชื่อให้บริษัทติดตามหนี้');
-    const isSold = !!o.collectorHold || !!o.wasSold || storedSold || allInstallments.some((i) => i.effectiveStatus === 'จำหน่ายชื่อให้บริษัทติดตามหนี้' || i.effectiveStatus === 'รอดำเนินคดี');
+    const isSold = !!o.collectorHold || !!o.wasSold || storedSold || allInstallments.some((i) => !i.trackSold && (i.effectiveStatus === 'จำหน่ายชื่อให้บริษัทติดตามหนี้' || i.effectiveStatus === 'รอดำเนินคดี'));
     const isBillCancelled = !!o.wasBillCancelled || allInstallments.some((i) => i.effectiveStatus === 'ยกเลิกบิล');
     return Object.assign({}, o, {
       installments, accessoryInstallments,
       totalOutstandingRaw: mainOutstanding + accOutstanding,
       totalPaidFullRaw: Number(o.downPayment || 0) + Number(o.accessoryDownPayment || 0) + totalPaid,
       totalContractRaw: Number(o.downPayment || 0) + Number(o.accessoryDownPayment || 0) + totalDue,
-      isCancelled, isSold, isCollectorSold: isSold && !!o.collectorHold, isBillCancelled
+      isCancelled, isSold, isCollectorSold: isSold && !!o.collectorHold, isBillCancelled, soldMainTrack, soldAccessoryTrack
     });
   });
 }
@@ -134,7 +145,7 @@ function computeSummary(state) {
   // Mirrors index.html's computeDashboard exactly (unfiltered orders, not just contractOrders/activeOrders).
   const cancelledOrders = orders.filter((o) => o.isCancelled);
   const soldOrders = orders.filter((o) => o.isSold && o.isCollectorSold); // still with the collection company
-  const pendingOrders = orders.filter((o) => o.isSold && !o.isCollectorSold); // รอดำเนินคดี
+  const pendingOrders = orders.filter((o) => (o.isSold && !o.isCollectorSold) || o.soldMainTrack || o.soldAccessoryTrack); // รอดำเนินคดี
 
   // Re-synced 2026-08-28 to index.html's computeDashboard round-4 rewrite (see that file's big
   // comment on the same identity) — totalContract/paidSum now guarantee reconciliation with the
@@ -179,7 +190,7 @@ function computeSummary(state) {
       // status, due or not, including orders also flagged จำหน่ายชื่อฯ) counts as ดำเนินคดีทางกฎหมาย;
       // ยกเลิกสัญญา orders already returned above.
       if (isLegalOrder) { legalDonutSum += remaining; return; }
-      if (o.isSold) {
+      if (o.isSold || i.trackSold) {
         const isOwedStatus = isExplicitOwed || isCatchAll;
         const dueReached = isDueDateReached(i) || isNaN(new Date(i.dueDate).getTime());
         if (isOwedStatus && dueReached) { if (o.isCollectorSold) soldRemainingSum += remaining; else pendingRemainingSum += remaining; }
@@ -215,6 +226,7 @@ function computeSummary(state) {
     });
     const isOrderFullySettled = orderPaidTotal >= orderNetDueTotal - 0.005;
     o.installments.concat(o.accessoryInstallments || []).forEach((i) => {
+      if (i.trackSold) return; // track-level รอดำเนินคดี (2026-10-22): already counted in pendingRemainingSum above, never also overdue
       const due = Number(i.amountDue || 0), paid = Number(i.amountPaid || 0), disc = Number(i.discount || 0);
       const netDue = Math.max(0, due - disc);
       const remaining = Math.max(0, netDue - paid);
