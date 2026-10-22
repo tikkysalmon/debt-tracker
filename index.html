@@ -521,6 +521,31 @@
   // issued on any of their orders (see autoTagLegalAction in issueLetter), with a manual toggle
   // (toggleCustomerLegalAction) for staff to correct/clear it.
   function isCustomerLegalAction(o) { return !!(state.customerLegalAction && state.customerLegalAction[customerKey(o)]); }
+  // ---- ดำเนินคดีทางกฎหมาย: สำนักงานทนาย + ขั้นตอนคดี (2026-10-22) ----
+  // state.customerLegalCase[customerKey] = JSON string {firm, stage(0-8), caseNo, nextDate, memo, hist:[{at,by,msg}]}.
+  // Stored as a STRING so the existing scalar 3-way mergeNotes works as-is. stage 0 = ยังไม่ระบุ.
+  var LEGAL_STAGES = ['ส่งเรื่องให้ทนาย', 'ส่งหนังสือบอกกล่าว', 'ยื่นฟ้องแล้ว', 'ศาลนัดไกล่เกลี่ย/สืบพยาน', 'ศาลมีคำพิพากษา', 'บังคับคดี', 'ประนอมหนี้/ผ่อนชำระ', 'ปิดคดี'];
+  var LEGAL_STAGE_HINTS = ['รอทนายรับเรื่องและส่งหนังสือบอกกล่าว', 'รอครบกำหนดในหนังสือบอกกล่าว (ปกติ 30 วัน) แล้วยื่นฟ้อง', 'รอศาลนัดไกล่เกลี่ย — ใส่วันนัดในช่อง "ศาลนัดครั้งถัดไป"', 'ติดตามผลการไกล่เกลี่ย/สืบพยาน และคำพิพากษา', 'รอครบกำหนดชำระตามคำพิพากษา แล้วดำเนินการบังคับคดี', 'ติดตามผลยึด/อายัดทรัพย์', 'ติดตามการผ่อนชำระตามข้อตกลง', 'คดีปิดแล้ว'];
+  function legalCaseOfKey(key) {
+    var raw = state.customerLegalCase && state.customerLegalCase[key];
+    var c = null;
+    if (raw && typeof raw === 'string') { try { c = JSON.parse(raw); } catch (e) { c = null; } }
+    c = c || {};
+    return { firm: String(c.firm || ''), stage: Number(c.stage) || 0, caseNo: String(c.caseNo || ''), nextDate: String(c.nextDate || ''), memo: String(c.memo || ''), hist: Array.isArray(c.hist) ? c.hist : [] };
+  }
+  function legalFirmLabel(name) {
+    name = String(name || '').trim();
+    if (!name) return '';
+    return /^สำนักงานทนาย/.test(name) ? name : 'สำนักงานทนาย ' + name;
+  }
+  function legalFirmList() {
+    var seen = {}, out = [];
+    Object.keys(state.customerLegalCase || {}).forEach(function (k) {
+      var f = legalCaseOfKey(k).firm;
+      if (f && !seen[f]) { seen[f] = true; out.push(f); }
+    });
+    return out.sort();
+  }
   // Tracking page's "สถานะบัญชีลูกค้า" filter (2026-08-18, converted from single-select to a
   // multi-select checklist — see renderChecklistDropdown/state.filterAccountStatuses — per explicit
   // user request to be able to pick more than one status at once). An order can genuinely match
@@ -1172,7 +1197,7 @@
         customerTrackingReturn: state.customerTrackingReturn,
         customerTrackingReturnAt: state.customerTrackingReturnAt,
         customerLegalAction: state.customerLegalAction,
-        customerLegalActionAt: state.customerLegalActionAt,
+        customerLegalActionAt: state.customerLegalActionAt, customerLegalCase: state.customerLegalCase,
         appliedPaymentKeys: Object.keys(appliedPaymentKeys),
         uploadHistory: state.uploadHistory,
         smsTemplates: state.smsTemplates,
@@ -1251,6 +1276,7 @@
       state.customerTrackingReturnAt = lastServerSnapshot.customerTrackingReturnAt;
       state.customerLegalAction = lastServerSnapshot.customerLegalAction;
       state.customerLegalActionAt = lastServerSnapshot.customerLegalActionAt;
+      state.customerLegalCase = lastServerSnapshot.customerLegalCase || {};
       appliedPaymentKeys = {};
       (lastServerSnapshot.appliedPaymentKeys || []).forEach(function (k) { appliedPaymentKeys[k] = true; });
       state.hasUnsavedChanges = false;
@@ -1283,7 +1309,7 @@
   // server right now (another client may have saved since), but the baseline this client's local
   // edits are measured against. Updated whenever a remote snapshot is applied (connect/poll) and
   // after every successful save (see cloudSaveNow) so the next diff is always against reality.
-  var lastServerSnapshot = { orders: [], customerNotes: {}, customerTrackingReturn: {}, customerTrackingReturnAt: {}, customerLegalAction: {}, customerLegalActionAt: {}, appliedPaymentKeys: [], uploadHistory: [] };
+  var lastServerSnapshot = { orders: [], customerNotes: {}, customerTrackingReturn: {}, customerTrackingReturnAt: {}, customerLegalAction: {}, customerLegalActionAt: {}, customerLegalCase: {}, appliedPaymentKeys: [], uploadHistory: [] };
 
   var CLOUD_BUCKET = 'app-data';
   var CLOUD_FILE = IS_OLD_DATASET ? 'state-old.json' : 'state.json';
@@ -1447,6 +1473,7 @@
     var rawTrackingReturnAt = data.customerTrackingReturnAt || {};
     var rawLegalAction = data.customerLegalAction || {};
     var rawLegalActionAt = data.customerLegalActionAt || {};
+    var rawLegalCase = data.customerLegalCase || {};
     var rawKeys = data.appliedPaymentKeys || [];
     var rawUploadHistory = Array.isArray(data.uploadHistory) ? data.uploadHistory : [];
     if (Array.isArray(data.orders)) {
@@ -1460,6 +1487,7 @@
     state.customerTrackingReturnAt = rawTrackingReturnAt;
     state.customerLegalAction = rawLegalAction;
     state.customerLegalActionAt = rawLegalActionAt;
+    state.customerLegalCase = rawLegalCase;
     var syncFix = repairCancelledOrderSync(state.orders, state.customerTrackingReturn, state.customerTrackingReturnAt);
     state.orders = syncFix.orders;
     state.customerTrackingReturn = syncFix.trackingReturn;
@@ -1491,7 +1519,7 @@
     // before this field existed (or one saved by an older, not-yet-updated tab) never drops entries
     // this client already logged locally.
     state.uploadHistory = mergeUploadHistory(state.uploadHistory, rawUploadHistory);
-    lastServerSnapshot = { orders: rawOrders, customerNotes: rawNotes, customerTrackingReturn: rawTrackingReturn, customerTrackingReturnAt: rawTrackingReturnAt, customerLegalAction: rawLegalAction, customerLegalActionAt: rawLegalActionAt, appliedPaymentKeys: rawKeys, uploadHistory: rawUploadHistory };
+    lastServerSnapshot = { orders: rawOrders, customerNotes: rawNotes, customerTrackingReturn: rawTrackingReturn, customerTrackingReturnAt: rawTrackingReturnAt, customerLegalAction: rawLegalAction, customerLegalActionAt: rawLegalActionAt, customerLegalCase: rawLegalCase, appliedPaymentKeys: rawKeys, uploadHistory: rawUploadHistory };
     applyingRemote = false;
   }
   // Append-only audit log — never needs true 3-way conflict resolution (entries are immutable once
@@ -1857,6 +1885,7 @@
     var baseTrackingReturnAt = lastServerSnapshot.customerTrackingReturnAt;
     var baseLegalAction = lastServerSnapshot.customerLegalAction;
     var baseLegalActionAt = lastServerSnapshot.customerLegalActionAt;
+    var baseLegalCase = lastServerSnapshot.customerLegalCase || {};
     // Captured now, not re-read after the round-trip — if a newer edit lands in state.orders while
     // this save is in flight, cloudSavePending picks it up as its own follow-up round (below), so
     // this round only ever claims to have saved exactly what it captured here.
@@ -1866,6 +1895,7 @@
     var localTrackingReturnAtSnapshot = state.customerTrackingReturnAt;
     var localLegalActionSnapshot = state.customerLegalAction;
     var localLegalActionAtSnapshot = state.customerLegalActionAt;
+    var localLegalCaseSnapshot = state.customerLegalCase;
     var localKeysSnapshot = Object.keys(appliedPaymentKeys);
     var localUploadHistorySnapshot = state.uploadHistory;
     // Only clear cloudDirty once this was the LAST queued save (nothing newer waiting behind it)
@@ -1885,6 +1915,7 @@
         if (state.customerTrackingReturnAt === localTrackingReturnAtSnapshot) state.customerTrackingReturnAt = merged.customerTrackingReturnAt;
         if (state.customerLegalAction === localLegalActionSnapshot) state.customerLegalAction = merged.customerLegalAction;
         if (state.customerLegalActionAt === localLegalActionAtSnapshot) state.customerLegalActionAt = merged.customerLegalActionAt;
+        if (state.customerLegalCase === localLegalCaseSnapshot) state.customerLegalCase = merged.customerLegalCase;
         if (state.uploadHistory === localUploadHistorySnapshot) state.uploadHistory = merged.uploadHistory;
         appliedPaymentKeys = {};
         merged.appliedPaymentKeys.forEach(function (k) { appliedPaymentKeys[k] = true; });
@@ -1908,7 +1939,7 @@
       // paper over the race this lock now structurally prevents).
       findCloudFileMeta().then(function (item) {
         if (item && lastServerTs && item.updated_at === lastServerTs) {
-          return proceed({ orders: baseOrders, customerNotes: baseNotes, customerTrackingReturn: baseTrackingReturn, customerTrackingReturnAt: baseTrackingReturnAt, customerLegalAction: baseLegalAction, customerLegalActionAt: baseLegalActionAt, appliedPaymentKeys: lastServerSnapshot.appliedPaymentKeys, uploadHistory: lastServerSnapshot.uploadHistory });
+          return proceed({ orders: baseOrders, customerNotes: baseNotes, customerTrackingReturn: baseTrackingReturn, customerTrackingReturnAt: baseTrackingReturnAt, customerLegalAction: baseLegalAction, customerLegalActionAt: baseLegalActionAt, customerLegalCase: baseLegalCase, appliedPaymentKeys: lastServerSnapshot.appliedPaymentKeys, uploadHistory: lastServerSnapshot.uploadHistory });
         }
         if (!item) return proceed(null);
         return downloadCloudFile().then(function (res) {
@@ -1928,7 +1959,7 @@
       // to be swallowed by an unreturned/unchained promise, so finishSave() was never reached and
       // the pill never left "กำลังบันทึก…" until a full page reload).
       function proceed(remote) {
-        var mergedOrders, mergedNotes, mergedTrackingReturn, mergedTrackingReturnAt, mergedLegalAction, mergedLegalActionAt, mergedKeys, blob, text;
+        var mergedOrders, mergedNotes, mergedTrackingReturn, mergedTrackingReturnAt, mergedLegalAction, mergedLegalActionAt, mergedLegalCase, mergedKeys, blob, text;
         try {
           var remoteOrders = (remote && Array.isArray(remote.orders)) ? remote.orders : [];
           var remoteNotes = (remote && remote.customerNotes) ? remote.customerNotes : {};
@@ -1936,6 +1967,7 @@
           var remoteTrackingReturnAt = (remote && remote.customerTrackingReturnAt) ? remote.customerTrackingReturnAt : {};
           var remoteLegalAction = (remote && remote.customerLegalAction) ? remote.customerLegalAction : {};
           var remoteLegalActionAt = (remote && remote.customerLegalActionAt) ? remote.customerLegalActionAt : {};
+          var remoteLegalCase = (remote && remote.customerLegalCase) ? remote.customerLegalCase : {};
           var remoteKeys = (remote && remote.appliedPaymentKeys) ? remote.appliedPaymentKeys : [];
           var remoteUploadHistory = (remote && Array.isArray(remote.uploadHistory)) ? remote.uploadHistory : [];
           mergedOrders = mergeOrdersList(baseOrders, localOrdersSnapshot, remoteOrders);
@@ -1950,6 +1982,9 @@
           mergedTrackingReturnAt = mergeNotes(baseTrackingReturnAt, localTrackingReturnAtSnapshot, remoteTrackingReturnAt);
           mergedLegalAction = mergeNotes(baseLegalAction, localLegalActionSnapshot, remoteLegalAction);
           mergedLegalActionAt = mergeNotes(baseLegalActionAt, localLegalActionAtSnapshot, remoteLegalActionAt);
+          // customerLegalCase values are JSON STRINGS (one per customer) so this scalar 3-way merge
+          // works unchanged: whoever edited a customer's case last wins for that customer only.
+          mergedLegalCase = mergeNotes(baseLegalCase, localLegalCaseSnapshot, remoteLegalCase);
           mergedKeys = unionKeys(remoteKeys, localKeysSnapshot);
           // Append-only, so id-deduped union (not a 3-way merge) is enough — see mergeUploadHistory.
           var mergedUploadHistory = mergeUploadHistory(remoteUploadHistory, localUploadHistorySnapshot);
@@ -1958,7 +1993,7 @@
           // is non-empty too, and inferring "no longer sample" from length alone meant the demo orders
           // silently got treated as real and merged alongside the first genuine upload (see
           // repairStaleSampleOrders below for cleaning up datasets already affected by this).
-          var payload = { orders: mergedOrders, customerNotes: mergedNotes, customerTrackingReturn: mergedTrackingReturn, customerTrackingReturnAt: mergedTrackingReturnAt, customerLegalAction: mergedLegalAction, customerLegalActionAt: mergedLegalActionAt, appliedPaymentKeys: mergedKeys, uploadHistory: mergedUploadHistory, isSampleData: state.isSampleData, smsTemplates: state.smsTemplates, letterheadImageUrl: state.letterheadImageUrl, _meta: { updatedAt: new Date().toISOString(), updatedBy: myClientId } };
+          var payload = { orders: mergedOrders, customerNotes: mergedNotes, customerTrackingReturn: mergedTrackingReturn, customerTrackingReturnAt: mergedTrackingReturnAt, customerLegalAction: mergedLegalAction, customerLegalActionAt: mergedLegalActionAt, customerLegalCase: mergedLegalCase, appliedPaymentKeys: mergedKeys, uploadHistory: mergedUploadHistory, isSampleData: state.isSampleData, smsTemplates: state.smsTemplates, letterheadImageUrl: state.letterheadImageUrl, _meta: { updatedAt: new Date().toISOString(), updatedBy: myClientId } };
           text = JSON.stringify(payload);
           blob = null; // gzip-compressed just before upload (gzipBlobFromText)
         } catch (mergeErr) {
@@ -1984,7 +2019,7 @@
             return;
           }
           cloudErrorDetail = '';
-          var merged = { orders: mergedOrders, customerNotes: mergedNotes, customerTrackingReturn: mergedTrackingReturn, customerTrackingReturnAt: mergedTrackingReturnAt, customerLegalAction: mergedLegalAction, customerLegalActionAt: mergedLegalActionAt, appliedPaymentKeys: mergedKeys, uploadHistory: mergedUploadHistory };
+          var merged = { orders: mergedOrders, customerNotes: mergedNotes, customerTrackingReturn: mergedTrackingReturn, customerTrackingReturnAt: mergedTrackingReturnAt, customerLegalAction: mergedLegalAction, customerLegalActionAt: mergedLegalActionAt, customerLegalCase: mergedLegalCase, appliedPaymentKeys: mergedKeys, uploadHistory: mergedUploadHistory };
           // Upload response doesn't include the new updated_at — fetch it so the next poll
           // recognizes this save as already-applied instead of re-downloading the whole file.
           findCloudFileMeta().then(function (item2) {
@@ -2131,13 +2166,14 @@
     filterGrade: 'all',
     filterPurchaseTypes: [],
     filterLockSystem: 'all', filterLockMode: 'all',
-    filterSmsTemplate: 'all', filterLetterRound: 'all', filterCallStatus: 'all',
+    filterSmsTemplate: 'all', filterLetterRound: 'all', filterCallStatus: 'all', filterLegalFirm: 'all', filterLegalStage: 'all',
     dueFrom: '', dueTo: '', paidFrom: '', paidTo: '', contractFrom: '', contractTo: '',
     customerNotes: (persisted && persisted.customerNotes) || {},
     customerTrackingReturn: (persisted && persisted.customerTrackingReturn) || {},
     customerTrackingReturnAt: (persisted && persisted.customerTrackingReturnAt) || {},
     customerLegalAction: (persisted && persisted.customerLegalAction) || {},
     customerLegalActionAt: (persisted && persisted.customerLegalActionAt) || {},
+    customerLegalCase: (persisted && persisted.customerLegalCase) || {},
     uploadHistory: (persisted && Array.isArray(persisted.uploadHistory)) ? persisted.uploadHistory : [], // internal audit log, never rendered — see logUpload/mergeUploadHistory
     lastSavedAt: (persisted && persisted.savedAt) || '',
     isSampleData: !(persisted && persisted.orders && persisted.orders.length),
@@ -2210,7 +2246,7 @@
     appliedGrade: 'all',
     appliedPurchaseTypes: [], // types EXCLUDED from results; empty = show every purchase type
     appliedLockSystem: 'all', appliedLockMode: 'all',
-    appliedSmsTemplate: 'all', appliedLetterRound: 'all', appliedCallStatus: 'all',
+    appliedSmsTemplate: 'all', appliedLetterRound: 'all', appliedCallStatus: 'all', appliedLegalFirm: 'all', appliedLegalStage: 'all',
     appliedDueFrom: '', appliedDueTo: '', appliedPaidFrom: '', appliedPaidTo: '', appliedContractFrom: '', appliedContractTo: ''
   };
   // Same one-time catch-up as applySnapshot() runs on every cloud sync — needed here too so a fresh
@@ -4273,7 +4309,7 @@
       paidFrom: state.appliedPaidFrom, paidTo: state.appliedPaidTo,
       contractFrom: state.appliedContractFrom, contractTo: state.appliedContractTo,
       lockSystem: state.appliedLockSystem, lockMode: state.appliedLockMode,
-      smsTemplate: state.appliedSmsTemplate, letterRound: state.appliedLetterRound, callStatus: state.appliedCallStatus
+      smsTemplate: state.appliedSmsTemplate, letterRound: state.appliedLetterRound, callStatus: state.appliedCallStatus, legalFirm: state.appliedLegalFirm, legalStage: state.appliedLegalStage
     };
     var filteredOrders = q ? computedOrders.filter(function (o) {
       return o.customerId.toLowerCase().indexOf(q) !== -1 ||
@@ -4435,6 +4471,16 @@
         return events.some(function (h) { return h.no === Number(f.letterRound); });
       });
     }
+    if (f.legalFirm !== 'all' || f.legalStage !== 'all') {
+      // ทนาย/ขั้นตอนคดี: only customers carrying the ดำเนินคดีทางกฎหมาย tag can match.
+      filteredOrders = filteredOrders.filter(function (o) {
+        if (!isCustomerLegalAction(o)) return false;
+        var lc = legalCaseOfKey(customerKey(o));
+        if (f.legalFirm === 'none' ? !!lc.firm : (f.legalFirm !== 'all' && lc.firm !== f.legalFirm)) return false;
+        if (f.legalStage !== 'all' && String(lc.stage) !== f.legalStage) return false;
+        return true;
+      });
+    }
     if (f.callStatus !== 'all') {
       filteredOrders = filteredOrders.filter(function (o) {
         var called = (o.callHistory || []).length > 0;
@@ -4467,7 +4513,7 @@
       state.filterGrade !== state.appliedGrade ||
       state.filterPurchaseTypes.join(',') !== state.appliedPurchaseTypes.join(',') ||
       state.filterLockSystem !== state.appliedLockSystem || state.filterLockMode !== state.appliedLockMode ||
-      state.filterSmsTemplate !== state.appliedSmsTemplate || state.filterLetterRound !== state.appliedLetterRound || state.filterCallStatus !== state.appliedCallStatus ||
+      state.filterSmsTemplate !== state.appliedSmsTemplate || state.filterLetterRound !== state.appliedLetterRound || state.filterCallStatus !== state.appliedCallStatus || state.filterLegalFirm !== state.appliedLegalFirm || state.filterLegalStage !== state.appliedLegalStage ||
       state.dueFrom !== state.appliedDueFrom || state.dueTo !== state.appliedDueTo ||
       state.paidFrom !== state.appliedPaidFrom || state.paidTo !== state.appliedPaidTo ||
       state.contractFrom !== state.appliedContractFrom || state.contractTo !== state.appliedContractTo;
@@ -4561,6 +4607,8 @@
     state.appliedSmsTemplate = state.filterSmsTemplate;
     state.appliedLetterRound = state.filterLetterRound;
     state.appliedCallStatus = state.filterCallStatus;
+    state.appliedLegalFirm = state.filterLegalFirm;
+    state.appliedLegalStage = state.filterLegalStage;
     state.appliedDueFrom = state.dueFrom; state.appliedDueTo = state.dueTo;
     state.appliedPaidFrom = state.paidFrom; state.appliedPaidTo = state.paidTo;
     state.appliedContractFrom = state.contractFrom; state.appliedContractTo = state.contractTo;
@@ -4641,9 +4689,9 @@
       page: 1,
       selectedCustomerId: null,
       query: '', filterAccountStatuses: [], filterDueStatus: 'all', filterPaymentStatuses: [],
-      filterCrmStatus: 'all', filterUnverifiedCRM: false, filterGrade: 'all', filterPurchaseTypes: [], filterLockSystem: 'all', filterLockMode: 'all', filterSmsTemplate: 'all', filterLetterRound: 'all', filterCallStatus: 'all', dueFrom: '', dueTo: '', paidFrom: '', paidTo: '', contractFrom: '', contractTo: '',
+      filterCrmStatus: 'all', filterUnverifiedCRM: false, filterGrade: 'all', filterPurchaseTypes: [], filterLockSystem: 'all', filterLockMode: 'all', filterSmsTemplate: 'all', filterLetterRound: 'all', filterCallStatus: 'all', filterLegalFirm: 'all', filterLegalStage: 'all', dueFrom: '', dueTo: '', paidFrom: '', paidTo: '', contractFrom: '', contractTo: '',
       appliedQuery: '', appliedAccountStatuses: [], appliedDueStatus: 'all', appliedPaymentStatuses: [], appliedUnverifiedCRM: false,
-      appliedGrade: 'all', appliedPurchaseTypes: [], appliedLockSystem: 'all', appliedLockMode: 'all', appliedSmsTemplate: 'all', appliedLetterRound: 'all', appliedCallStatus: 'all', appliedDueFrom: '', appliedDueTo: '', appliedPaidFrom: '', appliedPaidTo: '',
+      appliedGrade: 'all', appliedPurchaseTypes: [], appliedLockSystem: 'all', appliedLockMode: 'all', appliedSmsTemplate: 'all', appliedLetterRound: 'all', appliedCallStatus: 'all', appliedLegalFirm: 'all', appliedLegalStage: 'all', appliedDueFrom: '', appliedDueTo: '', appliedPaidFrom: '', appliedPaidTo: '',
       appliedContractFrom: '', appliedContractTo: ''
     });
     render();
@@ -4740,6 +4788,12 @@
       delete laAtPatch[oldKey];
       state.customerLegalActionAt = laAtPatch;
     }
+    if (state.customerLegalCase && Object.prototype.hasOwnProperty.call(state.customerLegalCase, oldKey)) {
+      var lcPatch = Object.assign({}, state.customerLegalCase);
+      lcPatch[newKey] = lcPatch[oldKey];
+      delete lcPatch[oldKey];
+      state.customerLegalCase = lcPatch;
+    }
     state.selectedCustomerId = newKey;
     return true;
   }
@@ -4830,6 +4884,41 @@
     state.customerLegalActionAt = Object.assign({}, state.customerLegalActionAt, atPatch);
     state.hasUnsavedChanges = true;
     render();
+  }
+  // Edits one field of the selected customer's ดำเนินคดี case (firm/stage/caseNo/nextDate/memo).
+  // Stage/firm changes are logged to the case's own history (who/when); other fields just save.
+  function setLegalCaseField(field, value) {
+    if (!state.selectedCustomerId) return;
+    var key = state.selectedCustomerId;
+    var c = legalCaseOfKey(key);
+    var msg = '';
+    if (field === 'firm') {
+      value = String(value || '').trim();
+      if (value === c.firm) return;
+      msg = 'ทนาย: ' + (legalFirmLabel(c.firm) || 'ยังไม่ระบุ') + ' → ' + (legalFirmLabel(value) || 'ยังไม่ระบุ');
+      c.firm = value;
+    } else if (field === 'stage') {
+      value = Number(value) || 0;
+      if (value === c.stage) return;
+      msg = 'ขั้นตอน: ' + (c.stage ? LEGAL_STAGES[c.stage - 1] : 'ยังไม่ระบุ') + ' → ' + (value ? LEGAL_STAGES[value - 1] : 'ยังไม่ระบุ');
+      c.stage = value;
+    } else if (field === 'caseNo' || field === 'nextDate' || field === 'memo') {
+      value = String(value || '');
+      if (value === c[field]) return;
+      c[field] = value;
+    } else return;
+    if (msg) { c.hist = c.hist.concat([{ at: nowTimestamp(), by: currentActorName(), msg: msg }]); }
+    var patch = {}; patch[key] = JSON.stringify({ firm: c.firm, stage: c.stage, caseNo: c.caseNo, nextDate: c.nextDate, memo: c.memo, hist: c.hist });
+    state.customerLegalCase = Object.assign({}, state.customerLegalCase, patch);
+    var atPatch = {}; atPatch[key] = nowTimestamp();
+    state.customerLegalActionAt = Object.assign({}, state.customerLegalActionAt, atPatch);
+    state.hasUnsavedChanges = true;
+    render();
+  }
+  function addLegalFirmPrompt() {
+    var name = window.prompt('ชื่อสำนักงานทนาย (เช่น A หรือ สำนักงานทนาย A):');
+    if (name && name.trim()) setLegalCaseField('firm', name.trim());
+    else render();
   }
   // Once an order has ever been flagged จำหน่ายชื่อให้บริษัทติดตามหนี้/ยกเลิกสัญญา คืนเครื่อง, the
   // account-status badge must stay tagged even if a later payment brings some installment back to
@@ -8208,7 +8297,7 @@
     var mb = function (n) { return Math.round(n / 1048576 * 100) / 100; };
     var slices = { orders: state.orders, customerNotes: state.customerNotes, customerTrackingReturn: state.customerTrackingReturn,
       customerTrackingReturnAt: state.customerTrackingReturnAt, customerLegalAction: state.customerLegalAction,
-      customerLegalActionAt: state.customerLegalActionAt, uploadHistory: state.uploadHistory, smsTemplates: state.smsTemplates };
+      customerLegalActionAt: state.customerLegalActionAt, customerLegalCase: state.customerLegalCase, uploadHistory: state.uploadHistory, smsTemplates: state.smsTemplates };
     var rows = [], totalChars = 0, totalBytes = 0;
     Object.keys(slices).forEach(function (k) {
       var t = JSON.stringify(slices[k] == null ? null : slices[k]) || '';
@@ -8317,6 +8406,7 @@
     state.customerTrackingReturnAt = {};
     state.customerLegalAction = {};
     state.customerLegalActionAt = {};
+    state.customerLegalCase = {};
     state.selectedCustomerId = null;
     state.lastSavedAt = '';
     state.isSampleData = !!toSample;
@@ -8550,6 +8640,44 @@
       ' style="border:none; background:' + (eligible && !busy ? 'linear-gradient(135deg,#f7823b,#f0630f)' : '#c9ccd1') + '; color:#fff; padding:6px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:' + (eligible && !busy ? 'pointer' : 'not-allowed') + '; white-space:nowrap; box-shadow:' + (eligible && !busy ? '0 4px 12px rgba(247,130,59,0.3)' : 'none') + ';">' +
       (busy ? '⏳ กำลังสร้าง...' : '📄 ออกเอกสาร') + '</button>';
     return '<div data-letter-row="' + esc(ord.orderId) + '" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">' + selectHtml + btn + '</div>';
+  }
+  // ---------- ดำเนินคดีทางกฎหมาย: กล่องสถานะคดี (สำนักงานทนาย/ขั้นตอน/เลขคดี/วันนัด/ประวัติ) ----------
+  function renderLegalCaseSection() {
+    var key = state.selectedCustomerId;
+    var c = legalCaseOfKey(key);
+    var inp = 'width:100%; box-sizing:border-box; border:1px solid rgba(95,61,196,0.25); border-radius:10px; padding:8px 12px; font-size:13px; background:#fff; color:#212529;';
+    var lbl = 'font-size:11.5px; color:#6b7280; margin-bottom:5px;';
+    var firms = legalFirmList();
+    if (c.firm && firms.indexOf(c.firm) === -1) firms.push(c.firm);
+    var firmOpts = '<option value=""' + (c.firm ? '' : ' selected') + '>— ยังไม่ระบุทนาย —</option>' +
+      firms.map(function (f) { return '<option value="' + esc(f) + '"' + (f === c.firm ? ' selected' : '') + '>' + esc(legalFirmLabel(f)) + '</option>'; }).join('') +
+      '<option value="__new__">➕ เพิ่มสำนักงานทนายใหม่…</option>';
+    var stageOpts = '<option value="0"' + (c.stage ? '' : ' selected') + '>— ยังไม่ระบุขั้นตอน —</option>' +
+      LEGAL_STAGES.map(function (s, i) { return '<option value="' + (i + 1) + '"' + (c.stage === i + 1 ? ' selected' : '') + '>' + (i + 1) + '. ' + esc(s) + '</option>'; }).join('');
+    var stepper = '<div style="display:flex; gap:4px; margin:16px 0 4px;">' + LEGAL_STAGES.map(function (s, i) {
+      var n = i + 1, done = c.stage > n, now = c.stage === n;
+      var col = (done || now) ? (now && n === 8 ? '#2f9e44' : '#5f3dc4') : '#9a93b0';
+      return '<div data-action="setLegalStage" data-stage="' + n + '" title="คลิกเพื่อเปลี่ยนเป็นขั้นตอนนี้" style="flex:1; text-align:center; font-size:11px; line-height:1.25; cursor:pointer; position:relative; padding-top:22px; color:' + col + '; font-weight:' + (now ? 700 : 500) + ';">' +
+        '<div style="position:absolute; top:8px; left:' + (i === 0 ? '50%' : '0') + '; right:' + (i === LEGAL_STAGES.length - 1 ? '50%' : '0') + '; height:4px; background:' + (done ? '#5f3dc4' : '#e6e0f0') + ';"></div>' +
+        '<div style="position:absolute; top:' + (now ? 4 : 2) + 'px; left:50%; transform:translateX(-50%); width:' + (now ? 8 : 16) + 'px; height:' + (now ? 8 : 16) + 'px; border-radius:50%; background:' + (now ? '#fff' : (done ? '#5f3dc4' : '#e6e0f0')) + '; border:' + (now ? '4px solid ' + col : '2px solid #fff') + '; box-shadow:0 0 0 ' + (now ? 3 : 1) + 'px ' + (now ? 'rgba(95,61,196,0.2)' : '#d6cdea') + ';"></div>' +
+        esc(s) + '</div>';
+    }).join('') + '</div>';
+    var histHtml = c.hist.length
+      ? c.hist.slice().reverse().map(function (h) { return '<div style="padding:4px 0; border-bottom:1px dotted #eee;"><b style="color:#5f3dc4;">' + esc(h.at) + '</b> · ' + esc(h.msg) + (h.by ? ' <span style="color:#999;">(โดย ' + esc(h.by) + ')</span>' : '') + '</div>'; }).join('')
+      : '<div style="color:#aaa;">ยังไม่มีประวัติการเปลี่ยนสถานะ</div>';
+    return '<div style="margin-top:20px; border:2px solid #5f3dc4; border-radius:20px; padding:18px 20px; background:linear-gradient(#faf8ff,#fff);">' +
+      '<div style="display:flex; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap;"><span style="font-size:20px;">⚖️</span><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:15px; color:#5f3dc4;">สถานะการดำเนินคดีทางกฎหมาย</div></div>' +
+      '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px;">' +
+        '<div><div style="' + lbl + '">สำนักงานทนาย</div><select data-legal-field="firm" style="' + inp + '">' + firmOpts + '</select></div>' +
+        '<div><div style="' + lbl + '">ขั้นตอนคดี</div><select data-legal-field="stage" style="' + inp + '">' + stageOpts + '</select></div>' +
+        '<div><div style="' + lbl + '">เลขคดี (ดำ/แดง)</div><input type="text" data-legal-field="caseNo" value="' + esc(c.caseNo) + '" placeholder="เช่น ผบ.123/2569" style="' + inp + '" /></div>' +
+        '<div><div style="' + lbl + '">ศาลนัดครั้งถัดไป</div><input type="date" data-legal-field="nextDate" value="' + esc(c.nextDate) + '" style="' + inp + '" /></div>' +
+      '</div>' + stepper +
+      '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px; margin-top:12px;">' +
+        '<div><div style="' + lbl + '">หมายเหตุจากทนาย / ผลล่าสุด</div><textarea data-legal-field="memo" rows="3" placeholder="เช่น ทนายส่งหนังสือบอกกล่าวแล้ว รอครบ 30 วัน" style="' + inp + ' resize:vertical;">' + esc(c.memo) + '</textarea>' +
+          (c.stage ? '<div style="font-size:12.5px; margin-top:8px; color:#b45309;">💡 ถัดไป: ' + esc(LEGAL_STAGE_HINTS[c.stage - 1]) + '</div>' : '') + '</div>' +
+        '<div><div style="' + lbl + '">ประวัติการเปลี่ยนสถานะ</div><div style="max-height:118px; overflow:auto; font-size:12px; border:1px solid #ece6f7; border-radius:12px; padding:8px 10px; background:#fff;">' + histHtml + '</div></div>' +
+      '</div></div>';
   }
   // ---------- ข้อมูลการติดตามหนี้ (redesigned 2026-08-01): บันทึกการโทร / ส่ง SMS / ส่งจดหมาย as 3
   // separate cards, each showing its own append-only history with timestamps — replaces the old
@@ -9534,6 +9662,9 @@
         });
         if (Object.keys(trPatch).length) { state.customerTrackingReturn = Object.assign({}, state.customerTrackingReturn, trPatch); state.customerTrackingReturnAt = Object.assign({}, state.customerTrackingReturnAt, trAtPatch); }
         if (Object.keys(laPatch).length) { state.customerLegalAction = Object.assign({}, state.customerLegalAction, laPatch); state.customerLegalActionAt = Object.assign({}, state.customerLegalActionAt, laAtPatch); }
+        var lcRemap = {};
+        keyRemaps.forEach(function (r) { var lc = state.customerLegalCase || {}; if (lc[r.oldKey] && !lc[r.newKey]) lcRemap[r.newKey] = lc[r.oldKey]; });
+        if (Object.keys(lcRemap).length) state.customerLegalCase = Object.assign({}, state.customerLegalCase, lcRemap);
       }
       // Strips any leftover demo orders here too (not just on page load) — isSampleData can already
       // be stuck false from an earlier bug (see repairStaleSampleOrders), and a browser tab open
@@ -12836,6 +12967,16 @@
               selOpt('all', 'ทุกสถานะ', state.filterLetterRound === 'all') + selOpt('none', 'ยังไม่เคยออกจดหมาย', state.filterLetterRound === 'none') +
               getLetterRoundOptions().map(function (n) { return selOpt(String(n), 'ครั้งที่ ' + n, state.filterLetterRound === String(n)); }).join('') +
             '</select></div>' +
+          '<div><div style="font-size:12px; color:#6b7280; margin-bottom:6px;">⚖️ สำนักงานทนาย (ดำเนินคดี)</div>' +
+            '<select data-action="filter" data-key="filterLegalFirm" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid rgba(247,130,59,0.2); background:#fff; font-size:13.5px; color:#212529;">' +
+              selOpt('all', 'ทุกสำนักงาน', state.filterLegalFirm === 'all') + selOpt('none', 'ยังไม่ระบุทนาย', state.filterLegalFirm === 'none') +
+              legalFirmList().map(function (f) { return selOpt(f, legalFirmLabel(f), state.filterLegalFirm === f); }).join('') +
+            '</select></div>' +
+          '<div><div style="font-size:12px; color:#6b7280; margin-bottom:6px;">⚖️ ขั้นตอนคดี</div>' +
+            '<select data-action="filter" data-key="filterLegalStage" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid rgba(247,130,59,0.2); background:#fff; font-size:13.5px; color:#212529;">' +
+              selOpt('all', 'ทุกขั้นตอน', state.filterLegalStage === 'all') + selOpt('0', 'ยังไม่ระบุขั้นตอน', state.filterLegalStage === '0') +
+              LEGAL_STAGES.map(function (s, i) { return selOpt(String(i + 1), (i + 1) + '. ' + s, state.filterLegalStage === String(i + 1)); }).join('') +
+            '</select></div>' +
           '<div><div style="font-size:12px; color:#6b7280; margin-bottom:6px;">📞 สถานะการโทร</div>' +
             '<select data-action="filter" data-key="filterCallStatus" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:10px; border:1px solid rgba(247,130,59,0.2); background:#fff; font-size:13.5px; color:#212529;">' +
               selOpt('all', 'ทุกสถานะ', state.filterCallStatus === 'all') + selOpt('called', 'โทรแล้ว', state.filterCallStatus === 'called') + selOpt('notcalled', 'ยังไม่โทร', state.filterCallStatus === 'notcalled') +
@@ -13534,7 +13675,7 @@
     var laOn = !!state.customerLegalAction[state.selectedCustomerId];
     var laAt = state.customerLegalActionAt[state.selectedCustomerId] || '';
     var legalActionTagHtml = state.erDetail ? '' : laOn
-      ? '<button data-action="toggleCustomerLegalAction" title="คลิกเพื่อยกเลิกแท็กนี้" style="border:none; cursor:pointer; background:' + hexToRgba('#5f3dc4', 0.14) + '; color:#5f3dc4; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">⚖️ ดำเนินคดีทางกฎหมาย' + (laAt ? ' · อัปเดตล่าสุด ' + esc(laAt) : '') + '</button>'
+      ? '<button data-action="toggleCustomerLegalAction" title="คลิกเพื่อยกเลิกแท็กนี้' + (laAt ? ' (อัปเดตล่าสุด ' + esc(laAt) + ')' : '') + '" style="border:none; cursor:pointer; background:' + hexToRgba('#5f3dc4', 0.14) + '; color:#5f3dc4; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap;">⚖️ ดำเนินคดี · ' + esc(legalFirmLabel(legalCaseOfKey(state.selectedCustomerId).firm) || 'ยังไม่ระบุทนาย') + '</button>'
       : '<button data-action="toggleCustomerLegalAction" title="คลิกเพื่อติดแท็กดำเนินคดีทางกฎหมาย" style="border:1px dashed rgba(95,61,196,0.45); cursor:pointer; background:transparent; color:#5f3dc4; padding:2px 11px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap;">+ ดำเนินคดีทางกฎหมาย</button>';
     // Contact info from "ข้อมูลลูกค้าเพิ่มเติม" upload (เลขที่สัญญา/เบอร์ติดต่อลูกค้า/วันเวลาที่ส่ง
     // เครื่อง/บุคคลอ้างอิง) — edited here at customer-header level only (per user request, moved out
@@ -13554,7 +13695,7 @@
           '<div><div style="font-size:11.5px; color:#6b7280; margin-bottom:5px;">👤 ชื่อบุคคลอ้างอิง</div><input type="text" value="' + esc(contactOrder.referenceName || '') + '" data-order-field="referenceName" data-order="' + esc(contactOrder.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(247,130,59,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#212529; background:#fff; outline:none;" /></div>' +
           '<div><div style="font-size:11.5px; color:#6b7280; margin-bottom:5px;">📱 เบอร์ติดต่อบุคคลอ้างอิง</div><input type="text" value="' + esc(contactOrder.referencePhone || '') + '" data-order-field="referencePhone" data-order="' + esc(contactOrder.orderId) + '" placeholder="ยังไม่มีข้อมูล" style="width:100%; box-sizing:border-box; border:1px solid rgba(247,130,59,0.2); border-radius:8px; padding:6px 8px; font-size:13px; font-weight:600; color:#212529; background:#fff; outline:none;" /></div>' +
         '</div>' +
-        (state.erDetail ? '' : renderSmsLetterTrackingSection() + renderCallTrackingSection(contactOrder)) +
+        (state.erDetail ? '' : (laOn ? renderLegalCaseSection() : '') + renderSmsLetterTrackingSection() + renderCallTrackingSection(contactOrder)) +
       '</div>';
     var html = '<div id="customerDetailModal" style="position:fixed; inset:0; z-index:9999; background:rgba(33,37,41,0.35); display:flex; align-items:flex-start; justify-content:center; padding:30px 20px; overflow-y:auto;">' +
       '<div style="max-width:1100px; width:100%; background:rgba(255,255,255,0.97); backdrop-filter:blur(24px); -webkit-backdrop-filter:blur(24px); border:1px solid rgba(255,255,255,0.85); border-radius:24px; padding:28px 30px; box-shadow:0 24px 60px rgba(33,37,41,0.3); margin-bottom:30px;">' +
@@ -14121,7 +14262,7 @@
     var el = document.activeElement;
     if (!el || !el.getAttribute) return false;
     if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') return false;
-    return !!(el.getAttribute('data-field') || el.getAttribute('data-order-field'));
+    return !!(el.getAttribute('data-field') || el.getAttribute('data-order-field') || el.getAttribute('data-legal-field'));
   }
   function render() {
     // Rebuilding #main-inner's whole innerHTML while someone is mid-typing into a data-field/
@@ -14394,6 +14535,7 @@
         case 'saveNote': saveCustomerNote(); break;
         case 'toggleCustomerTrackingReturn': toggleCustomerTrackingReturn(); break;
         case 'toggleCustomerLegalAction': toggleCustomerLegalAction(); break;
+        case 'setLegalStage': if (!can('tracking_edit')) { denyToast(); break; } setLegalCaseField('stage', Number(t.getAttribute('data-stage'))); break;
         case 'startEditCustomerName': startEditCustomerName(); break;
         case 'cancelEditCustomerName': cancelEditCustomerName(); break;
         case 'saveCustomerName': saveCustomerName(); break;
@@ -14588,6 +14730,13 @@
         var moneyInstFields = ['amountDue', 'amountPaid', 'discount', 'penaltyPaid'];
         var fieldVal = moneyInstFields.indexOf(field) !== -1 ? toNumber(t.value) : t.value;
         updateInstallment(t.getAttribute('data-order'), Number(t.getAttribute('data-no')), field, fieldVal, t.getAttribute('data-track'));
+        return;
+      }
+      var legalField = t.getAttribute('data-legal-field');
+      if (legalField) {
+        if (!can('tracking_edit')) { denyToast(); render(); return; }
+        if (legalField === 'firm' && t.value === '__new__') { addLegalFirmPrompt(); return; }
+        setLegalCaseField(legalField, t.value);
         return;
       }
       var orderField = t.getAttribute('data-order-field');
