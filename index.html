@@ -3615,42 +3615,65 @@
       A: { count: 0, paid: 0, overdue: 0 },
       B: { count: 0, paid: 0, overdue: 0 },
       watch: { count: 0, paid: 0, overdue: 0 },
-      blacklist: { count: 0, paid: 0, overdue: 0 }
+      blacklist: { count: 0, paid: 0, overdue: 0 },
+      cancelled: { count: 0, paid: 0, overdue: 0, contract: 0 },
+      notStarted: { count: 0, paid: 0, overdue: 0, contract: 0 }
     };
-    activeOrders.forEach(function (o) {
+    // ยกเลิกสัญญาคืนเครื่อง (2026-10-26): สัญญาที่ถูกยกเลิก/คืนเครื่องไม่อยู่ใน activeOrders จึงไม่เคยถูกจัดเกรด — แยกเป็นกลุ่มของตัวเอง
+    // (ไม่รวมยกเลิกบิล เพราะไม่ใช่ธุรกรรมจริง ตรงกับที่ totalContract ตัดออก)
+    orders.forEach(function (o) {
+      if (!o.isCancelled || o.isBillCancelled) return;
+      newGradeBuckets.cancelled.count++;
+      newGradeBuckets.cancelled.paid += o.totalPaidFullRaw;
+      newGradeBuckets.cancelled.contract += o.totalContractRaw;
+    });
+    // จัดเกรดทุกสัญญาที่ไม่ใช่ยกเลิกคืนเครื่อง/ยกเลิกบิล — รวมสัญญาที่ติดแท็กรอดำเนินคดี/ดำเนินคดี (ซึ่งไม่อยู่ใน activeOrders) ด้วย
+    orders.filter(function (o) { return !o.isCancelled && !o.isBillCancelled; }).forEach(function (o) {
       var allInsts = o.installments.concat(o.accessoryInstallments || []);
       var reliable = allInsts.filter(function (i) {
         return !(i.paidDate && i.paidDate >= GRADE_HISTORY_EXCLUDE_FROM && i.paidDate <= GRADE_HISTORY_EXCLUDE_TO);
       });
-      var paidHistory = reliable.filter(function (i) { return i.paidDate; })
-        .sort(function (a, b) { return a.paidDate < b.paidDate ? 1 : -1; })
-        .slice(0, 3);
-      // "ล่าช้า" = paid strictly after its own due date.
-      var lateInSample = paidHistory.filter(function (i) { return i.dueDate && i.paidDate > i.dueDate; }).length;
+      // เกณฑ์เกรดใหม่ (2026-10-26, ตามที่ผู้ใช้กำหนด) — ใช้ทุกงวดที่ถึงกำหนดแล้ว (ไม่ใช่แค่ 3 งวดล่าสุด):
+      //  Blacklist = ติดแท็กดำเนินคดี/รอดำเนินคดี หรือ มีงวดถึงกำหนดแล้วแต่ไม่เคยชำระเลยสักงวด (มาก่อนเกรดอื่น)
+      //  A         = ชำระครบทุกงวดที่ถึงกำหนด และไม่เคยชำระล่าช้าแม้แต่งวดเดียว
+      //  B         = ชำระครบทุกงวดที่ถึงกำหนด แต่เคยชำระล่าช้า
+      //  เฝ้าระวัง  = มีงวดค้างชำระ (1 งวดขึ้นไป) ที่ไม่ใช่ Blacklist
+      //  ยังไม่ถึงงวดแรก = ไม่มีงวดที่ถึงกำหนด (แยกกลุ่มด้านล่าง)
+      // "ล่าช้า" = paidDate เลยวันครบกำหนดของงวดนั้น; งวดที่ paidDate อยู่ในช่วง migration ถือว่าวันที่ไม่น่าเชื่อถือ
+      // จึงไม่นับเป็นล่าช้าและไม่นับเป็นหลักฐานว่าจ่ายตรงเวลา
+      var unpaidInsts = allInsts.filter(function (i) { return LATE_STATUSES.indexOf(i.effectiveStatus) !== -1; });
+      var paidInsts = allInsts.filter(function (i) { return i.effectiveStatus === 'ชำระแล้ว'; });
+      var datedPaid = paidInsts.filter(function (i) { return i.dueDate && i.paidDate && reliable.indexOf(i) !== -1; });
+      var latePaidCount = datedPaid.filter(function (i) { return i.paidDate > i.dueDate; }).length;
 
-      // Blacklist: never made a real payment, AND already overdue on the very first installment
-      // (by due date) — takes priority over the sample-based grades below (a never-paid order has
-      // no paidHistory to sample anyway).
-      var neverPaid = o.totalPaidFullRaw <= 0.005;
-      var firstInst = allInsts.slice().sort(function (a, b) { return (a.dueDate || '') < (b.dueDate || '') ? -1 : 1; })[0];
-      var overdueFromFirst = firstInst && LATE_STATUSES.indexOf(firstInst.effectiveStatus) !== -1;
+      // Blacklist = ถึงกำหนดชำระแล้วแต่ไม่เคยจ่ายชำระเลยสักงวด (ไม่ผูกกับแท็กดำเนินคดี — ลูกค้าที่ควรรอดำเนินคดีอาจยังไม่ได้ติดแท็ก)
+      var neverPaidAny = unpaidInsts.length > 0 && paidInsts.length === 0 &&
+        allInsts.every(function (i) { return Number(i.amountPaid || 0) <= 0.005; });
 
+      // ติดแท็กดำเนินคดี/รอดำเนินคดี (2026-10-26, ตามที่ผู้ใช้กำหนด) = Blacklist เสมอ แม้เคยจ่ายบางงวด เพราะปัจจุบันไม่ชำระต่อเนื่อง
+      var legalTagged = !!o.isSold || isCustomerLegalAction(o);
       var g;
-      if (neverPaid && overdueFromFirst) g = 'blacklist';
-      else if (paidHistory.length === 0) g = null; // too new / not enough payment history to grade yet
-      else if (lateInSample === 0) g = 'A';
-      else if (lateInSample === 1) g = 'B';
-      else g = 'watch'; // 2-3 of the (up to 3) sampled installments were late
+      if (legalTagged || neverPaidAny) g = 'blacklist';
+      else if (unpaidInsts.length === 0) {
+        if (paidInsts.length === 0) g = null; // ยังไม่มีงวดที่ถึงกำหนด/ชำระ — ยังไม่จัดเกรด
+        // ชำระล่วงหน้า = จ่ายก่อนครบกำหนด นับเป็น "ไม่ล่าช้า" ตามปกติ (ไม่มีกลุ่มพิเศษ): ไม่เคยล่าช้า = A, เคยล่าช้า = B
+        else g = latePaidCount === 0 ? 'A' : 'B';
+      }
+      else g = 'watch'; // มีงวดค้างชำระ (1 งวดขึ้นไป) ที่ไม่ใช่ Blacklist — ตรวจ Blacklist ก่อนแล้ว จึงไม่ซ้ำกัน
+
+      // ยังไม่ถึงงวดแรกที่ต้องชำระ: ไม่มีงวดไหนถึงกำหนด (ไม่มีงวดค้าง และยังไม่มีงวดที่ชำระแล้ว)
+      if (!g && unpaidInsts.length === 0 && paidInsts.length === 0) g = 'notStarted';
 
       if (!g) return;
+      if (g === 'notStarted') newGradeBuckets.notStarted.contract += o.totalContractRaw;
       newGradeBuckets[g].count++;
       newGradeBuckets[g].paid += o.totalPaidFullRaw;
-      newGradeBuckets[g].overdue += o.lateOutstandingRaw;
+      newGradeBuckets[g].overdue += legalTagged ? o.totalOutstandingRaw : o.lateOutstandingRaw;
     });
-    var NEW_GRADE_ORDER = ['A', 'B', 'watch', 'blacklist'];
-    var NEW_GRADE_COLORS = { A: '#12b886', B: '#f59f00', watch: '#e8590c', blacklist: '#c92a2a' };
-    var NEW_GRADE_CARD_KEY = { A: 'เกรด A', B: 'เกรด B', watch: 'กลุ่มเฝ้าระวัง', blacklist: 'กลุ่ม Blacklist' };
-    var NEW_GRADE_DONUT_LABEL = { A: 'A', B: 'B', watch: 'เฝ้าระวัง', blacklist: 'Blacklist' };
+    var NEW_GRADE_ORDER = ['A', 'B', 'watch', 'blacklist', 'cancelled', 'notStarted'];
+    var NEW_GRADE_COLORS = { A: '#12b886', B: '#f59f00', watch: '#e8590c', blacklist: '#c92a2a', cancelled: '#868e96', notStarted: '#339af0' };
+    var NEW_GRADE_CARD_KEY = { A: 'เกรด A', B: 'เกรด B', watch: 'กลุ่มเฝ้าระวัง', blacklist: 'กลุ่ม Blacklist', cancelled: 'ยกเลิกสัญญาคืนเครื่อง', notStarted: 'ยังไม่ถึงงวดแรกที่ต้องชำระ' };
+    var NEW_GRADE_DONUT_LABEL = { A: 'A', B: 'B', watch: 'เฝ้าระวัง', blacklist: 'Blacklist', cancelled: 'ยกเลิกสัญญาคืนเครื่อง', notStarted: 'ยังไม่ถึงงวดแรก' };
     // % ต่อเกรดต้องคำนวณจากยอดรวมสัญญาทั้งหมด (orders.length, ทุกสถานะ) ไม่ใช่แค่ active — เดิมใช้
     // activeOrders.length ทำให้ทั้งตัวเลข "สัญญาทั้งหมด" ที่แสดงและ % ต่อการ์ดไม่ตรงกับยอดรวมสัญญาจริง
     // (ไม่รวมยกเลิกสัญญา/จำหน่ายชื่อ) ตามที่ผู้ใช้ท้วงติง 2026-07-30 — การจัดกลุ่มเกรด (บรรทัดด้านบน)
@@ -3662,13 +3685,13 @@
     // ยอดค้างชำระของเกรดนั้นแทน (ความเสี่ยงที่ยังค้างอยู่คิดเป็นกี่ % ของพอร์ต) — ตัวหารเดียวกันทั้ง
     // การ์ด แต่ตัวตั้งต่างกัน จึงไม่จำเป็นต้องรวมกันได้ 100% (คนละคำถามกัน: "เก็บเงินได้เท่าไหร่" กับ
     // "ยังค้างอยู่เท่าไหร่" ไม่ใช่สัดส่วนของก้อนเดียวกัน).
-    function gradeAmount(g) { return g === 'A' ? newGradeBuckets[g].paid : newGradeBuckets[g].overdue; }
+    function gradeAmount(g) { return g === 'A' ? newGradeBuckets[g].paid : (g === 'cancelled' || g === 'notStarted') ? newGradeBuckets[g].contract : newGradeBuckets[g].overdue; }
     function gradePct(g) { return totalContract > 0 ? (gradeAmount(g) / totalContract * 100) : 0; }
     var gradeCards = NEW_GRADE_ORDER.map(function (g) {
       return {
         key: NEW_GRADE_CARD_KEY[g], count: newGradeBuckets[g].count, color: NEW_GRADE_COLORS[g],
         pct: gradePct(g).toFixed(1),
-        pctLabel: g === 'A' ? 'ยอดที่ชำระแล้วจากยอดรวมทั้งหมด' : 'ยอดที่ค้างชำระจากยอดรวมทั้งหมด',
+        pctLabel: g === 'A' ? 'ยอดที่ชำระแล้วจากยอดรวมทั้งหมด' : (g === 'cancelled' || g === 'notStarted') ? 'มูลค่าสัญญาจากยอดรวมทั้งหมด' : 'ยอดที่ค้างชำระจากยอดรวมทั้งหมด',
         paidDisp: fmtMoney(newGradeBuckets[g].paid), overdueDisp: fmtMoney(newGradeBuckets[g].overdue),
         barPct: gradePct(g)
       };
@@ -12815,6 +12838,9 @@
       '<div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:18px;">' +
         '<div style="font-family:\'Prompt\',sans-serif; font-weight:600; font-size:15px; color:#212529; display:flex; align-items:center; gap:8px;">👥 จำแนกเกรดลูกค้า</div>' +
         '<div style="background:rgba(247,130,59,0.08); color:#6b4fd8; padding:6px 14px; border-radius:20px; font-size:12.5px; font-weight:600;">สัญญาทั้งหมด: ' + d.gradeTotal + ' สัญญา</div>' +
+      '</div>' +
+      '<div style="font-size:11.5px; color:#8d93a0; line-height:1.7; margin:-8px 0 16px;">' +
+        '<b>A</b> ชำระครบทุกงวดที่ถึงกำหนดและไม่เคยล่าช้า (ชำระก่อนครบกำหนดนับเป็นไม่ล่าช้า) · <b>B</b> ชำระครบทุกงวดแต่เคยล่าช้า · <b>เฝ้าระวัง</b> มีงวดค้างชำระ (ไม่ใช่ Blacklist) · <b>Blacklist</b> ไม่เคยชำระเลย หรือติดแท็กดำเนินคดี/รอดำเนินคดี · <b>ยกเลิกสัญญาคืนเครื่อง</b> · <b>ยังไม่ถึงงวดแรก</b> ยังไม่มีงวดที่ถึงกำหนดชำระ' +
       '</div>' +
       '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; margin-bottom:20px;">' +
         d.gradeCards.map(function (gc) {
