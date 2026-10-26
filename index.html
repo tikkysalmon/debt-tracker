@@ -3612,10 +3612,10 @@
     // late-payment history for every customer.
     var GRADE_HISTORY_EXCLUDE_FROM = '2026-07-08', GRADE_HISTORY_EXCLUDE_TO = '2026-07-14';
     var newGradeBuckets = {
-      A: { count: 0, paid: 0, overdue: 0 },
-      B: { count: 0, paid: 0, overdue: 0 },
-      watch: { count: 0, paid: 0, overdue: 0 },
-      blacklist: { count: 0, paid: 0, overdue: 0 },
+      A: { count: 0, paid: 0, overdue: 0, contract: 0 },
+      B: { count: 0, paid: 0, overdue: 0, contract: 0 },
+      watch: { count: 0, paid: 0, overdue: 0, contract: 0 },
+      blacklist: { count: 0, paid: 0, overdue: 0, contract: 0 },
       cancelled: { count: 0, paid: 0, overdue: 0, contract: 0 },
       notStarted: { count: 0, paid: 0, overdue: 0, contract: 0 }
     };
@@ -3665,7 +3665,7 @@
       if (!g && unpaidInsts.length === 0 && paidInsts.length === 0) g = 'notStarted';
 
       if (!g) return;
-      if (g === 'notStarted') newGradeBuckets.notStarted.contract += o.totalContractRaw;
+      newGradeBuckets[g].contract += o.totalContractRaw;
       newGradeBuckets[g].count++;
       newGradeBuckets[g].paid += o.totalPaidFullRaw;
       newGradeBuckets[g].overdue += legalTagged ? o.totalOutstandingRaw : o.lateOutstandingRaw;
@@ -3686,13 +3686,15 @@
     // การ์ด แต่ตัวตั้งต่างกัน จึงไม่จำเป็นต้องรวมกันได้ 100% (คนละคำถามกัน: "เก็บเงินได้เท่าไหร่" กับ
     // "ยังค้างอยู่เท่าไหร่" ไม่ใช่สัดส่วนของก้อนเดียวกัน).
     // A และ B ไม่มีงวดค้างโดยนิยาม (ยอดค้างชำระ = 0 เสมอ) จึงใช้ยอดชำระแล้วเป็นตัวตั้ง — เดิม B ใช้ยอดค้างชำระทำให้แสดง 0.0%
-    function gradeAmount(g) { return (g === 'A' || g === 'B') ? newGradeBuckets[g].paid : (g === 'cancelled' || g === 'notStarted') ? newGradeBuckets[g].contract : newGradeBuckets[g].overdue; }
-    function gradePct(g) { return totalContract > 0 ? (gradeAmount(g) / totalContract * 100) : 0; }
+    // 2026-10-26 (ตามที่ผู้ใช้ท้วง): % ต่อเกรดต้องรวมกันได้ 100% — จึงใช้ "มูลค่าสัญญา" เป็นตัวตั้งของทุกเกรด หารด้วยมูลค่าสัญญารวมของทุกเกรด
+    // (ตัวตั้งเดิมคนละแบบต่อเกรด: ชำระแล้ว/ค้างชำระ ทำให้รวมไม่ถึง 100%) ยอดค้างชำระ/ชำระแล้วยังแสดงในการ์ดตามเดิม
+    var gradeContractSum = NEW_GRADE_ORDER.reduce(function (s, k) { return s + newGradeBuckets[k].contract; }, 0);
+    function gradePct(g) { return gradeContractSum > 0 ? (newGradeBuckets[g].contract / gradeContractSum * 100) : 0; }
     var gradeCards = NEW_GRADE_ORDER.map(function (g) {
       return {
         key: NEW_GRADE_CARD_KEY[g], count: newGradeBuckets[g].count, color: NEW_GRADE_COLORS[g],
         pct: gradePct(g).toFixed(1),
-        pctLabel: (g === 'A' || g === 'B') ? 'ยอดที่ชำระแล้วจากยอดรวมทั้งหมด' : (g === 'cancelled' || g === 'notStarted') ? 'มูลค่าสัญญาจากยอดรวมทั้งหมด' : 'ยอดที่ค้างชำระจากยอดรวมทั้งหมด',
+        pctLabel: 'มูลค่าสัญญาของกลุ่มจากยอดรวมทั้งหมด',
         paidDisp: fmtMoney(newGradeBuckets[g].paid), overdueDisp: fmtMoney(newGradeBuckets[g].overdue),
         barPct: gradePct(g)
       };
