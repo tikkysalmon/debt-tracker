@@ -9194,7 +9194,7 @@
     var options = history.map(function (h) {
       return '<option value="' + h.no + '">ครั้งที่ ' + h.no + ' · ' + letterCycleLabel(h) + ' (แก้ไขของเดิม — ฿' + esc(h.amountDisp) + ')</option>';
     }).join('') + '<option value="' + nextNo + '" selected>ครั้งที่ ' + nextNo + ' (ครั้งใหม่)</option>';
-    var selectHtml = '<select data-role="letterNoSelect"' + (!eligible || busy ? ' disabled' : '') + ' style="padding:6px 10px; border-radius:10px; border:1px solid rgba(247,130,59,0.25); background:#fff; font-size:12.5px; color:#212529;">' + options + '</select>';
+    var selectHtml = '<select data-role="letterNoSelect"' + (!eligible || busy ? ' disabled' : '') + ' style="box-sizing:border-box; width:100%; max-width:100%; min-width:0; text-overflow:ellipsis; padding:6px 10px; border-radius:10px; border:1px solid rgba(247,130,59,0.25); background:#fff; font-size:12.5px; color:#212529;">' + options + '</select>';
     var btn = '<button data-action="issueLetter" data-order="' + esc(ord.orderId) + '"' + (track ? ' data-track="' + esc(track) + '"' : '') + (!eligible || busy ? ' disabled' : '') +
       ' title="' + (eligible ? 'ออกจดหมายทวงถามหนี้ (PDF) ตามครั้งที่เลือกไว้' : blockedReason) + '"' +
       ' style="border:none; background:' + (eligible && !busy ? 'linear-gradient(135deg,#f7823b,#f0630f)' : '#c9ccd1') + '; color:#fff; padding:6px 16px; border-radius:20px; font-size:12.5px; font-weight:600; cursor:' + (eligible && !busy ? 'pointer' : 'not-allowed') + '; white-space:nowrap; box-shadow:' + (eligible && !busy ? '0 4px 12px rgba(247,130,59,0.3)' : 'none') + ';">' +
