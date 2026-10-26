@@ -12925,9 +12925,6 @@
     // Lifecycle summaries (cancelled + sold)
     html += lifecycleCard('📄 ยกเลิกสัญญา คืนเครื่อง', d.cancelledSummary, '#d6336c', 'rgba(214,51,108,0.10)', state.showCancelledDetail, 'toggleCancelledDetail', 'rgba(214,51,108,0.05)', '8px');
     html += lifecycleCard('📄 ติดตามโดยบริษัทติดตามหนี้', d.soldSummary, '#f08c00', 'rgba(240,140,0,0.10)', state.showSoldDetail, 'toggleSoldDetail', 'rgba(240,140,0,0.05)', '8px');
-    html += lifecycleCard('📄 รอดำเนินคดี', d.pendingSummary, '#d9480f', 'rgba(217,72,15,0.10)', state.showPendingDetail, 'togglePendingDetail', 'rgba(217,72,15,0.05)', '8px');
-    html += lifecycleCard('📄 ยกเลิกบิล (เปิดผิด)', d.billCancelledSummary, '#0c8599', 'rgba(12,133,153,0.10)', state.showBillCancelledDetail, 'toggleBillCancelledDetail', 'rgba(12,133,153,0.05)', '8px');
-    html += lifecycleCard('⚖️ ดำเนินคดีทางกฎหมาย', d.legalActionSummary, '#5f3dc4', 'rgba(95,61,196,0.10)', state.showLegalActionDetail, 'toggleLegalActionDetail', 'rgba(95,61,196,0.05)', '8px');
     html += renderMultiOrderCard(d.multiOrderSummary);
 
     html += '</div>';
