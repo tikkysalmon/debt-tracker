@@ -18,7 +18,7 @@ const LARK_BASE = 'https://open.larksuite.com';
 const LARK_APP_TOKEN = 'H8n6bxctqaYgxCsQkvhlJa8mglc';
 const LARK_TABLE_ID = 'tblYou0JZxVSzBYx';
 const LARK_STATUS_FIELD = '*สถานะการทำสัญญา';
-const LARK_STATUS_VALUE = '5.แจ้งเลข EMIE แล้ว';
+const LARK_STATUS_VALUES = ['5.แจ้งเลข EMIE แล้ว', '6.สัญญาเรียบร้อย']; // สถานะ 5 เป็นต้นไป (2026-10-29)
 const SUPABASE_URL = 'https://mddtfcganbuxzfendgfi.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kZHRmY2dhbmJ1eHpmZW5kZ2ZpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM2ODc3NzQsImV4cCI6MjA5OTI2Mzc3NH0.eseoVPBdM9fPOh8J8HyqVsBWCIjtG4eTGCRC1scVsTg';
 const STALE_MS = 25000;
@@ -334,7 +334,7 @@ async function fetchLarkRows(token) {
   do {
     const url = LARK_BASE + '/open-apis/bitable/v1/apps/' + LARK_APP_TOKEN + '/tables/' + LARK_TABLE_ID + '/records/search?page_size=500' + (pageToken ? '&page_token=' + encodeURIComponent(pageToken) : '');
     const res = await fetch(url, { method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filter: { conjunction: 'and', conditions: [{ field_name: LARK_STATUS_FIELD, operator: 'is', value: [LARK_STATUS_VALUE] }] } }) });
+      body: JSON.stringify({ filter: { conjunction: 'or', conditions: LARK_STATUS_VALUES.map(v => ({ field_name: LARK_STATUS_FIELD, operator: 'is', value: [v] })) } }) });
     const d = await res.json();
     if (d.code !== 0) throw new Error('Lark search failed: ' + d.code + ' ' + d.msg);
     (d.data.items || []).forEach(it => rows.push(it.fields));
