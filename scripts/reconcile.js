@@ -291,11 +291,11 @@ async function fetchPaymentTransactions(soNumber) {
   let all = [];
   for (let page = 1; page <= 40; page++) {
     const r = await crmGet('/crm/sale-order/' + encodeURIComponent(soNumber) + '/payment-transaction?page=' + page);
-    if (r.__httpError || r.__crmError) return { txs: all, complete: false };
+    if (r.__httpError || r.__crmError) return { txs: all, complete: false, why: 'page ' + page + ' ' + (r.__httpError ? 'HTTP ' + r.__httpError : 'CRM error: ' + r.__crmError) };
     all = all.concat(r.paymentTransactions || []);
     if (!r.pagination || !r.pagination.hasNextPage) return { txs: all, complete: true };
   }
-  return { txs: all, complete: false };
+  return { txs: all, complete: false, why: 'เกิน 40 หน้า (' + all.length + ' รายการ)' };
 }
 
 async function mapWithConcurrency(items, limit, worker) {
@@ -365,7 +365,7 @@ async function planOne(order, kind) {
   let p = planTrack(t, crm, details);
   if (p.skip !== 'already_matches' && p.skip !== 'crm_error' && p.skip !== 'crm_cancelled') {
     const r = await fetchPaymentTransactions(t.soId);
-    crm.txs = r.txs; crm.complete = r.complete;
+    crm.txs = r.txs; crm.complete = r.complete; crm.why = r.why;
     for (const x of r.txs) {
       if (x.paymentStatus === 'SUCCESSFUL' && /FEE/.test(x.type || '') && !(x.paymentData && x.paymentData.items) && x.paymentTransactionId) {
         details[x.paymentTransactionId] = await fetchTransactionDetail(x.paymentTransactionId);
@@ -373,7 +373,7 @@ async function planOne(order, kind) {
     }
     p = planTrack(t, crm, details);
   }
-  return Object.assign({ orderId: order.orderId, kind, soId: t.soId }, p);
+  return Object.assign({ orderId: order.orderId, kind, soId: t.soId }, p, crm.why ? { why: crm.why } : {});
 }
 
 // ---------- apply one plan onto the live order object; returns false on conflict ----------
@@ -488,6 +488,7 @@ if (require.main === module) (async () => {
   const stillIncomplete = plans.filter(isIncomplete);
   if (stillIncomplete.length) {
     console.log('::warning::ดึงข้อมูล CRM ไม่ครบหลังลองซ้ำ 3 ครั้ง ' + stillIncomplete.length + ' tracks (จะลองใหม่ในรอบถัดไป)');
+    stillIncomplete.forEach(p => log('  ไม่ครบ ' + p.soId + ' [' + p.kind + '] ' + p.skip + ' — ' + (p.why || 'ไม่ทราบสาเหตุ')));
   }
   const ready = plans.filter(p => !p.skip);
   const review = plans.filter(p => p.skip === 'review' || p.skip === 'crm_tx_incomplete' || p.skip === 'crm_error' || p.skip === 'no_installments');
