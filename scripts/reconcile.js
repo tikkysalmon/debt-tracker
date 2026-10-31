@@ -474,6 +474,21 @@ if (require.main === module) (async () => {
   log('SO ที่จะเทียบกับ CRM: ' + jobs.length);
 
   const plans = await mapWithConcurrency(jobs, CONCURRENCY, j => planOne(j.order, j.kind));
+  // ตรวจความครบถ้วนหลังดึงเสร็จ: แต่ละรอบเทียบทุก SO กับประวัติชำระทั้งหมดใน CRM (ไม่ได้ดึงเป็นช่วงเวลา)
+  // จึงครอบคลุมชั่วโมงก่อนหน้าอยู่แล้ว — ที่ต้องดึงซ้ำคือ SO ที่ดึงไม่สำเร็จ/ไม่ครบรอบนี้ (CRM error, ประวัติไม่ครบ)
+  const isIncomplete = p => p.skip === 'crm_error' || p.skip === 'crm_tx_incomplete';
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const idxs = plans.map((p, i) => (isIncomplete(p) ? i : -1)).filter(i => i >= 0);
+    if (!idxs.length) break;
+    log('ดึงไม่ครบ ' + idxs.length + ' tracks — ดึงซ้ำครั้งที่ ' + attempt + '/3');
+    await new Promise(r => setTimeout(r, 3000 * attempt));
+    const retried = await mapWithConcurrency(idxs, CONCURRENCY, i => planOne(jobs[i].order, jobs[i].kind));
+    idxs.forEach((i, k) => { plans[i] = retried[k]; });
+  }
+  const stillIncomplete = plans.filter(isIncomplete);
+  if (stillIncomplete.length) {
+    console.log('::warning::ดึงข้อมูล CRM ไม่ครบหลังลองซ้ำ 3 ครั้ง ' + stillIncomplete.length + ' tracks (จะลองใหม่ในรอบถัดไป)');
+  }
   const ready = plans.filter(p => !p.skip);
   const review = plans.filter(p => p.skip === 'review' || p.skip === 'crm_tx_incomplete' || p.skip === 'crm_error' || p.skip === 'no_installments');
   const cancelledInCrm = plans.filter(p => p.skip === 'crm_cancelled');
@@ -493,7 +508,11 @@ if (require.main === module) (async () => {
   if (!ready.length) { log('ไม่มีรายการที่ต้องแก้ไขรอบนี้'); return; }
 
   log('ขอ lock เพื่อเขียนแก้ไข ' + ready.length + ' tracks...');
-  const gotLock = await acquireLock(dtToken);
+  let gotLock = false;
+  for (let attempt = 1; attempt <= 3 && !gotLock; attempt++) {
+    if (attempt > 1) log('ขอ lock ครั้งที่ ' + attempt + '/3');
+    gotLock = await acquireLock(dtToken);
+  }
   if (!gotLock) { log('ขอ lock ไม่สำเร็จภายใน 33 วินาที — ข้ามรอบนี้ไปก่อน'); return; }
 
   let released = false;
