@@ -356,15 +356,45 @@ async function accessorySpecFor(soId) {
 }
 
 // ---------- plan every track (main + accessory) ----------
+// เลข SO ในระบบติดตามหนี้บางรายการพิมพ์ผิดรูปแบบ (ตัวพิมพ์เล็ก, ต่อท้าย "(1)", เว้นวรรค) ทำให้ CRM ตอบ "ไม่พบข้อมูลใบสั่งขาย"
+// ปรับเฉพาะเลขที่ใช้ถาม CRM (ไม่แก้ orderId ใน tracker) และทำเฉพาะเมื่อชัดเจนเท่านั้น:
+//  - ในช่องมีเลข SO-ตัวเลข 13 หลักเพียงเลขเดียว (ช่องที่มี 2 เลขขึ้นไปเช่น "A / B" ไม่เดา)
+//  - ไม่ตรงกับ orderId ของ tracker อื่น และไม่มีรายการอื่นที่ปรับแล้วได้เลขเดียวกัน (กันเขียนทับข้อมูลคนละสัญญา)
+const SO_PATTERN = /SO-\d{13}(?!\d)/g;
+let soAliasCount = null; // เลขที่ปรับแล้ว -> จำนวนรายการ tracker ที่ได้เลขนั้น
+let trackerIds = null;
+function normalizedSoOf(raw) {
+  const m = String(raw || '').toUpperCase().match(SO_PATTERN);
+  return m && new Set(m).size === 1 ? m[0] : null;
+}
+function prepareSoAliases(orders) {
+  soAliasCount = {}; trackerIds = new Set();
+  for (const o of orders) {
+    [o.orderId, o.accessoryOrderId].forEach(id => {
+      if (!id) return;
+      trackerIds.add(id);
+      const n = normalizedSoOf(id);
+      if (n) soAliasCount[n] = (soAliasCount[n] || 0) + 1;
+    });
+  }
+}
+function crmSoIdFor(raw) {
+  if (!soAliasCount) return raw;
+  const n = normalizedSoOf(raw);
+  if (!n || n === raw) return raw;
+  if (soAliasCount[n] !== 1 || trackerIds.has(n)) return raw;
+  return n;
+}
 async function planOne(order, kind) {
   const t = trackOf(order, kind);
-  const so = await crmGet('/crm/sale-order/' + encodeURIComponent(t.soId));
+  const crmSoId = crmSoIdFor(t.soId);
+  const so = await crmGet('/crm/sale-order/' + encodeURIComponent(crmSoId));
   const crm = { so, txs: [], complete: true };
   const details = {};
   // ดูก่อนว่าต้องดึงประวัติชำระไหม (planTrack ตัดสินเองจาก fast-path) — ถ้าไม่ตรงค่อยดึง
   let p = planTrack(t, crm, details);
   if (p.skip !== 'already_matches' && p.skip !== 'crm_error' && p.skip !== 'crm_cancelled') {
-    const r = await fetchPaymentTransactions(t.soId);
+    const r = await fetchPaymentTransactions(crmSoId);
     crm.txs = r.txs; crm.complete = r.complete; crm.why = r.why;
     for (const x of r.txs) {
       if (x.paymentStatus === 'SUCCESSFUL' && /FEE/.test(x.type || '') && !(x.paymentData && x.paymentData.items) && x.paymentTransactionId) {
@@ -373,7 +403,7 @@ async function planOne(order, kind) {
     }
     p = planTrack(t, crm, details);
   }
-  return Object.assign({ orderId: order.orderId, kind, soId: t.soId }, p, crm.why ? { why: crm.why } : {});
+  return Object.assign({ orderId: order.orderId, kind, soId: t.soId }, p, crm.why ? { why: crm.why } : {}, crmSoId !== t.soId ? { crmSoId } : {});
 }
 
 // ---------- apply one plan onto the live order object; returns false on conflict ----------
@@ -454,6 +484,7 @@ if (require.main === module) (async () => {
   const state0 = process.env.LOCAL_STATE ? JSON.parse(require('fs').readFileSync(process.env.LOCAL_STATE, 'utf8')) : await downloadState(dtToken);
   log('โหลด state.json: ' + state0.orders.length + ' orders' + (DRY_RUN ? ' [DRY RUN]' : ''));
 
+  prepareSoAliases(state0.orders);
   const jobs = [];
   const bySkip = {};
   const skip = k => { bySkip[k] = (bySkip[k] || 0) + 1; };
@@ -471,7 +502,7 @@ if (require.main === module) (async () => {
     jobs.push({ order: o, kind: 'main' });
     if (o.accessoryOrderId && (o.accessoryInstallments || []).length) jobs.push({ order: o, kind: 'acc' });
   }
-  log('SO ที่จะเทียบกับ CRM: ' + jobs.length);
+  log('SO ที่จะเทียบกับ CRM: ' + jobs.length + ' (ปรับเลขผิดรูปแบบก่อนถาม CRM: ' + jobs.filter(j => crmSoIdFor(trackOf(j.order, j.kind).soId) !== trackOf(j.order, j.kind).soId).length + ')');
 
   const plans = await mapWithConcurrency(jobs, CONCURRENCY, j => planOne(j.order, j.kind));
   // ตรวจความครบถ้วนหลังดึงเสร็จ: แต่ละรอบเทียบทุก SO กับประวัติชำระทั้งหมดใน CRM (ไม่ได้ดึงเป็นช่วงเวลา)
