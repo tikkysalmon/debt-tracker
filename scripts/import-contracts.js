@@ -425,6 +425,7 @@ async function main() {
   const sameCustomerId = (lark, so) => !!so && so.customerId === lark.customerId;
   const results = await mapWithConcurrency(cands, CONCURRENCY, async (lark) => {
     const label = lark.soList.join(' / ') || lark.soNumber || lark.customerId;
+    if (ONLY.length) for (const id of lark.soList) { const so0 = await getSo(id); if (!so0) { log('RAWSO ' + id + ' NOT FOUND'); continue; } const tx0 = await fetchAllTx(so0.saleOrderId); log('RAWSO ' + id + ' ' + JSON.stringify({ cust: so0.customerId, status: so0.status, type: so0.installmentType, price: so0.productPrice, discounts: so0.discounts, instCount: so0.installmentCount, acc: so0.accumulatedAmount, remaining: so0.remainingAmount, firstDue: lark.firstDueDate, payDay: lark.payDay, larkTerm: lark.term, keys: Object.keys(so0).filter(k => /inst|term|period|month/i.test(k)).map(k => k + '=' + JSON.stringify(so0[k])) })); log('RAWTX ' + id + ' ' + JSON.stringify((tx0 || []).map(x => [x.no, x.amount, x.paymentStatus, x.paymentDate, x.type, x.description]))); }
     if (ONLY.length) log('LARKROW ' + label + ' ' + JSON.stringify({ name: lark.customerName, cust: lark.customerId, date: lark.contractDate, type: lark.purchaseType, so: lark.soList }));
     const isBundle = /\+\s*อุปกรณ์เสริม/.test(lark.purchaseType || '');
     const isAccOnly = /อุปกรณ์เสริม/.test(lark.purchaseType || '') && !isBundle; // "ดาวน์อุปกรณ์เสริม" = ซื้ออุปกรณ์เสริมเดี่ยว (ไม่มีเครื่องหลักในแถวเดียวกัน)
