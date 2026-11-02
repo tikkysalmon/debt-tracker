@@ -472,6 +472,7 @@ async function main() {
       // SO ใน Lark ไม่พบ/ถูกยกเลิก/เป็นของลูกค้าคนอื่น (หรือพิมพ์รหัสลูกค้าแทน SO) — หาใบที่เปิดใหม่จากรหัสลูกค้าใน CRM
       const orig = candidates.find(s => sameCustomerId(lark, s)) || null;
       const newId = await findReplacementSo(lark, orig);
+      if (ONLY.length && !newId) { const cc = await crmGet('/crm/customer/' + encodeURIComponent(lark.customerId)); log('DEBUG ' + label + ' lark=' + JSON.stringify({ so: lark.soList, date: lark.contractDate, cust: lark.customerId, name: lark.customerName }) + ' crmSOs=' + JSON.stringify(((cc && cc.saleOrders) || []).map(x => [x.saleOrderId, x.status, x.createdAt, x.productPrice])) + ' crmErr=' + JSON.stringify(cc && (cc.__httpError || cc.__crmError))); }
       if (!newId) return { so: label, skip: candidates.length ? 'no_replacement_so_found' : 'crm_error' };
       so = await getSo(newId); if (!so) return { so: label, skip: 'crm_error' };
       if (orig) replacedFrom = orig.saleOrderId;
