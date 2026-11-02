@@ -425,6 +425,7 @@ async function main() {
   const sameCustomerId = (lark, so) => !!so && so.customerId === lark.customerId;
   const results = await mapWithConcurrency(cands, CONCURRENCY, async (lark) => {
     const label = lark.soList.join(' / ') || lark.soNumber || lark.customerId;
+    if (ONLY.length) log('LARKROW ' + label + ' ' + JSON.stringify({ name: lark.customerName, cust: lark.customerId, date: lark.contractDate, type: lark.purchaseType, so: lark.soList }));
     const isBundle = /\+\s*อุปกรณ์เสริม/.test(lark.purchaseType || '');
     const isAccOnly = /อุปกรณ์เสริม/.test(lark.purchaseType || '') && !isBundle; // "ดาวน์อุปกรณ์เสริม" = ซื้ออุปกรณ์เสริมเดี่ยว (ไม่มีเครื่องหลักในแถวเดียวกัน)
 
