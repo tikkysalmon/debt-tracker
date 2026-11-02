@@ -320,16 +320,18 @@ async function findReplacementSo(lark, orig) {
   return pick.length === 1 ? pick[0].saleOrderId : null;
 }
 // หาใบสั่งขายอุปกรณ์เสริมของลูกค้า เมื่อ Lark ระบุ SO มาแค่เลขเดียว: ใบอื่นของลูกค้าคนเดียวกันที่สร้างภายใน 1 วันกับเครื่องหลัก
+let EXISTING_IDS = new Set();
 async function findAccessorySo(lark, mainSo) {
   const c = await crmGet('/crm/customer/' + encodeURIComponent(mainSo.customerId));
   if (!c || c.__httpError || c.__crmError) return null;
   // ผ่อนพร้อมกันตามสัญญาเดียว — ไม่จำกัดว่าสร้างเอกสารห่างกันกี่วัน: ใช้ช่วงวันที่ทำสัญญา (−3 ถึง +15 วัน) และไม่นับใบที่ยกเลิก
   const base = new Date(lark.contractDate + 'T00:00:00+07:00').getTime();
-  const cands = (c.saleOrders || []).filter(s => {
-    if (s.saleOrderId === mainSo.saleOrderId || s.status === 'CANCELLED') return false;
-    const t = new Date(s.createdAt).getTime();
-    return t >= base - 3 * 86400000 && t <= base + 15 * 86400000;
-  });
+  const others = (c.saleOrders || []).filter(s => s.saleOrderId !== mainSo.saleOrderId && s.status !== 'CANCELLED' && !EXISTING_IDS.has(s.saleOrderId)); // ตัดใบที่อยู่ในระบบแล้ว (เป็นสัญญาแยก)
+  const inWindow = others.filter(s => { const t = new Date(s.createdAt).getTime(); return t >= base - 3 * 86400000 && t <= base + 15 * 86400000; });
+  // ใบที่สร้างพร้อมเครื่องหลัก (ภายใน 1 วัน) มาก่อน — เปิดผ่อนไว้ก่อนแต่เพิ่งทำสัญญา/เครดิตผ่านทีหลัง วันที่สร้างจึงไม่ตรงวันทำสัญญา
+  const mainT = new Date(mainSo.createdAt).getTime();
+  const paired = others.filter(s => Math.abs(new Date(s.createdAt).getTime() - mainT) <= 86400000);
+  const cands = paired.length ? paired : inWindow;
   const byPrice = lark.netAccPrice ? cands.filter(s => Math.abs(Number(s.productPrice) - lark.netAccPrice) < 1) : [];
   const pick = byPrice.length === 1 ? byPrice : (cands.length === 1 ? cands : []);
   return pick.length === 1 ? pick[0].saleOrderId : null;
@@ -419,6 +421,7 @@ async function main() {
   const dtToken = await debtTrackerLogin();
   const state0 = await downloadState(dtToken);
   const existing = new Set(state0.orders.map(o => o.orderId));
+  EXISTING_IDS = existing;
   state0.orders.forEach(o => { (o.previousOrderIds || []).forEach(p => existing.add(p)); if (o.accessoryOrderId) existing.add(o.accessoryOrderId); });
 
   log('ระบบติดตามหนี้: ออเดอร์ทั้งหมด ' + state0.orders.length + ' · ที่ AI นำเข้า (Lark+CRM) ' + state0.orders.filter(o => o.importedFrom === 'lark-contract-import').length + ' · ในนั้นมีตารางอุปกรณ์เสริม ' + state0.orders.filter(o => o.importedFrom === 'lark-contract-import' && (o.accessoryInstallments || []).length).length);
