@@ -411,6 +411,7 @@ async function main() {
   const DRY_RUN = String(process.env.DRY_RUN || 'true').toLowerCase() !== 'false';
   const ONLY = (process.env.ONLY_SO || '').split(',').map(s => s.trim()).filter(Boolean);
   const LIMIT = Number(process.env.LIMIT) || 0;
+  const ONLY_CUST = process.env.ONLY_CUST || '';
   const PURCHASE_TYPE = (process.env.PURCHASE_TYPE || '').trim();
   log('โหมด: ' + (DRY_RUN ? 'DRY-RUN (ไม่เขียนข้อมูล)' : 'เขียนจริง') + ' · ช่วงวันที่ ' + DATE_FROM + ' ถึง ' + DATE_TO + (ONLY.length ? ' · เฉพาะ ' + ONLY.join(',') : '') + (LIMIT ? ' · limit ' + LIMIT : '') + (PURCHASE_TYPE ? ' · ประเภทการซื้อ: ' + PURCHASE_TYPE : ' · ทุกประเภทการซื้อ'));
 
@@ -428,6 +429,7 @@ async function main() {
   log('แยกตามประเภทการซื้อ (ในช่วงวันที่): ' + Object.keys(typeCount).map(k => k + '=' + typeCount[k]).join(' · '));
   if (PURCHASE_TYPE) cands = cands.filter(r => r.purchaseType === PURCHASE_TYPE);
   if (ONLY.length) cands = cands.filter(r => r.soList.some(s => ONLY.includes(s)) || ONLY.includes(r.soNumber));
+  if (ONLY.length) { state0.orders.filter(o => ONLY.includes(o.orderId) || ONLY.includes(o.accessoryOrderId)).forEach(o => log('INSYSTEM ' + o.orderId + ' acc=' + o.accessoryOrderId + ' main=' + o.productPrice + ' ' + o.productList + ' | acc=' + o.accessoryProductPrice + ' ' + o.accessoryProductList + ' | disc main=' + o.discount + ' instDisc=' + JSON.stringify((o.installments || []).filter(i => i.discount).map(i => [i.no, i.discount])) + ' accInstDisc=' + JSON.stringify((o.accessoryInstallments || []).filter(i => i.discount).map(i => [i.no, i.discount])))); const cc = await crmGet('/crm/customer/' + encodeURIComponent(ONLY_CUST || 'CUS-202600049798')); log('CUSTSOS ' + JSON.stringify(((cc && cc.saleOrders) || []).map(x => [x.saleOrderId, x.status, x.createdAt, x.productPrice, x.productName]))); }
   const isExisting = r => r.soList.some(s => existing.has(s)) || existing.has(r.soNumber);
   const already = cands.filter(isExisting).length;
   cands = cands.filter(r => !isExisting(r));
