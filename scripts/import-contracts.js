@@ -144,7 +144,10 @@ function installmentPortion(x, preCredit) {
 // สร้างตารางผ่อน 1 ใบสั่งขาย (ใช้ทั้งเครื่องหลักและอุปกรณ์เสริม) — คืน { skip } หรือ { price, discount, downPayment, installments, crmRemaining, trackerRemaining, match }
 function buildTrack(firstDueDate, payDay, so, txs) {
   const price = Number(so.productPrice) || 0;
-  const discount = round2((so.discounts || []).reduce((s, d) => s + (Number(d.amount) || 0), 0));
+  // ส่วนลดปิดยอด (ชื่อมีคำว่า "ปิดยอด") ไม่หักก่อนแบ่งงวด — ใส่ในช่องส่วนลดของงวดหลังเติมยอดชำระแล้ว (ปิดยอดจ่ายก้อนเดียว)
+  const isClosing = d => /ปิดยอด/.test(String(d.name || ''));
+  const discount = round2((so.discounts || []).filter(d => !isClosing(d)).reduce((s, d) => s + (Number(d.amount) || 0), 0));
+  const closingDiscount = round2((so.discounts || []).filter(isClosing).reduce((s, d) => s + (Number(d.amount) || 0), 0));
   // ส่วนลดจาก CRM (เช่น "โปร100ลด1,000") ใส่ในช่อง ส่วนลด ของออเดอร์ และหักออกก่อนแบ่งงวด
   // (ราคา − ส่วนลด − ยอดวางดาวน์) ÷ จำนวนงวด — เหมือนที่ updateOrderField ในหน้าเว็บทำ
   const ok = (txs || []).filter(x => x.paymentStatus === 'SUCCESSFUL' && Number(x.amount) !== 0);
@@ -188,10 +191,20 @@ function buildTrack(firstDueDate, payDay, so, txs) {
     }
     if (amt > 0.005) { const last = installments[installments.length - 1]; last.amountPaid = round2(last.amountPaid + amt); last.paidDate = date; }
   });
-  const crmRemaining = round2(price - discount - (Number(so.accumulatedAmount) || 0));
+  // ส่วนลดปิดยอด: กระจายลงงวดที่ยังเหลือยอดค้างตามลำดับ (ไม่เกินยอดค้างของงวด)
+  let closingLeft = closingDiscount;
+  for (let i = 0; i < installments.length && closingLeft > 0.005; i++) {
+    const it = installments[i];
+    const room = round2(it.amountDue - it.amountPaid);
+    if (room <= 0.005) continue;
+    const take = Math.min(closingLeft, room);
+    it.discount = round2(take); closingLeft = round2(closingLeft - take);
+  }
+  if (closingLeft > 0.005) return { skip: 'closing_discount_exceeds_balance' };
+  const crmRemaining = round2(price - discount - closingDiscount - (Number(so.accumulatedAmount) || 0));
   const paidTotal = installments.reduce((s, i) => s + i.amountPaid, 0);
-  const trackerRemaining = round2(price - discount - (downPayment + paidTotal));
-  return { price, discount, downPayment, installments, crmRemaining, trackerRemaining, match: Math.abs(crmRemaining - trackerRemaining) <= 0.5 };
+  const trackerRemaining = round2(price - discount - closingDiscount - (downPayment + paidTotal));
+  return { price, discount, closingDiscount, downPayment, installments, crmRemaining, trackerRemaining, match: Math.abs(crmRemaining - trackerRemaining) <= 0.5 };
 }
 
 function orderFromTrack(lark, so, t) {
@@ -233,7 +246,7 @@ function buildBundleOrder(lark, mainSo, mainTxs, accSo, accTxs) {
   if (m.skip) return m;
   const a = buildTrack(lark.accFirstDueDate || lark.firstDueDate, lark.payDay, accSo, accTxs);
   if (a.skip) return { skip: 'accessory_' + a.skip };
-  if (a.discount > 0) return { skip: 'accessory_has_discount_needs_review' };
+  if (a.discount > 0) return { skip: 'accessory_has_discount_needs_review' }; // ส่วนลดปิดยอดของอุปกรณ์เสริมไม่เข้าเงื่อนไขนี้ (อยู่ใน closingDiscount)
   const order = orderFromTrack(lark, mainSo, m);
   order.accessoryOrderId = accSo.saleOrderId;
   order.accessoryProductList = accSo.productName || '';
