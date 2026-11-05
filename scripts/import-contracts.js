@@ -15,10 +15,13 @@
 const zlib = require('zlib');
 const CRM_BASE = 'https://api.salmonphone.com';
 const LARK_BASE = 'https://open.larksuite.com';
-const LARK_APP_TOKEN = 'H8n6bxctqaYgxCsQkvhlJa8mglc';
-const LARK_TABLE_ID = 'tblYou0JZxVSzBYx';
-const LARK_STATUS_FIELD = '*สถานะการทำสัญญา';
-const LARK_STATUS_VALUES = ['5.แจ้งเลข EMIE แล้ว', '6.สัญญาเรียบร้อย']; // สถานะ 5 เป็นต้นไป (2026-10-29)
+// EASY_CASH=1 → นำเข้าลูกหนี้ Easy phone Easy cash จากอีกตาราง (ฟอร์ม 31_EasyPhoneEasyCash) แทนตารางสัญญาปกติ
+const EASY_CASH = String(process.env.EASY_CASH || '') === '1';
+const EASY_PURCHASE_TYPE = 'Easy phone Easy cash';
+const LARK_APP_TOKEN = EASY_CASH ? 'Q8sGbMZXmakGq0sCITDluc6Lg8f' : 'H8n6bxctqaYgxCsQkvhlJa8mglc';
+const LARK_TABLE_ID = EASY_CASH ? 'tblU75MqBhE3f2V1' : 'tblYou0JZxVSzBYx';
+const LARK_STATUS_FIELD = EASY_CASH ? 'สถานะการทำสัญญา' : '*สถานะการทำสัญญา';
+const LARK_STATUS_VALUES = EASY_CASH ? ['4. โอนเงินเรียบร้อยแล้ว'] : ['5.แจ้งเลข EMIE แล้ว', '6.สัญญาเรียบร้อย']; // ปกติ: สถานะ 5 เป็นต้นไป (2026-10-29)
 const SUPABASE_URL = 'https://mddtfcganbuxzfendgfi.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kZHRmY2dhbmJ1eHpmZW5kZ2ZpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM2ODc3NzQsImV4cCI6MjA5OTI2Mzc3NH0.eseoVPBdM9fPOh8J8HyqVsBWCIjtG4eTGCRC1scVsTg';
 const STALE_MS = 25000;
@@ -92,8 +95,46 @@ function normName(s) {
 }
 
 // ---------- แปลงแถว Lark -> ข้อมูลลูกค้า ----------
+// วันที่ไทยแบบที่ฟอร์ม Easy Cash เขียนลง Lark เช่น "5 พฤศจิกายน 2569" (พ.ศ.) → '2026-11-05'
+const TH_MONTHS = ['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน', 'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'];
+function parseThaiDate(t) {
+  const s = String(t || '').replace(INVISIBLE, '').trim();
+  const yr = y => (Number(y) > 2400 ? Number(y) - 543 : Number(y));
+  let m = /^(\d{1,2})\s+(\S+)\s+(\d{4})$/.exec(s);
+  if (m) {
+    const mon = m[2].replace(/\./g, '');
+    const mi = TH_MONTHS.findIndex(n => n === mon || n.slice(0, 3) === mon.slice(0, 3));
+    if (mi >= 0) return yr(m[3]) + '-' + String(mi + 1).padStart(2, '0') + '-' + String(m[1]).padStart(2, '0');
+  }
+  m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s); if (m) return m[1] + '-' + m[2] + '-' + m[3];
+  m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(s);
+  if (m) return yr(m[3]) + '-' + String(m[2]).padStart(2, '0') + '-' + String(m[1]).padStart(2, '0');
+  return '';
+}
+// แถวจากตาราง Easy phone Easy cash — ราคาสุทธิ = ยอดผ่อนรวม; ตัวเลขจริง (ราคา/งวด/ชำระแล้ว) มาจาก CRM เหมือนปกติ ใช้ Lark เทียบเตือนเท่านั้น
+function parseEasyCashRow(f) {
+  const soRaw = larkText(f['เลข SO']).trim();
+  const dueDates = [];
+  for (let k = 1; k <= 6; k++) { const d = parseThaiDate(larkText(f[k === 1 ? 'วันที่ผ่อนงวดที่1' : 'วันที่ผ่อนงวดที่ ' + k])); if (d) dueDates.push(d); }
+  const dayM = /(\d{1,2})/.exec(larkText(f['วันครบกำหนดชำระ']));
+  const ms = larkDateMs(f['วันที่']);
+  return {
+    soNumber: soRaw.toUpperCase(), soList: parseSoList(soRaw),
+    accFirstDueDate: '', netMainPrice: 0, netAccPrice: 0, netPrice: larkNumber(f['ราคาสุทธิ']),
+    customerId: stripParen(larkText(f['รหัสลูกค้า'])),
+    customerName: stripParen(larkText(f['ชื่อ-นามสกุล ลูกค้า'])),
+    phone: larkText(f['เบอร์โทรลูกค้า']).trim(), email: larkText(f['อีเมลล์ลูกค้า']).trim(),
+    age: Math.round(larkNumber(f['อายุลูกค้า'])) || 0,
+    purchaseType: EASY_PURCHASE_TYPE,
+    contractNo: larkText(f['เลขที่สัญญา']).trim(),
+    contractDate: ms ? thaiDateOf(ms) : '',
+    firstDueDate: dueDates[0] || '', payDay: dayM ? Number(dayM[1]) : (dueDates[0] ? Number(dueDates[0].slice(8)) : null),
+    larkDueDates: dueDates, firstDueList: [], payDayList: [], referenceName: '', referencePhone: '',
+  };
+}
 function parseLarkRow(fields) {
   const f = fields || {};
+  if (EASY_CASH) return parseEasyCashRow(f);
   const email = (f['อีเมล์'] && (Array.isArray(f['อีเมล์']) ? (f['อีเมล์'][0] || {}).text : larkText(f['อีเมล์']))) || '';
   const firstMs = larkDateMs(f['วันที่เริ่มส่งยอด']) || larkDateMs(f['งวดที่ 1']);
   const dates = [];
@@ -425,6 +466,7 @@ async function main() {
   state0.orders.forEach(o => { (o.previousOrderIds || []).forEach(p => existing.add(p)); if (o.accessoryOrderId) existing.add(o.accessoryOrderId); });
 
   log('ระบบติดตามหนี้: ออเดอร์ทั้งหมด ' + state0.orders.length + ' · ที่ AI นำเข้า (Lark+CRM) ' + state0.orders.filter(o => o.importedFrom === 'lark-contract-import').length + ' · ในนั้นมีตารางอุปกรณ์เสริม ' + state0.orders.filter(o => o.importedFrom === 'lark-contract-import' && (o.accessoryInstallments || []).length).length);
+  log('แหล่งข้อมูล Lark: ' + (EASY_CASH ? 'Easy phone Easy cash · สถานะ ' + LARK_STATUS_VALUES.join(', ') : 'ตารางสัญญาปกติ'));
   const rows = (await fetchLarkRows(await larkToken())).map(parseLarkRow);
   let cands = rows.filter(r => r.soNumber && r.contractDate >= DATE_FROM && r.contractDate <= DATE_TO);
   log('Lark: สถานะ 5. ทั้งหมด ' + rows.length + ' · อยู่ในช่วงวันที่ ' + cands.length);
@@ -501,6 +543,8 @@ async function main() {
     if (isAccOnly && !customerMatches(lark, so)) return { so: label, skip: 'customer_name_or_id_mismatch_with_crm' };
     const txs = await fetchAllTx(so.saleOrderId);
     const r = buildOrder(lark, so, txs);
+    // Easy Cash: ยอดผ่อนรวมใน CRM ควรเท่ากับ ราคาสุทธิ ใน Lark — ไม่ตรงแค่เตือน (ไม่บล็อก) ให้บัญชีตรวจ
+    if (EASY_CASH && r.order && lark.netPrice && Math.abs(r.order.productPrice - lark.netPrice) > 1) log('WARN ราคาไม่ตรง Lark ' + label + ': CRM=' + r.order.productPrice + ' Lark ราคาสุทธิ=' + lark.netPrice);
     if (r.order && replacedFrom) r.order.previousOrderIds = [replacedFrom];
     return Object.assign({ so: label + (replacedFrom ? ' → ' + so.saleOrderId : (label !== so.saleOrderId ? ' → ' + so.saleOrderId : '')) }, r);
   });
@@ -528,5 +572,5 @@ async function main() {
   } finally { await releaseLock(dtToken); }
 }
 
-module.exports = { parseLarkRow, buildOrder, buildBundleOrder, recalcDueDate, splitEvenlyRounded };
+module.exports = { parseThaiDate, parseEasyCashRow, parseLarkRow, buildOrder, buildBundleOrder, recalcDueDate, splitEvenlyRounded };
 if (require.main === module) main().catch(e => { log('FATAL: ' + e.message); process.exit(1); });
