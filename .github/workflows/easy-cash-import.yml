@@ -1,0 +1,37 @@
+name: Import Easy Phone Easy Cash (auto)
+
+# ดึงลูกหนี้ Easy phone Easy cash จาก Lark อัตโนมัติ เมื่อ "สถานะการทำสัญญา" = "4. โอนเงินเรียบร้อยแล้ว"
+# (ไม่ต้องสั่งเอง) — ใช้สคริปต์เดิม EASY_CASH=1 ที่ "เพิ่มอย่างเดียว" ข้าม SO ที่มีในระบบแล้ว และไม่เขียนถ้ายอดไม่ตรง CRM
+# ตารางสัญญาลูกหนี้ปกติ (สถานะ 5) ยังต้องสั่งเองผ่าน workflow "Import New Contracts" ตามเดิม
+on:
+  schedule:
+    - cron: '15 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'dry-run = ตรวจอย่างเดียวไม่เขียนข้อมูล (true/false)'
+        default: 'false'
+
+concurrency:
+  group: easy-cash-import
+  cancel-in-progress: false
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Import Easy Phone Easy Cash
+        env:
+          CRM_USERNAME: ${{ secrets.CRM_USERNAME }}
+          CRM_PASSWORD: ${{ secrets.CRM_PASSWORD }}
+          LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
+          LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
+          EASY_CASH: '1'
+          DATE_FROM: '2026-11-01'
+          DATE_TO: '2099-12-31'
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: node scripts/import-contracts.js
