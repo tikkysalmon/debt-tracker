@@ -129,7 +129,9 @@ function parseEasyCashRow(f) {
     contractNo: larkText(f['เลขที่สัญญา']).trim(),
     contractDate: ms ? thaiDateOf(ms) : '',
     firstDueDate: dueDates[0] || '', payDay: dayM ? Number(dayM[1]) : (dueDates[0] ? Number(dueDates[0].slice(8)) : null),
-    larkDueDates: dueDates, firstDueList: [], payDayList: [], referenceName: '', referencePhone: '',
+    larkDueDates: dueDates, firstDueList: [], payDayList: [],
+    referenceName: larkText(f['ชื่อบุคคลที่ติดต่อได้คนที่หนึ่ง']).trim(),
+    referencePhone: larkText(f['เบอร์ติดต่อบุคคลอ้างอิงที่1']).trim(),
   };
 }
 function parseLarkRow(fields) {
@@ -477,6 +479,14 @@ async function main() {
   if (ONLY.length) { state0.orders.filter(o => ONLY.includes(o.orderId) || ONLY.includes(o.accessoryOrderId)).forEach(o => log('INSYSTEM ' + o.orderId + ' acc=' + o.accessoryOrderId + ' main=' + o.productPrice + ' ' + o.productList + ' | acc=' + o.accessoryProductPrice + ' ' + o.accessoryProductList + ' | disc main=' + o.discount + ' instDisc=' + JSON.stringify((o.installments || []).filter(i => i.discount).map(i => [i.no, i.discount])) + ' accInstDisc=' + JSON.stringify((o.accessoryInstallments || []).filter(i => i.discount).map(i => [i.no, i.discount])))); const cc = await crmGet('/crm/customer/' + encodeURIComponent(ONLY_CUST || 'CUS-202600049798')); log('CUSTSOS ' + JSON.stringify(((cc && cc.saleOrders) || []).map(x => [x.saleOrderId, x.status, x.createdAt, x.productPrice, x.productName]))); }
   const isExisting = r => r.soList.some(s => existing.has(s)) || existing.has(r.soNumber);
   const already = cands.filter(isExisting).length;
+  // เติมบุคคลอ้างอิงย้อนหลังให้ออเดอร์ที่นำเข้าไปแล้ว — เติมเฉพาะช่องที่ยังว่าง ไม่ทับค่าที่คนแก้ไว้
+  const refFills = [];
+  cands.filter(isExisting).forEach(r => {
+    if (!r.referenceName && !r.referencePhone) return;
+    const o = state0.orders.find(x => r.soList.includes(x.orderId) || r.soList.includes(x.accessoryOrderId) || x.orderId === r.soNumber);
+    if (o && ((!o.referenceName && r.referenceName) || (!o.referencePhone && r.referencePhone))) refFills.push({ orderId: o.orderId, name: r.referenceName, phone: r.referencePhone });
+  });
+  log('บุคคลอ้างอิงที่จะเติมให้ออเดอร์เดิม ' + refFills.length);
   cands = cands.filter(r => !isExisting(r));
   if (LIMIT) cands = cands.slice(0, LIMIT);
   log('มีในระบบติดตามหนี้อยู่แล้ว ' + already + ' · จะประมวลผล ' + cands.length);
@@ -558,7 +568,7 @@ async function main() {
   ready.slice(0, 5).forEach(r => log('  ตัวอย่าง ' + r.so + ' ' + r.order.customerName + ' | ' + r.order.productList + ' | ราคา ' + r.order.productPrice + ' ดาวน์ ' + r.order.downPayment + ' ' + r.order.installments.length + ' งวด x ' + r.order.installments[0].amountDue + ' | คงเหลือ CRM ' + r.crmRemaining + ' = tracker ' + r.trackerRemaining));
 
   if (DRY_RUN) { log('DRY-RUN: ไม่เขียนข้อมูล'); return; }
-  if (!ready.length) { log('ไม่มีรายการที่ต้องเขียน'); return; }
+  if (!ready.length && !refFills.length) { log('ไม่มีรายการที่ต้องเขียน'); return; }
 
   if (!(await acquireLock(dtToken))) { log('ขอ lock ไม่สำเร็จ — ข้ามรอบนี้'); return; }
   try {
@@ -566,8 +576,14 @@ async function main() {
     const have = new Set(state.orders.map(o => o.orderId).concat(EXCLUDED_SOS));
     let added = 0;
     ready.forEach(r => { if (!have.has(r.order.orderId)) { state.orders.push(r.order); added++; } });
+    let filled = 0;
+    refFills.forEach(x => {
+      const o = state.orders.find(y => y.orderId === x.orderId); if (!o) return;
+      if (!o.referenceName && x.name) { o.referenceName = x.name; filled++; }
+      if (!o.referencePhone && x.phone) { o.referencePhone = x.phone; filled++; }
+    });
     await uploadState(dtToken, state);
-    log('เขียนสำเร็จ: เพิ่ม ' + added + ' orders');
+    log('เขียนสำเร็จ: เพิ่ม ' + added + ' orders · เติมบุคคลอ้างอิง ' + filled + ' ช่อง');
     console.log('::notice::imported=' + added + ' mismatch=' + mismatch.length);
   } finally { await releaseLock(dtToken); }
 }
