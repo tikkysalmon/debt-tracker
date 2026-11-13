@@ -132,6 +132,8 @@ function parseEasyCashRow(f) {
     larkDueDates: dueDates, firstDueList: [], payDayList: [],
     referenceName: larkText(f['ชื่อบุคคลที่ติดต่อได้คนที่หนึ่ง']).trim(),
     referencePhone: larkText(f['เบอร์ติดต่อบุคคลอ้างอิงที่1']).trim(),
+    // ค่าธรรมเนียมอนุมัติวงเงิน / ค่าใช้จ่ายอื่นๆ ที่ฟอร์มเขียนลง Lark — Dashboard เมนู Easy Phone Easy Cash แยกยอดสองอย่างนี้ออกจากยอดชำระค่างวด
+    easyFee: larkNumber(f['ค่าธรรมเนียม']), easyOtherFee: larkNumber(f['ค่าใช้จ่ายอื่นๆ']),
   };
 }
 function parseLarkRow(fields) {
@@ -269,6 +271,7 @@ function orderFromTrack(lark, so, t) {
     _discountAppliedToInstallments: t.discount > 0 ? true : undefined,
     crmCustomerName: (function () { const n = ((so.customerFirstName || '') + (so.customerLastName || '')); return n && normName(n) !== normName(lark.customerName) ? ((so.customerFirstName || '') + ' ' + (so.customerLastName || '')).replace(/\s+/g, ' ').trim() : undefined; })(),
     importedFrom: 'lark-contract-import', importedAt: new Date().toISOString(),
+    ...(lark.easyFee !== undefined ? { easyFee: lark.easyFee, easyOtherFee: lark.easyOtherFee } : {}),
   };
 }
 
@@ -487,6 +490,13 @@ async function main() {
     if (o && ((!o.referenceName && r.referenceName) || (!o.referencePhone && r.referencePhone))) refFills.push({ orderId: o.orderId, name: r.referenceName, phone: r.referencePhone });
   });
   log('บุคคลอ้างอิงที่จะเติมให้ออเดอร์เดิม ' + refFills.length);
+  // เติมค่าธรรมเนียม/ค่าใช้จ่ายอื่นๆ ย้อนหลังให้ออเดอร์ Easy Cash ที่นำเข้าไปแล้วแต่ยังไม่มีสองช่องนี้ (ใช้ค่าจาก Lark ที่ฟอร์มบันทึกไว้)
+  const feeFills = [];
+  if (EASY_CASH) cands.filter(isExisting).forEach(r => {
+    const o = state0.orders.find(x => r.soList.includes(x.orderId) || x.orderId === r.soNumber);
+    if (o && o.easyFee === undefined && r.easyFee !== undefined) feeFills.push({ orderId: o.orderId, fee: r.easyFee, other: r.easyOtherFee });
+  });
+  log('ค่าธรรมเนียม/ค่าใช้จ่ายอื่นๆ ที่จะเติมให้ออเดอร์เดิม ' + feeFills.length);
   cands = cands.filter(r => !isExisting(r));
   if (LIMIT) cands = cands.slice(0, LIMIT);
   log('มีในระบบติดตามหนี้อยู่แล้ว ' + already + ' · จะประมวลผล ' + cands.length);
@@ -568,7 +578,7 @@ async function main() {
   ready.slice(0, 5).forEach(r => log('  ตัวอย่าง ' + r.so + ' ' + r.order.customerName + ' | ' + r.order.productList + ' | ราคา ' + r.order.productPrice + ' ดาวน์ ' + r.order.downPayment + ' ' + r.order.installments.length + ' งวด x ' + r.order.installments[0].amountDue + ' | คงเหลือ CRM ' + r.crmRemaining + ' = tracker ' + r.trackerRemaining));
 
   if (DRY_RUN) { log('DRY-RUN: ไม่เขียนข้อมูล'); return; }
-  if (!ready.length && !refFills.length) { log('ไม่มีรายการที่ต้องเขียน'); return; }
+  if (!ready.length && !refFills.length && !feeFills.length) { log('ไม่มีรายการที่ต้องเขียน'); return; }
 
   if (!(await acquireLock(dtToken))) { log('ขอ lock ไม่สำเร็จ — ข้ามรอบนี้'); return; }
   try {
@@ -582,6 +592,7 @@ async function main() {
       if (!o.referenceName && x.name) { o.referenceName = x.name; filled++; }
       if (!o.referencePhone && x.phone) { o.referencePhone = x.phone; filled++; }
     });
+    feeFills.forEach(x => { const o = state.orders.find(y => y.orderId === x.orderId); if (o && o.easyFee === undefined) { o.easyFee = x.fee; o.easyOtherFee = x.other; } });
     await uploadState(dtToken, state);
     log('เขียนสำเร็จ: เพิ่ม ' + added + ' orders · เติมบุคคลอ้างอิง ' + filled + ' ช่อง');
     console.log('::notice::imported=' + added + ' mismatch=' + mismatch.length);
