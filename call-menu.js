@@ -9,7 +9,7 @@
 (function (global) {
   'use strict';
   var CTX = null;
-  var UI = { tab: 'work', bucket: 'all', dueDay: 'all', q: '', staff: 'all', modal: null, draft: null, xfer: null };
+  var UI = { tab: 'work', bucket: 'all', dueDay: 'all', q: '', staff: 'all', page: 1, pageSize: 50, modal: null, draft: null, xfer: null };
 
   /* ---------- ค่าคงที่ ---------- */
   var CALL_RESULTS = [
@@ -304,17 +304,40 @@
     var q = UI.q.trim().toLowerCase();
     if (q) rows = rows.filter(function (r) { return (r.id + r.name + r.so).toLowerCase().indexOf(q) !== -1; });
     if (UI.staff !== 'all') rows = rows.filter(function (r) { return r.owner === UI.staff; });
-    rows = rows.slice().sort(function (a, b) { return rowAge(b) - rowAge(a); });
+    // เรียงรอบตัดยอดล่าสุดก่อน (เช่น รอบ 11/2026 ขึ้นก่อนรอบ 10/2026) แล้วในรอบเดียวกันเรียงงวดที่ค้างเก่าสุดใหม่ก่อน
+    rows = rows.slice().sort(function (a, b) {
+      var ca = snap(a).cut || '', cb = snap(b).cut || '';
+      if (ca !== cb) return ca < cb ? 1 : -1;
+      var da = oldestDue(a) || '', db = oldestDue(b) || '';
+      return da < db ? 1 : da > db ? -1 : 0;
+    });
     var owners = {}; rowsAll.forEach(function (r) { if (r.owner) owners[r.owner] = true; });
     var paidSum = UI.bucket === 'paid' ? rows.reduce(function (a, r) { var t = payTiming(r); a.after += t.after; a.before += t.before; return a; }, { after: 0, before: 0 }) : null;
-    var LIMIT = 200, shown = rows.slice(0, LIMIT);
+    var pages = Math.max(1, Math.ceil(rows.length / UI.pageSize));
+    if (UI.page > pages) UI.page = pages;
+    if (UI.page < 1) UI.page = 1;
+    var from = (UI.page - 1) * UI.pageSize, shown = rows.slice(from, from + UI.pageSize);
+    function pager() {
+      if (!rows.length) return '';
+      var nums = [], lo = Math.max(1, UI.page - 2), hi = Math.min(pages, lo + 4); lo = Math.max(1, hi - 4);
+      for (var n = lo; n <= hi; n++) nums.push(n);
+      return '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;justify-content:space-between;margin-top:14px">' +
+        '<span class="muted">แสดงรายการที่ ' + (from + 1) + '-' + (from + shown.length) + ' จาก ' + rows.length + ' รายการ · หน้า ' + UI.page + '/' + pages + '</span>' +
+        '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">' +
+        '<button class="btn ghost sm" data-cm-act="page" data-v="1" ' + (UI.page <= 1 ? 'disabled style="opacity:.4;cursor:default"' : '') + '>« หน้าแรก</button>' +
+        '<button class="btn ghost sm" data-cm-act="page" data-v="' + (UI.page - 1) + '" ' + (UI.page <= 1 ? 'disabled style="opacity:.4;cursor:default"' : '') + '>‹ ก่อนหน้า</button>' +
+        nums.map(function (n) { return '<button class="btn sm' + (n === UI.page ? '' : ' ghost') + '" data-cm-act="page" data-v="' + n + '">' + n + '</button>'; }).join('') +
+        '<button class="btn ghost sm" data-cm-act="page" data-v="' + (UI.page + 1) + '" ' + (UI.page >= pages ? 'disabled style="opacity:.4;cursor:default"' : '') + '>ถัดไป ›</button>' +
+        '<button class="btn ghost sm" data-cm-act="page" data-v="' + pages + '" ' + (UI.page >= pages ? 'disabled style="opacity:.4;cursor:default"' : '') + '>หน้าสุดท้าย »</button>' +
+        '<span class="muted" style="margin-left:8px">รายการต่อหน้า</span><select data-cm-bind="pageSize">' + [50, 100, 200].map(function (n) { return '<option ' + (UI.pageSize === n ? 'selected' : '') + '>' + n + '</option>'; }).join('') + '</select></div></div>';
+    }
     h += '<div class="card">' + (paidSum ? '<div class="rule" style="background:#f1faf6;border-radius:12px;padding:10px 14px;margin-bottom:14px">💰 <b>ยอดที่นับค่าคอมมิชชั่น (ชำระหลังโทร): ฿' + money(paidSum.after) + '</b> · ยอดที่ลูกค้าชำระก่อนโทร (ไม่นับค่าคอม): ฿' + money(paidSum.before) + '<br><span class="muted">เกณฑ์: เทียบวันที่ชำระกับวันที่โทรติดตามครั้งแรก — ชำระวันเดียวกับวันที่โทรหรือหลังจากนั้นนับเป็น "หลังโทร"</span></div>' : '') +
       '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px">' +
       '<input type="text" id="cmQBox" data-cm-bind="q" placeholder="ค้นหารหัสลูกค้า, ชื่อ หรือคำสั่งซื้อ" value="' + esc(UI.q) + '" style="flex:1;min-width:240px">' +
       '<select data-cm-bind="staffF"><option value="all">พนักงานที่ติดตาม: ทั้งหมด</option>' + Object.keys(owners).sort().map(function (s) { return '<option ' + (UI.staff === s ? 'selected' : '') + '>' + esc(s) + '</option>'; }).join('') + '</select>' +
-      '<span class="muted">พบ ' + rows.length + ' รายการ' + (rows.length > LIMIT ? ' (แสดง ' + LIMIT + ' รายการแรก — ใช้ช่องค้นหา/แท็บกรองเพิ่ม)' : '') + '</span></div>' +
+      '<span class="muted">พบ ' + rows.length + ' รายการ</span></div>' +
       '<div style="overflow-x:auto"><table><thead><tr><th>รหัสลูกค้า</th><th>ชื่อลูกค้า</th><th>คำสั่งซื้อ</th><th>งวดที่ค้าง</th><th>วันครบกำหนด</th><th>อายุลูกหนี้</th><th class="right">ยอดค้างชำระ (ที่ดึงมา)</th><th class="right">ยอดที่ชำระ</th><th>วันที่ชำระ</th><th>สถานะการชำระเงิน</th>' + (UI.bucket === 'paid' ? '<th>ชำระก่อน/หลังโทร</th><th class="right">ยอดที่นับค่าคอม</th>' : '') + '<th>พนักงานที่ติดตาม</th><th>บันทึกการโทร</th></tr></thead><tbody>' +
-      (shown.length ? shown.map(rowHtml).join('') : '<tr><td colspan="' + (UI.bucket === 'paid' ? 14 : 12) + '" style="text-align:center;padding:32px;color:#8d93a0">ไม่พบรายการ</td></tr>') + '</tbody></table></div></div>';
+      (shown.length ? shown.map(rowHtml).join('') : '<tr><td colspan="' + (UI.bucket === 'paid' ? 14 : 12) + '" style="text-align:center;padding:32px;color:#8d93a0">ไม่พบรายการ</td></tr>') + '</tbody></table></div>' + pager() + '</div>';
     return h;
   }
   function viewAlert(alerts) {
@@ -490,8 +513,9 @@
     var t = e.target.closest('[data-cm-act]'); if (!t || !root(e)) return;
     var a = t.getAttribute('data-cm-act'), v = t.getAttribute('data-v');
     if (a === 'tab') { UI.tab = v; rerender(); }
-    else if (a === 'bucket') { UI.bucket = v; UI.dueDay = 'all'; UI.tab = 'work'; rerender(); }
-    else if (a === 'dueDay') { UI.dueDay = v; rerender(); }
+    else if (a === 'page') { if (!t.disabled) { UI.page = Math.max(1, parseInt(v, 10) || 1); rerender(); } }
+    else if (a === 'bucket') { UI.bucket = v; UI.dueDay = 'all'; UI.page = 1; UI.tab = 'work'; rerender(); }
+    else if (a === 'dueDay') { UI.dueDay = v; UI.page = 1; rerender(); }
     else if (a === 'claim') claim(v);
     else if (a === 'open') { var r = findRow(cache, v); if (r) { UI.modal = v; UI.draft = freshDraft(r); rerender(); } }
     else if (a === 'close') { UI.modal = null; UI.draft = null; rerender(); }
@@ -505,14 +529,15 @@
   function onInput(e) {
     if (!CTX || !CTX.active()) return;
     var t = e.target, b = t.getAttribute && t.getAttribute('data-cm-bind'); if (!b) return;
-    if (b === 'q') { UI.q = t.value; rerender(); var el = document.getElementById('cmQBox'); if (el) { el.focus(); el.setSelectionRange(t.value.length, t.value.length); } return; }
+    if (b === 'q') { UI.q = t.value; UI.page = 1; rerender(); var el = document.getElementById('cmQBox'); if (el) { el.focus(); el.setSelectionRange(t.value.length, t.value.length); } return; }
     if (b === 'xferWhy' && UI.xfer) UI.xfer.why = t.value;
     else if (UI.draft && (b === 'note' || b === 'ptpAmt')) UI.draft[b] = t.value;
   }
   function onChange(e) {
     if (!CTX || !CTX.active()) return;
     var t = e.target, b = t.getAttribute && t.getAttribute('data-cm-bind'); if (!b) return;
-    if (b === 'staffF') { UI.staff = t.value; rerender(); }
+    if (b === 'staffF') { UI.staff = t.value; UI.page = 1; rerender(); }
+    else if (b === 'pageSize') { UI.pageSize = parseInt(t.value, 10) || 50; UI.page = 1; rerender(); }
     else if (b === 'nos') { var i = UI.draft.nos.indexOf(t.value); if (t.checked && i === -1) UI.draft.nos.push(t.value); if (!t.checked && i !== -1) UI.draft.nos.splice(i, 1); }
     else if (b === 'result') { UI.draft.result = t.value; if (t.value === 'reschedule') { var r = findRow(cache, UI.modal); UI.draft.ptpAmt = r ? (reschedulePlan(r, UI.draft.ptpDate).now || '') : ''; } rerender(); }
     else if (b === 'ptpDate') { UI.draft.ptpDate = t.value; rerender(); }
