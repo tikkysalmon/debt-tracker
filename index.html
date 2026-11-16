@@ -1210,6 +1210,10 @@
       return p;
     } catch (e) { return null; }
   }
+  function normCallTargets(v) {
+    var o = (v && typeof v === 'object') ? v : {};
+    return { rate: o.rate != null && isFinite(Number(o.rate)) ? Number(o.rate) : 1, months: (o.months && typeof o.months === 'object') ? o.months : {} };
+  }
   function savePersisted() {
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
@@ -1222,6 +1226,7 @@
         appliedPaymentKeys: Object.keys(appliedPaymentKeys),
         uploadHistory: state.uploadHistory,
         smsTemplates: state.smsTemplates,
+        callTargets: state.callTargets,
         letterheadImageUrl: state.letterheadImageUrl,
         savedAt: new Date().toISOString()
       }));
@@ -1527,6 +1532,7 @@
     // rarely enough that this doesn't need the full 3-way merge machinery orders/notes get. Falls
     // back to whatever's already local (never blank) if the snapshot predates this field existing.
     if (Array.isArray(data.smsTemplates) && data.smsTemplates.length) state.smsTemplates = data.smsTemplates;
+    if (data.callTargets) state.callTargets = normCallTargets(data.callTargets); // last-save-wins เหมือน smsTemplates
     // Must run AFTER state.smsTemplates is updated above — it reads state.smsTemplates internally
     // (see guessSmsTemplateName) to identify which template an untagged entry's message came from.
     state.orders = repairMissingSmsTemplateNames(state.orders);
@@ -2072,7 +2078,7 @@
           // is non-empty too, and inferring "no longer sample" from length alone meant the demo orders
           // silently got treated as real and merged alongside the first genuine upload (see
           // repairStaleSampleOrders below for cleaning up datasets already affected by this).
-          var payload = { orders: mergedOrders, customerNotes: mergedNotes, customerTrackingReturn: mergedTrackingReturn, customerTrackingReturnAt: mergedTrackingReturnAt, customerLegalAction: mergedLegalAction, customerLegalActionAt: mergedLegalActionAt, customerLegalCase: mergedLegalCase, appliedPaymentKeys: mergedKeys, uploadHistory: mergedUploadHistory, isSampleData: state.isSampleData, smsTemplates: state.smsTemplates, letterheadImageUrl: state.letterheadImageUrl, _meta: { updatedAt: new Date().toISOString(), updatedBy: myClientId } };
+          var payload = { orders: mergedOrders, customerNotes: mergedNotes, customerTrackingReturn: mergedTrackingReturn, customerTrackingReturnAt: mergedTrackingReturnAt, customerLegalAction: mergedLegalAction, customerLegalActionAt: mergedLegalActionAt, customerLegalCase: mergedLegalCase, appliedPaymentKeys: mergedKeys, uploadHistory: mergedUploadHistory, isSampleData: state.isSampleData, smsTemplates: state.smsTemplates, callTargets: state.callTargets, letterheadImageUrl: state.letterheadImageUrl, _meta: { updatedAt: new Date().toISOString(), updatedBy: myClientId } };
           text = JSON.stringify(payload);
           blob = null; // gzip-compressed just before upload (gzipBlobFromText)
         } catch (mergeErr) {
@@ -2277,6 +2283,7 @@
     writeoffSelected: {}, writeoffSubmitting: false, writeoffSigning: false, writeoffDeciding: false, writeoffCandidatePage: 1,
     noteModalTarget: null, noteModalDraft: '',
     smsTemplates: (persisted && Array.isArray(persisted.smsTemplates) && persisted.smsTemplates.length) ? persisted.smsTemplates : DEFAULT_SMS_TEMPLATES,
+    callTargets: normCallTargets(persisted && persisted.callTargets), ctMonth: '', ctDay: '',
     smsModalTarget: null, smsModalPhone: '', smsModalTemplateId: '', smsModalDraft: '', smsModalSending: false,
     callDraft: '', callResultDraft: '', callPtpDateDraft: '', callPtpAmountDraft: '', receivedFormFor: null, receivedDateDraft: '',
     trackingOrderId: '', trackingTrack: '',
@@ -15529,6 +15536,15 @@
     // การโทรติดตามหนี้ (2026-11-16): admin-only ช่วงทดสอบ — ฝังต้นแบบ call-menu.html (ข้อมูลตัวอย่าง ยังไม่เชื่อมข้อมูลจริง) ไว้ใน iframe
     var callIcon = '<div style="position:absolute; top:1px; left:3.5px; width:9px; height:14px; border:2px solid currentColor; border-radius:3px; box-sizing:border-box; transform:rotate(-30deg);"></div>';
     var navCallMenu = (state.currentUser && state.currentUser.isAdmin) ? navItem('tab-callmenu', 'goCallMenu', callIcon, 'การโทรติดตามหนี้') : '';
+    // Sub-menus regrouped 2026-11-16 per explicit user request: Easy Phone Easy Cash + Report sit
+    // indented under สำหรับผู้บริหาร; อัพโหลดไฟล์/จัดการผู้ใช้งาน/ตั้งค่า sit under a non-clickable
+    // "สำหรับ Admin" header. Item ids/actions/permission gates are unchanged — only order + indent.
+    function indentNav(html) { return html ? html.replace('padding:12px 14px;', 'padding:10px 14px 10px 30px;').replace('font-size:14px;', 'font-size:13.5px;') : ''; }
+    var navCollectTarget = (state.currentUser && state.currentUser.isAdmin) ? navItem('tab-colltarget', 'goCollectionTarget', callIcon, 'Debt Collection Target') : '';
+    var navExecutiveSub = indentNav(navEasyCash) + indentNav(navReport) + indentNav(navCollectTarget);
+    var navAdminSubItems = navUpload + navUsers + navSettings;
+    var navAdminHeader = navAdminSubItems ? '<div class="sb-label" style="margin:10px 0 2px; padding:0 14px; font-size:11.5px; font-weight:700; color:#b8a194; letter-spacing:0.3px; white-space:nowrap;">สำหรับ Admin</div>' : '';
+    var navAdminSub = indentNav(navUpload) + indentNav(navUsers) + indentNav(navSettings);
     var restartIcon = '<div style="width:14px; height:14px; border:2px solid currentColor; border-top-color:transparent; border-radius:50%; box-sizing:border-box; position:absolute; top:2px; left:2px;"></div><div style="position:absolute; top:1px; left:8px; width:0; height:0; border-left:5px solid currentColor; border-top:3px solid transparent; border-bottom:3px solid transparent;"></div>';
     var navEasyRestart = can('tracking_view') ? navItem('tab-easyrestart', 'goEasyRestart', restartIcon, 'Easy Restart') : '';
     // Scales-of-justice icon, CSS-drawn like the other menu icons (2026-10-23)
@@ -15574,7 +15590,7 @@
       '</div>' +
       '<div style="display:flex; flex-direction:column; gap:4px;">' +
         navItem('tab-dashboard', 'goDashboard', dashIcon.replace('position:relative;', ''), 'Dashboard') +
-        navTracking + navNotifications + navCallMenu + navEasyRestart + navLegal + navExecutive + navEasyCash + navUpload + navUsers + navReport + navSettings +
+        navTracking + navNotifications + navCallMenu + navEasyRestart + navLegal + navExecutive + navExecutiveSub + navAdminHeader + navAdminSub +
       '</div>' +
       '<div style="flex:1;"></div>' +
       userChip +
@@ -15628,7 +15644,7 @@
 
   // ---------- Render ----------
   function updateTabStyles() {
-    var tabs = [['tab-dashboard', 'dashboard'], ['tab-tracking', 'tracking'], ['tab-notifications', 'notifications'], ['tab-upload', 'upload'], ['tab-users', 'users'], ['tab-settings', 'settings'], ['tab-easyrestart', 'easyrestart'], ['tab-executive', 'executive'], ['tab-easycash', 'easycash'], ['tab-callmenu', 'callmenu'], ['tab-legalcases', 'legalcases']];
+    var tabs = [['tab-dashboard', 'dashboard'], ['tab-tracking', 'tracking'], ['tab-notifications', 'notifications'], ['tab-upload', 'upload'], ['tab-users', 'users'], ['tab-settings', 'settings'], ['tab-easyrestart', 'easyrestart'], ['tab-executive', 'executive'], ['tab-colltarget', 'colltarget'], ['tab-easycash', 'easycash'], ['tab-callmenu', 'callmenu'], ['tab-legalcases', 'legalcases']];
     tabs.forEach(function (t) {
       var el = document.getElementById(t[0]);
       if (!el) return;
@@ -15646,6 +15662,145 @@
     if (!el || !el.getAttribute) return false;
     if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') return false;
     return !!(el.getAttribute('data-field') || el.getAttribute('data-order-field') || el.getAttribute('data-legal-field') || el.getAttribute('data-cm-bind'));
+  }
+  // ---------- Debt Collection Target (2026-11-16, admin-only, เมนูย่อยใต้สำหรับผู้บริหาร) ----------
+  // กำหนด Target + ค่าคอมมิชชั่นการโทรติดตามหนี้. Logic ตามที่ user สั่ง:
+  //  1) ยอดค้างชำระ = ยอดงวดทั้งหมดที่ครบกำหนดในเดือนนั้น แยกตามรอบวันครบกำหนดชำระ (5/15/25/30/อื่นๆ) — นิยามเดียวกับ Agent วิเคราะห์รอบฯ
+  //     (นับเฉพาะสัญญาที่ยังไม่ยกเลิก/ไม่จำหน่าย และไม่ติดแท็กดำเนินคดี เพราะทีมโทรไม่ได้ติดตามกลุ่มนั้น)
+  //  2) ค่าคอม 2 รอบ (รายวัน/รายเดือน): ต้องเก็บยอดรับชำระได้ >= 80% ของ Target จึงจะได้ค่าคอม = ยอดที่เก็บได้ × อัตราเดียว
+  //  3) Target/ยอดต้องได้รับ คำนวณอัตโนมัติ (Target = ยอดค้างชำระ, ต้องได้รับ = 80%) แก้ทับได้; รายวัน = รายเดือน ÷ วันทำงาน (ตั้งต้น 20)
+  // อัตราค่าคอม: ค่าเดียวทั้งระบบ (ยังแก้รายเดือน/รายรอบไม่ได้ ตามที่ user สั่ง) — ค่าตั้งต้น 1% เป็นตัวเลขสมมติรอ user ยืนยัน
+  var CT_ROUNDS = [['5', 'รอบวันที่ 5'], ['15', 'รอบวันที่ 15'], ['25', 'รอบวันที่ 25'], ['30', 'รอบวันที่ 30'], ['x', 'รอบอื่นๆ']];
+  var CT_PASS_PCT = 80;
+  function ctMonthState(mk) {
+    var ct = state.callTargets;
+    if (!ct.months[mk]) ct.months[mk] = { workDays: 20, rounds: {}, dailyTarget: null, dailyRequired: null };
+    return ct.months[mk];
+  }
+  function ctCompute(mk, dayIso) {
+    var ms = ctMonthState(mk), res = { rounds: {}, dayCollected: 0, dayInsts: 0 };
+    CT_ROUNDS.forEach(function (r) { res.rounds[r[0]] = { owed: 0, paid: 0, outstanding: 0 }; });
+    computeOrders().forEach(function (o) {
+      if (o.isCancelled || o.isSold || o.isBillCancelled || isCustomerLegalAction(o)) return;
+      [['installments', o.payDay], ['accessoryInstallments', o.accessoryPayDay]].forEach(function (tr) {
+        (o[tr[0]] || []).forEach(function (i) {
+          var netDue = Math.max(0, Number(i.amountDue || 0) - Number(i.discount || 0));
+          var paid = Math.min(Number(i.amountPaid || 0), netDue);
+          if (i.dueDate && i.dueDate.slice(0, 7) === mk) {
+            var pd = String(Math.round(Number(tr[1]) || 0));
+            var k = (pd === '5' || pd === '15' || pd === '25' || pd === '30') ? pd : 'x';
+            res.rounds[k].owed += netDue; res.rounds[k].paid += paid; res.rounds[k].outstanding += netDue - paid;
+          }
+          if (dayIso && i.paidDate === dayIso && paid > 0) { res.dayCollected += paid; res.dayInsts++; }
+        });
+      });
+    });
+    var tot = { owed: 0, target: 0, required: 0, paid: 0, outstanding: 0 };
+    CT_ROUNDS.forEach(function (r) {
+      var x = res.rounds[r[0]], ov = ms.rounds[r[0]] || {};
+      x.target = ov.target != null ? ov.target : Math.round(x.owed);
+      x.required = ov.required != null ? ov.required : Math.round(x.target * CT_PASS_PCT) / 100;
+      x.targetEdited = ov.target != null; x.requiredEdited = ov.required != null;
+      x.pct = x.required > 0 ? x.paid / x.required * 100 : 0;
+      tot.owed += x.owed; tot.target += x.target; tot.required += x.required; tot.paid += x.paid; tot.outstanding += x.outstanding;
+    });
+    var wd = ms.workDays > 0 ? ms.workDays : 20;
+    res.tot = tot; res.workDays = wd;
+    res.daily = {
+      owed: tot.owed / wd,
+      target: ms.dailyTarget != null ? ms.dailyTarget : Math.round(tot.target / wd),
+      targetEdited: ms.dailyTarget != null, requiredEdited: ms.dailyRequired != null
+    };
+    res.daily.required = ms.dailyRequired != null ? ms.dailyRequired : Math.round(res.daily.target * CT_PASS_PCT) / 100;
+    var rate = Number(state.callTargets.rate) || 0;
+    res.monthPass = tot.required > 0 && tot.paid >= tot.required - 0.005;
+    res.monthCommission = res.monthPass ? tot.paid * rate / 100 : 0;
+    res.dayPass = res.daily.required > 0 && res.dayCollected >= res.daily.required - 0.005;
+    res.dayCommission = res.dayPass ? res.dayCollected * rate / 100 : 0;
+    return res;
+  }
+  function renderCollectionTarget() {
+    if (!(state.currentUser && state.currentUser.isAdmin)) {
+      return '<div style="padding:60px 20px; text-align:center; color:#8d93a0; font-size:14px;">🔒 ต้องเป็นผู้ดูแลระบบ (Admin) เท่านั้นจึงจะเข้าเมนูนี้ได้</div>';
+    }
+    var today = new Date().toISOString().slice(0, 10);
+    if (!state.ctMonth) state.ctMonth = today.slice(0, 7);
+    if (!state.ctDay) state.ctDay = today;
+    var mk = state.ctMonth, c = ctCompute(mk, state.ctDay);
+    var inpS = 'width:130px; text-align:right; padding:7px 10px; border-radius:8px; border:1px solid rgba(247,130,59,0.3); font-size:13px; outline:none;';
+    var th = 'padding:9px 10px; text-align:right; font-size:12px; color:#6b7280; border-bottom:1px solid #eee; white-space:nowrap;';
+    var td = 'padding:9px 10px; text-align:right; font-size:13px; border-bottom:1px solid #f3f3f3;';
+    function card(body) { return '<div style="background:rgba(255,255,255,0.97); border:1px solid rgba(255,255,255,0.85); border-radius:20px; padding:22px 24px; box-shadow:0 8px 26px rgba(247,130,59,0.08); margin-bottom:18px;">' + body + '</div>'; }
+    function h(t, sub) { return '<div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:15px; color:#212529;">' + t + '</div>' + (sub ? '<div style="font-size:12px; color:#8d93a0; margin:2px 0 12px;">' + sub + '</div>' : '<div style="margin-bottom:12px;"></div>'); }
+    function inp(key, val, edited) {
+      return '<input type="number" min="0" step="0.01" value="' + esc(val) + '" data-action="ctField" data-key="' + key + '" style="' + inpS + (edited ? ' background:#fff7ed;' : '') + '" />';
+    }
+    function badge(ok, txt) { return '<span style="font-weight:700; font-size:12px; padding:3px 10px; border-radius:20px; ' + (ok ? 'background:rgba(18,184,134,0.12); color:#0b7a5b;' : 'background:rgba(224,49,49,0.08); color:#e03131;') + '">' + txt + '</span>'; }
+    function kpi(label, value, sub, color) {
+      return '<div style="background:#fff; border:1px solid #eceef2; border-radius:16px; padding:14px 18px; border-top:4px solid ' + color + '; min-width:0;"><div style="font-size:12px; color:#6b7280;">' + label + '</div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:21px; margin-top:4px;">' + value + '</div><div style="font-size:11.5px; color:#8d93a0; margin-top:2px;">' + sub + '</div></div>';
+    }
+    var grid = 'display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:12px;';
+    var rows = CT_ROUNDS.map(function (r) {
+      var x = c.rounds[r[0]];
+      return '<tr><td style="' + td + ' text-align:left; font-weight:600;">' + r[1] + '</td>' +
+        '<td style="' + td + '">' + fmtMoney(x.owed) + '</td>' +
+        '<td style="' + td + '">' + inp('r:' + r[0] + ':target', x.target, x.targetEdited) + '</td>' +
+        '<td style="' + td + '">' + inp('r:' + r[0] + ':required', x.required, x.requiredEdited) + '</td>' +
+        '<td style="' + td + '">' + fmtMoney(x.paid) + '</td>' +
+        '<td style="' + td + '">' + x.pct.toFixed(1) + '%</td></tr>';
+    }).join('');
+    var totRow = '<tr style="background:#fafafa; font-weight:700;"><td style="' + td + ' text-align:left;">รวมทั้งเดือน</td><td style="' + td + '">' + fmtMoney(c.tot.owed) + '</td><td style="' + td + '">' + fmtMoney(c.tot.target) + '</td><td style="' + td + '">' + fmtMoney(c.tot.required) + '</td><td style="' + td + '">' + fmtMoney(c.tot.paid) + '</td><td style="' + td + '">' + (c.tot.required > 0 ? (c.tot.paid / c.tot.required * 100).toFixed(1) : '0.0') + '%</td></tr>';
+    var rateTxt = (Number(state.callTargets.rate) || 0) + '%';
+    var monthly = card(
+      h('รอบรายเดือน', 'ยอดค้างชำระ = ยอดงวดที่ครบกำหนดในเดือนนี้ แยกตามรอบวันครบกำหนดชำระ · Target ตั้งต้น = ยอดค้างชำระ · ต้องได้รับ = ' + CT_PASS_PCT + '% ของ Target · ช่องสีส้มคือค่าที่แก้ทับเอง (ล้างช่องให้ว่าง = กลับไปใช้ค่าอัตโนมัติ)') +
+      '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; min-width:700px;"><thead><tr><th style="' + th + ' text-align:left;">รอบวันครบกำหนด</th><th style="' + th + '">ยอดค้างชำระ</th><th style="' + th + '">Target</th><th style="' + th + '">ยอดที่ต้องได้รับ (' + CT_PASS_PCT + '%)</th><th style="' + th + '">รับชำระแล้ว</th><th style="' + th + '">% ของที่ต้องได้รับ</th></tr></thead><tbody>' + rows + totRow + '</tbody></table></div>' +
+      '<div style="' + grid + ' margin-top:16px;">' +
+        kpi('สถานะรอบเดือน', badge(c.monthPass, c.monthPass ? 'ผ่านเกณฑ์ ' + CT_PASS_PCT + '%' : 'ยังไม่ถึงเกณฑ์'), 'ขาดอีก ฿' + fmtMoney(Math.max(0, c.tot.required - c.tot.paid)), c.monthPass ? '#12b886' : '#e03131') +
+        kpi('ค่าคอมรายเดือน', '฿' + fmtMoney(c.monthCommission), 'ยอดที่เก็บได้ ฿' + fmtMoney(c.tot.paid) + ' × ' + rateTxt, '#f7823b') +
+        kpi('คงค้างปัจจุบัน (รอบเดือนนี้)', '฿' + fmtMoney(c.tot.outstanding), 'ยอดงวดของเดือนนี้ที่ยังไม่ได้ชำระ', '#eda100') +
+      '</div>');
+    var daily = card(
+      h('รอบรายวัน', 'เฉลี่ยจากยอดรายเดือนรวม ÷ จำนวนวันทำงาน (ตั้งต้น 20 วัน) — เมื่อได้ปฏิทินวันหยุดแล้วค่อยปรับจำนวนวันทำงานรายเดือน') +
+      '<div style="display:flex; flex-wrap:wrap; gap:16px; align-items:center; margin-bottom:14px; font-size:13px;">' +
+        '<label>วันที่ดูยอดเก็บ <input type="date" value="' + esc(state.ctDay) + '" data-action="ctDay" style="padding:6px 10px; border-radius:8px; border:1px solid rgba(247,130,59,0.3);" /></label>' +
+        '<label>จำนวนวันทำงานของเดือน <input type="number" min="1" max="31" value="' + c.workDays + '" data-action="ctField" data-key="workDays" style="width:70px; text-align:right; padding:7px 10px; border-radius:8px; border:1px solid rgba(247,130,59,0.3);" /></label>' +
+      '</div>' +
+      '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; min-width:560px;"><thead><tr><th style="' + th + ' text-align:left;"></th><th style="' + th + '">ยอดค้างชำระเฉลี่ย/วัน</th><th style="' + th + '">Target/วัน</th><th style="' + th + '">ต้องได้รับ/วัน (' + CT_PASS_PCT + '%)</th><th style="' + th + '">รับชำระแล้วในวันที่เลือก</th></tr></thead><tbody><tr><td style="' + td + ' text-align:left; font-weight:600;">' + esc(fmtDate(state.ctDay)) + '</td><td style="' + td + '">' + fmtMoney(c.daily.owed) + '</td><td style="' + td + '">' + inp('dailyTarget', c.daily.target, c.daily.targetEdited) + '</td><td style="' + td + '">' + inp('dailyRequired', c.daily.required, c.daily.requiredEdited) + '</td><td style="' + td + '">' + fmtMoney(c.dayCollected) + ' <span style="color:#8d93a0; font-size:11.5px;">(' + c.dayInsts + ' งวด)</span></td></tr></tbody></table></div>' +
+      '<div style="' + grid + ' margin-top:16px;">' +
+        kpi('สถานะรอบวัน', badge(c.dayPass, c.dayPass ? 'ผ่านเกณฑ์ ' + CT_PASS_PCT + '%' : 'ยังไม่ถึงเกณฑ์'), 'ขาดอีก ฿' + fmtMoney(Math.max(0, c.daily.required - c.dayCollected)), c.dayPass ? '#12b886' : '#e03131') +
+        kpi('ค่าคอมรายวัน', '฿' + fmtMoney(c.dayCommission), 'ยอดที่เก็บได้ ฿' + fmtMoney(c.dayCollected) + ' × ' + rateTxt, '#f7823b') +
+      '</div>' +
+      '<div style="font-size:11.5px; color:#8d93a0; margin-top:10px;">ยอดรับชำระรายวันนับจากงวดที่มีวันที่ชำระ (paidDate) ตรงกับวันที่เลือก ไม่ว่างวดนั้นจะครบกำหนดเดือนใด</div>');
+    var rateCard = card(
+      h('อัตราค่าคอมมิชชั่น', 'ใช้อัตราเดียวกันทุกเดือน ทุกรอบ (ยังแก้รายเดือน/รายรอบไม่ได้) · ค่าคอม = ยอดรับชำระที่เก็บได้ × อัตรา เมื่อผ่านเกณฑ์ ' + CT_PASS_PCT + '% ของ Target') +
+      '<label style="font-size:13px;">อัตรา <input type="number" min="0" step="0.01" value="' + esc(state.callTargets.rate) + '" data-action="ctField" data-key="rate" style="width:90px; text-align:right; padding:7px 10px; border-radius:8px; border:1px solid rgba(247,130,59,0.3);" /> % ของยอดที่เก็บได้ <span style="color:#e03131;">(ค่าตั้งต้น 1% เป็นตัวเลขสมมติ รอยืนยัน)</span></label>');
+    var monthOpts = '';
+    for (var d = -6; d <= 2; d++) {
+      var dt = new Date(); dt.setDate(1); dt.setMonth(dt.getMonth() + d);
+      var v = dt.getFullYear() + '-' + ('0' + (dt.getMonth() + 1)).slice(-2);
+      monthOpts += '<option value="' + v + '"' + (v === mk ? ' selected' : '') + '>' + v + '</option>';
+    }
+    return '<div style="padding:24px;">' +
+      '<div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:18px;">' +
+        '<div><div style="font-family:\'Prompt\',sans-serif; font-weight:700; font-size:22px;">Debt Collection Target</div><div style="font-size:12.5px; color:#8d93a0;">กำหนด Target และค่าคอมมิชชั่นการโทรติดตามหนี้ · Admin เท่านั้น</div></div>' +
+        '<div style="display:flex; align-items:center; gap:12px;"><label style="font-size:13px;">เดือน <select data-action="ctMonth" style="padding:7px 10px; border-radius:8px; border:1px solid rgba(247,130,59,0.3);">' + monthOpts + '</select></label>' + renderSaveButton(true) + '</div>' +
+      '</div>' + monthly + daily + rateCard + '</div>';
+  }
+  function setCtField(key, raw) {
+    var ct = state.callTargets, ms = ctMonthState(state.ctMonth);
+    var blank = String(raw).trim() === '', n = toNumber(raw);
+    if (key === 'rate') ct.rate = blank ? 0 : Math.max(0, n);
+    else if (key === 'workDays') ms.workDays = blank || n < 1 ? 20 : Math.min(31, Math.round(n));
+    else if (key === 'dailyTarget') ms.dailyTarget = blank ? null : Math.max(0, n);
+    else if (key === 'dailyRequired') ms.dailyRequired = blank ? null : Math.max(0, n);
+    else if (key.indexOf('r:') === 0) {
+      var p = key.split(':'); if (!ms.rounds[p[1]]) ms.rounds[p[1]] = {};
+      ms.rounds[p[1]][p[2]] = blank ? null : Math.max(0, n);
+      // แก้ Target ใหม่ → ล้างยอดต้องได้รับที่เคยแก้ทับ ให้คำนวณ 80% ใหม่จาก Target ใหม่
+      if (p[2] === 'target') ms.rounds[p[1]].required = null;
+    }
+    state.hasUnsavedChanges = true;
+    render();
   }
   // ข้อมูลจริงจาก state.orders (call-menu.js): ตัดสัญญาที่ไม่อยู่ในเส้นทางติดตามหนี้ออก (Easy Restart/Easy Cash/ยกเลิกบิล/ยกเลิกสัญญา/จำหน่ายชื่อ/ดำเนินคดี)
   function callMenuOrders() {
@@ -15707,6 +15862,7 @@
     else if (state.view === 'report') inner.innerHTML = renderReport();
     else if (state.view === 'executive') inner.innerHTML = renderExecutive();
     else if (state.view === 'easycash') inner.innerHTML = renderEasyCash();
+    else if (state.view === 'colltarget') inner.innerHTML = renderCollectionTarget();
     else if (state.view === 'callmenu') inner.innerHTML = renderCallMenu();
     else if (state.view === 'easyrestart') inner.innerHTML = renderEasyRestart();
     else if (state.view === 'legalcases') inner.innerHTML = renderLegalCases();
@@ -15896,6 +16052,7 @@
         }
         case 'setEcTab': state.ecTab = t.getAttribute('data-tab') === 'customers' ? 'customers' : 'dashboard'; state.selectedCustomerId = null; render(); break;
         case 'goExecutive': if (!(state.currentUser && state.currentUser.isAdmin)) { denyToast(); return; } state.view = 'executive'; render(); break;
+        case 'goCollectionTarget': if (!(state.currentUser && state.currentUser.isAdmin)) { denyToast(); return; } state.view = 'colltarget'; render(); break;
         case 'goReport': if (!(state.currentUser && state.currentUser.isAdmin)) { denyToast(); return; } state.view = 'report'; render(); break;
         case 'goSettings': if (!(state.currentUser && state.currentUser.isAdmin)) { denyToast(); return; } state.smsModalTarget = null; state.view = 'settings'; render(); break;
         case 'showReportDrilldown': state.reportDrilldownSeg = t.getAttribute('data-seg'); state.reportDrilldownGroup = t.getAttribute('data-group'); render(); break;
@@ -16187,6 +16344,9 @@
       var a = t.getAttribute('data-action');
       if (!actionAllowed(a)) { denyToast(); render(); return; }
       switch (a) {
+        case 'ctField': setCtField(t.getAttribute('data-key'), t.value); break;
+        case 'ctMonth': state.ctMonth = t.value; render(); break;
+        case 'ctDay': state.ctDay = t.value || state.ctDay; render(); break;
         case 'queryInput': state.query = t.value; break;
         case 'noteDraft': state.customerNoteDraft = t.value; break;
         case 'customerNameDraft': state.customerNameDraft = t.value; break;
