@@ -1212,7 +1212,7 @@
   }
   function normCallTargets(v) {
     var o = (v && typeof v === 'object') ? v : {};
-    return { rate: o.rate != null && isFinite(Number(o.rate)) ? Number(o.rate) : 1, months: (o.months && typeof o.months === 'object') ? o.months : {} };
+    return { rate: o.rate != null && isFinite(Number(o.rate)) ? Number(o.rate) : 0.2, months: (o.months && typeof o.months === 'object') ? o.months : {} };
   }
   function savePersisted() {
     try {
@@ -15669,7 +15669,7 @@
   //     (นับเฉพาะสัญญาที่ยังไม่ยกเลิก/ไม่จำหน่าย และไม่ติดแท็กดำเนินคดี เพราะทีมโทรไม่ได้ติดตามกลุ่มนั้น)
   //  2) ค่าคอม 2 รอบ (รายวัน/รายเดือน): ต้องเก็บยอดรับชำระได้ >= 80% ของ Target จึงจะได้ค่าคอม = ยอดที่เก็บได้ × อัตราเดียว
   //  3) Target/ยอดต้องได้รับ คำนวณอัตโนมัติ (Target = ยอดค้างชำระ, ต้องได้รับ = 80%) แก้ทับได้; รายวัน = รายเดือน ÷ วันทำงาน (ตั้งต้น 20)
-  // อัตราค่าคอม: ค่าเดียวทั้งระบบ (ยังแก้รายเดือน/รายรอบไม่ได้ ตามที่ user สั่ง) — ค่าตั้งต้น 1% เป็นตัวเลขสมมติรอ user ยืนยัน
+  // อัตราค่าคอม: ค่าเดียวทั้งระบบ (ยังแก้รายเดือน/รายรอบไม่ได้ ตามที่ user สั่ง) — ค่าตั้งต้น 0.2% (user ยืนยัน 2026-11-16)
   var CT_ROUNDS = [['5', 'รอบวันที่ 5'], ['15', 'รอบวันที่ 15'], ['25', 'รอบวันที่ 25'], ['30', 'รอบวันที่ 30'], ['x', 'รอบอื่นๆ']];
   var CT_PASS_PCT = 80;
   function ctMonthState(mk) {
@@ -15773,7 +15773,7 @@
       '<div style="font-size:11.5px; color:#8d93a0; margin-top:10px;">ยอดรับชำระรายวันนับจากงวดที่มีวันที่ชำระ (paidDate) ตรงกับวันที่เลือก ไม่ว่างวดนั้นจะครบกำหนดเดือนใด</div>');
     var rateCard = card(
       h('อัตราค่าคอมมิชชั่น', 'ใช้อัตราเดียวกันทุกเดือน ทุกรอบ (ยังแก้รายเดือน/รายรอบไม่ได้) · ค่าคอม = ยอดรับชำระที่เก็บได้ × อัตรา เมื่อผ่านเกณฑ์ ' + CT_PASS_PCT + '% ของ Target') +
-      '<label style="font-size:13px;">อัตรา <input type="number" min="0" step="0.01" value="' + esc(state.callTargets.rate) + '" data-action="ctField" data-key="rate" style="width:90px; text-align:right; padding:7px 10px; border-radius:8px; border:1px solid rgba(247,130,59,0.3);" /> % ของยอดที่เก็บได้ <span style="color:#e03131;">(ค่าตั้งต้น 1% เป็นตัวเลขสมมติ รอยืนยัน)</span></label>');
+      '<label style="font-size:13px;">อัตรา <input type="number" min="0" step="0.01" value="' + esc(state.callTargets.rate) + '" data-action="ctField" data-key="rate" style="width:90px; text-align:right; padding:7px 10px; border-radius:8px; border:1px solid rgba(247,130,59,0.3);" /> % ของยอดที่เก็บได้ <span style="color:#8d93a0;">(ค่าตั้งต้น 0.2%)</span></label>');
     var monthOpts = '';
     for (var d = -6; d <= 2; d++) {
       var dt = new Date(); dt.setDate(1); dt.setMonth(dt.getMonth() + d);
