@@ -264,16 +264,7 @@
     var total = per.reduce(function (s, p) { return s + p.amt; }, 0);
     var callsToday = rowsAll.reduce(function (s, r) { return s + r.calls.filter(function (c) { return c.at.slice(0, 10) === TODAY_ISO; }).length; }, 0);
     var unowned = active.filter(function (r) { return !r.owner; }), mine = active.filter(function (r) { return r.owner && r.owner === me(); });
-    var h = '<div class="kpis">' +
-      '<div class="kpi" style="--c:#e03131"><small>ยอดค้างชำระรวม (ที่ดึงมา)</small><b>฿' + money(total) + '</b><span>' + active.length + ' ราย</span></div>' +
-      '<div class="kpi" style="--c:#f08c00;cursor:pointer" data-cm-act="bucket" data-v="unowned"><small>ยังไม่มีผู้รับผิดชอบ</small><b>' + unowned.length + ' ราย</b><span>คลิกเพื่อดู แล้วไปรับเป็นของตัวเอง</span></div>' +
-      '<div class="kpi" style="--c:#339af0"><small>โทรแล้ววันนี้</small><b>' + callsToday + ' ครั้ง</b><span>ทุกพนักงาน</span></div>' +
-      '<div class="kpi" style="--c:#7048e8;cursor:pointer" data-cm-act="tab" data-v="alert"><small>ต้องติดตามซ้ำ</small><b>' + alerts.length + ' ราย</b><span>คลิกเพื่อดูรายการ</span></div>' +
-      '<div class="kpi" style="--c:#12b886"><small>ลูกค้าชำระหลังตัดรอบ</small><b>' + paidRows.length + ' ราย</b><span>ชำระครบแล้ว</span></div></div>';
-    h += '<div class="card"><h3>ยอดค้างชำระ แบ่งตามอายุลูกหนี้ (นับจากวันครบกำหนดของงวดที่ค้างเก่าสุด)</h3><div class="bars">' + per.map(function (p) {
-      var px = Math.max(6, p.amt / maxAmt * 150);
-      return '<div class="bar" style="cursor:default"><div class="v">฿' + Math.round(p.amt).toLocaleString('th-TH') + '</div><div class="col" style="height:' + px + 'px"><i></i></div><div class="l">' + p.b.label + '</div><div class="c">' + p.rows.length + ' ราย</div><div class="c" style="color:' + (p.b.stage.indexOf('St2') === 0 ? '#c2650a' : '#e03131') + ';font-weight:600">' + p.b.stage + '</div></div>';
-    }).join('') + '</div></div>';
+    var h = '';
     h += '<div class="card" style="padding:16px 20px;background:#fff8e6"><b>รอบตัดยอดลูกหนี้เข้าเมนูโทรติดตาม</b> <span class="muted">— ระบบดึงยอดค้างชำระ เวลา 00:00 น. ของวันโทร (ใช้ยอดค้าง ณ สิ้นวันตัดยอด)</span>' +
       '<div style="overflow-x:auto;margin:10px 0"><table style="font-size:12.5px;background:#fff;border-radius:10px"><thead><tr><th>วันครบกำหนดชำระ</th><th>ตัดยอด</th><th>เริ่มโทรติดตาม</th><th>รอบล่าสุดที่ดึงแล้ว (วันตัดยอด)</th><th>ลูกค้าในรอบ</th></tr></thead><tbody>' +
       DUE_DAYS.map(function (d) { var lc = lastCutoff(d); return '<tr><td><b>ทุกวันที่ ' + d + '</b></td><td>' + CUT_RULES[d].label + '</td><td>' + CUT_RULES[d].call + '</td><td>' + (lc ? fmtD(iso(lc)) : '-') + '</td><td>' + active.filter(function (r) { return r.dueDay === d; }).length + ' ราย</td></tr>'; }).join('') + '</tbody></table></div>' +
