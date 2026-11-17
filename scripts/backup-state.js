@@ -71,6 +71,67 @@ async function prune(t, files) {
 
 function thaiDate(ms) { return new Date((ms || Date.now()) + 7 * 3600e3).toISOString().slice(0, 10).replace(/-/g, ''); } // YYYYMMDD ตามเวลาไทย
 
+// ---- สำรอง "ทุกอย่าง" (โหมดรายวัน) ----
+// 1) extras bundle (รายวัน เก็บ 31 วัน): ตาราง staff_users + ไฟล์ขนาดเล็กใน bucket (ไฟล์ root ≤1MB, assets, writeoffs, easy-restart-*)
+// 2) mirror (เพิ่มเฉพาะไฟล์ใหม่ ไม่ลบ): letters/ และ cancel-letters/ (ใหญ่ ~2GB) คัดลอกฝั่งเซิร์ฟเวอร์ไปที่ backups/mirror/
+const SMALL_FOLDERS = ['assets', 'writeoffs', 'easy-restart-box-photos', 'easy-restart-box-sheets', 'easy-restart-letters'];
+const MIRROR_FOLDERS = ['letters', 'cancel-letters'], MIRROR_PREFIX = PREFIX + '/mirror';
+const JH = t => Object.assign({ 'Content-Type': 'application/json' }, H(t));
+
+async function listAll(t, prefix) { // คืน [{name(เต็ม), size}] ของไฟล์ทั้งหมดใต้ prefix (ลงลึกทุกโฟลเดอร์)
+  const out = [];
+  async function walk(p) {
+    for (let off = 0; ; off += 1000) {
+      const res = await fetch(SUPABASE_URL + '/storage/v1/object/list/' + BUCKET, { method: 'POST', headers: JH(t), body: JSON.stringify({ prefix: p, limit: 1000, offset: off, sortBy: { column: 'name', order: 'asc' } }) });
+      if (!res.ok) throw new Error('list ' + p + ' failed: ' + res.status);
+      const items = await res.json();
+      for (const f of items) {
+        const full = p ? p + '/' + f.name : f.name;
+        if (f.id === null) await walk(full); else out.push({ name: full, size: (f.metadata && f.metadata.size) || 0 });
+      }
+      if (items.length < 1000) break;
+    }
+  }
+  await walk(prefix);
+  return out;
+}
+async function pool(items, n, fn) {
+  let i = 0, fail = 0;
+  await Promise.all(Array.from({ length: n }, async () => {
+    while (i < items.length) { const it = items[i++]; try { await fn(it); } catch (e) { fail++; log('WARN: ' + e.message); } }
+  }));
+  return fail;
+}
+async function extrasBundle(t) {
+  const bundle = { createdAt: new Date().toISOString(), files: {} };
+  const su = await fetch(SUPABASE_URL + '/rest/v1/staff_users?select=*', { headers: H(t) });
+  if (!su.ok) throw new Error('staff_users failed: ' + su.status);
+  bundle.staff_users = await su.json();
+  const root = (await listAll(t, '')).filter(f => !f.name.includes('/') && f.size <= 1048576 && !/^state/.test(f.name));
+  const small = []; for (const d of SMALL_FOLDERS) small.push(...await listAll(t, d));
+  const files = root.concat(small);
+  await pool(files, 6, async f => { bundle.files[f.name] = (await downloadRaw(t, f.name)).toString('base64'); });
+  log('extras: staff_users ' + bundle.staff_users.length + ' แถว, ไฟล์ ' + Object.keys(bundle.files).length + '/' + files.length);
+  if (Object.keys(bundle.files).length !== files.length) throw new Error('extras: ดาวน์โหลดไฟล์ไม่ครบ');
+  return zlib.gzipSync(Buffer.from(JSON.stringify(bundle)));
+}
+async function mirrorFiles(t) {
+  let copied = 0, total = 0, fail = 0;
+  for (const d of MIRROR_FOLDERS) {
+    const src = await listAll(t, d);
+    const have = new Set((await listAll(t, MIRROR_PREFIX + '/' + d)).map(f => f.name.slice(MIRROR_PREFIX.length + 1)));
+    const todo = src.filter(f => !have.has(f.name));
+    total += src.length;
+    fail += await pool(todo, 8, async f => {
+      const res = await fetch(SUPABASE_URL + '/storage/v1/object/copy', { method: 'POST', headers: JH(t), body: JSON.stringify({ bucketId: BUCKET, sourceKey: f.name, destinationKey: MIRROR_PREFIX + '/' + f.name }) });
+      if (!res.ok) throw new Error('copy ' + f.name + ' failed: ' + res.status + ' ' + (await res.text()).slice(0, 100));
+      copied++;
+    });
+  }
+  log('mirror: คัดลอกใหม่ ' + copied + ' ไฟล์ (ทั้งหมดต้นทาง ' + total + ', ล้มเหลว ' + fail + ')');
+  if (fail) console.error('::warning::mirror คัดลอกไม่สำเร็จ ' + fail + ' ไฟล์ — รอบถัดไปจะลองใหม่');
+}
+
 // สำรองรายวัน (รัน 00:00 น. เวลาไทย): backups/daily/daily-YYYYMMDD.json.gz — มีของวันนี้แล้วข้าม, ลบไฟล์ที่เก่ากว่า 31 วัน
 async function dailyBackup(t) {
   const res = await fetch(SUPABASE_URL + '/storage/v1/object/list/' + BUCKET, {
@@ -78,7 +139,7 @@ async function dailyBackup(t) {
     body: JSON.stringify({ prefix: DAILY_PREFIX, limit: 1000, sortBy: { column: 'name', order: 'asc' } }),
   });
   if (!res.ok) throw new Error('list daily failed: ' + res.status);
-  const names = (await res.json()).map(f => f.name).filter(n => /^daily-\d{8}\.json\.gz$/.test(n));
+  const names = (await res.json()).map(f => f.name).filter(n => /^daily-\d{8}(-extras)?\.json\.gz$/.test(n));
   const today = thaiDate(), file = 'daily-' + today + '.json.gz';
   if (names.includes(file)) { log('มี backup รายวันของ ' + today + ' แล้ว — ข้าม'); }
   else {
@@ -92,6 +153,14 @@ async function dailyBackup(t) {
     log('สำรองรายวัน: app-data/' + DAILY_PREFIX + '/' + file + ' (' + Math.round(gz.length / 1024) + ' KB, ' + n + ' ออเดอร์)');
     names.push(file);
   }
+  const extrasFile = 'daily-' + today + '-extras.json.gz';
+  if (!names.includes(extrasFile)) {
+    const gz = await extrasBundle(t);
+    await upload(t, DAILY_PREFIX + '/' + extrasFile, gz);
+    log('สำรอง extras: ' + extrasFile + ' (' + Math.round(gz.length / 1024) + ' KB)');
+    names.push(extrasFile);
+  }
+  await mirrorFiles(t);
   const cutoff = thaiDate(Date.now() - DAILY_KEEP_DAYS * 864e5);
   const del = names.filter(x => x.slice(6, 14) < cutoff).map(x => DAILY_PREFIX + '/' + x);
   if (!del.length) return;

@@ -1,6 +1,6 @@
 name: Backup state.json (daily 00:00)
 
-# สำรอง state.json ทุกวัน 00:00 น. เวลาไทย (= 17:00 UTC) ไปที่ app-data/backups/daily/daily-YYYYMMDD.json.gz เก็บ 1 เดือน เกินแล้วลบเอง
+# สำรองทุกอย่าง (state.json + staff_users + ไฟล์ใน bucket) ทุกวัน 00:00 น. เวลาไทย (= 17:00 UTC) ไปที่ app-data/backups/daily/daily-YYYYMMDD.json.gz เก็บ 1 เดือน เกินแล้วลบเอง
 # cron ของ GitHub มักช้า/ข้ามรอบ จึงตั้งซ้ำหลายรอบ — สคริปต์ข้ามเองถ้าวันนั้นมีไฟล์แล้ว
 on:
   schedule:
@@ -17,7 +17,7 @@ concurrency:
 jobs:
   backup:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
