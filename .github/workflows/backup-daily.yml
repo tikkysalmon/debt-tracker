@@ -1,0 +1,31 @@
+name: Backup state.json (daily 00:00)
+
+# สำรอง state.json ทุกวัน 00:00 น. เวลาไทย (= 17:00 UTC) ไปที่ app-data/backups/daily/daily-YYYYMMDD.json.gz เก็บ 1 เดือน เกินแล้วลบเอง
+# cron ของ GitHub มักช้า/ข้ามรอบ จึงตั้งซ้ำหลายรอบ — สคริปต์ข้ามเองถ้าวันนั้นมีไฟล์แล้ว
+on:
+  schedule:
+    - cron: '0 17 * * *'
+    - cron: '30 17 * * *'
+    - cron: '0 18 * * *'
+    - cron: '0 19 * * *'
+  workflow_dispatch: {}
+
+concurrency:
+  group: backup-daily
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Daily backup state.json
+        env:
+          BACKUP_MODE: daily
+          CRM_USERNAME: ${{ secrets.CRM_USERNAME }}
+          CRM_PASSWORD: ${{ secrets.CRM_PASSWORD }}
+        run: node scripts/backup-state.js

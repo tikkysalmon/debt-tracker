@@ -13,6 +13,7 @@ const USERNAME = process.env.CRM_USERNAME, PASSWORD = process.env.CRM_PASSWORD;
 const BUCKET = 'app-data', PREFIX = 'backups';
 const MIN_ORDERS_TO_COMPARE = 200, MAX_DROP = 0.2;
 const KEEP_RECENT = 16, KEEP_DAILY_DAYS = 30;
+const DAILY = process.env.BACKUP_MODE === 'daily', DAILY_PREFIX = PREFIX + '/daily', DAILY_KEEP_DAYS = 31; // โหมดรายวัน: 1 ไฟล์/วัน (เวลาไทย) เก็บ 31 วัน
 
 function log(m) { console.log('[' + new Date().toISOString() + '] ' + m); }
 function employeeCodeToEmail(code) {
@@ -68,9 +69,42 @@ async function prune(t, files) {
   log(res.ok ? 'ลบ backup เก่า ' + del.length + ' ไฟล์' : 'WARN: ลบ backup เก่าไม่สำเร็จ (' + res.status + ') — ข้ามได้ ไม่กระทบข้อมูล');
 }
 
+function thaiDate(ms) { return new Date((ms || Date.now()) + 7 * 3600e3).toISOString().slice(0, 10).replace(/-/g, ''); } // YYYYMMDD ตามเวลาไทย
+
+// สำรองรายวัน (รัน 00:00 น. เวลาไทย): backups/daily/daily-YYYYMMDD.json.gz — มีของวันนี้แล้วข้าม, ลบไฟล์ที่เก่ากว่า 31 วัน
+async function dailyBackup(t) {
+  const res = await fetch(SUPABASE_URL + '/storage/v1/object/list/' + BUCKET, {
+    method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, H(t)),
+    body: JSON.stringify({ prefix: DAILY_PREFIX, limit: 1000, sortBy: { column: 'name', order: 'asc' } }),
+  });
+  if (!res.ok) throw new Error('list daily failed: ' + res.status);
+  const names = (await res.json()).map(f => f.name).filter(n => /^daily-\d{8}\.json\.gz$/.test(n));
+  const today = thaiDate(), file = 'daily-' + today + '.json.gz';
+  if (names.includes(file)) { log('มี backup รายวันของ ' + today + ' แล้ว — ข้าม'); }
+  else {
+    const raw = await downloadRaw(t, 'state.json');
+    const cur = parseState(raw);
+    const n = Array.isArray(cur.orders) ? cur.orders.length : -1;
+    if (n < 0) throw new Error('state.json อ่านได้แต่ไม่มี orders');
+    if (n === 0) console.error('::warning::state.json มี 0 ออเดอร์ — เก็บสำเนาไว้ตามปกติ แต่ควรตรวจข้อมูลทันที');
+    const gz = (raw[0] === 0x1f && raw[1] === 0x8b) ? raw : zlib.gzipSync(raw);
+    await upload(t, DAILY_PREFIX + '/' + file, gz);
+    log('สำรองรายวัน: app-data/' + DAILY_PREFIX + '/' + file + ' (' + Math.round(gz.length / 1024) + ' KB, ' + n + ' ออเดอร์)');
+    names.push(file);
+  }
+  const cutoff = thaiDate(Date.now() - DAILY_KEEP_DAYS * 864e5);
+  const del = names.filter(x => x.slice(6, 14) < cutoff).map(x => DAILY_PREFIX + '/' + x);
+  if (!del.length) return;
+  const d = await fetch(SUPABASE_URL + '/storage/v1/object/' + BUCKET, {
+    method: 'DELETE', headers: Object.assign({ 'Content-Type': 'application/json' }, H(t)), body: JSON.stringify({ prefixes: del }),
+  });
+  log(d.ok ? 'ลบ backup รายวันที่เก่ากว่า 1 เดือน ' + del.length + ' ไฟล์' : 'WARN: ลบ backup รายวันเก่าไม่สำเร็จ (' + d.status + ')');
+}
+
 (async () => {
   if (!USERNAME || !PASSWORD) throw new Error('ต้องตั้ง CRM_USERNAME / CRM_PASSWORD');
   const t = await login();
+  if (DAILY) return dailyBackup(t);
   const raw = await downloadRaw(t, 'state.json');
   const cur = parseState(raw);
   const curCount = Array.isArray(cur.orders) ? cur.orders.length : -1;
