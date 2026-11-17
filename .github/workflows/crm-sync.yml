@@ -2,7 +2,10 @@ name: CRM Debt Reconciliation
 
 on:
   schedule:
-    - cron: '0 */2 * * *'
+    # GitHub delays/skips scheduled runs (observed 6-9h gaps vs the 2h target, 2026-11-17), so fire two staggered
+    # runs per 2h slot; the concurrency group below keeps them from overlapping and writing state at the same time.
+    - cron: '7 */2 * * *'
+    - cron: '37 */2 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -13,6 +16,10 @@ on:
         description: 'เลข SO เฉพาะที่ต้องการซิงก์ (คั่นด้วย , — เว้นว่าง = ทุกออเดอร์)'
         required: false
         default: ''
+
+concurrency:
+  group: crm-reconcile
+  cancel-in-progress: false
 
 jobs:
   reconcile:
