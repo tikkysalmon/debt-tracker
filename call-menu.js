@@ -276,7 +276,8 @@
     var rows = UI.bucket === 'paid' ? paidRows : UI.bucket === 'unowned' ? unowned : UI.bucket === 'mine' ? mine : active;
     if (UI.bucket === 'due' || UI.bucket === 'mine') {
       var sumOf = function (rs) { return rs.reduce(function (a, r) { return a + rowSnap(r); }, 0); };
-      var calledOf = function (rs) { return rs.filter(function (r) { return r.calls.length > 0; }).length; };
+      var CALL_STAT_FROM = '2026-11-18'; // นับเฉพาะการโทรตั้งแต่วันนี้ (ข้อมูลการโทรที่ใช้คำนวณค่าคอม)
+      var calledOf = function (rs) { return rs.filter(function (r) { return r.calls.some(function (c) { return String(c.at).slice(0, 10) >= CALL_STAT_FROM; }); }).length; };
       var dsub = [['all', 'ทุกวัน', rows.length, sumOf(rows), calledOf(rows)]].concat(DUE_DAYS.map(function (d) { var rs = rows.filter(function (r) { return r.dueDay === d; }); return [String(d), 'ทุกวันที่ ' + d, rs.length, sumOf(rs), calledOf(rs)]; }));
       if (UI.bucket === 'due') {
         var totAmt = Math.max(1, dsub[0][3]);
@@ -287,7 +288,7 @@
             '<div class="pf" style="font-size:20px;font-weight:700;margin:6px 0 2px;color:' + (on ? '#fff' : '#e03131') + '">฿' + money(t[3]) + '</div>' +
             '<div style="font-size:12px;opacity:' + (on ? 0.95 : 0.7) + '">' + t[2] + ' ราย' + (t[0] === 'all' ? '' : ' · ' + pct.toFixed(1) + '% ของยอดรวม') + '</div>' +
             '<div style="height:5px;border-radius:5px;background:' + (on ? 'rgba(255,255,255,.35)' : 'rgba(0,0,0,.07)') + ';margin-top:8px;overflow:hidden"><i style="display:block;height:100%;width:' + pct + '%;border-radius:5px;background:' + (on ? '#fff' : 'linear-gradient(90deg,#ff951d,#e03131)') + '"></i></div>' +
-            (function () { var n = t[2], c = t[4], cp = n ? c / n * 100 : 0; return '<div style="font-size:11.5px;margin-top:8px;line-height:1.5;opacity:' + (on ? 0.95 : 0.85) + '">📞 โทรแล้ว <b>' + cp.toFixed(1) + '%</b> (' + c + '/' + n + ' ราย)<br>เหลือ <b>' + (n ? 100 - cp : 0).toFixed(1) + '%</b> (' + (n - c) + ' ราย)</div>'; })() + '</div>';
+            (function () { var n = t[2], c = t[4], cp = n ? c / n * 100 : 0; return '<div style="font-size:11.5px;margin-top:8px;line-height:1.5;opacity:' + (on ? 0.95 : 0.85) + '">📞 โทรแล้ว (ตั้งแต่ 18/11/2026) <b>' + cp.toFixed(1) + '%</b> (' + c + '/' + n + ' ราย)<br>เหลือ <b>' + (n ? 100 - cp : 0).toFixed(1) + '%</b> (' + (n - c) + ' ราย)</div>'; })() + '</div>';
         }).join('') + '</div>';
       } else {
         h += '<div class="tabs" style="margin-top:-6px"><span class="muted" style="align-self:center">วันครบกำหนดชำระ:</span>' + dsub.map(function (t) { return '<div class="tab sub ' + (String(UI.dueDay) === t[0] ? 'on' : '') + '" data-cm-act="dueDay" data-v="' + t[0] + '">' + t[1] + ' <span class="n">' + t[2] + '</span></div>'; }).join('') + '</div>';
