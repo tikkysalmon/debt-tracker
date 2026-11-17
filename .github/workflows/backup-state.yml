@@ -1,0 +1,23 @@
+name: Backup state.json
+
+# สำรอง state.json ลง app-data/backups/ ทุก ~3 ชม. และเฝ้าระวังออเดอร์ลดผิดปกติ (ล้มเหลว = GitHub ส่งอีเมลแจ้งเตือน)
+# ตั้งขึ้นหลังข้อมูลหายเมื่อ 2026-11-10 / 2026-11-17 — ดู scripts/backup-state.js
+on:
+  schedule:
+    - cron: '15 */3 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Backup state.json
+        env:
+          CRM_USERNAME: ${{ secrets.CRM_USERNAME }}
+          CRM_PASSWORD: ${{ secrets.CRM_PASSWORD }}
+        run: node scripts/backup-state.js
