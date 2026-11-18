@@ -74,6 +74,7 @@
       notes: i.note ? String(i.note).split('\n').filter(Boolean) : [], calls: i.callLog || []
     };
   }
+  var REFS = {};   // บุคคลอ้างอิงอาจกรอกไว้ที่ order อื่นของลูกค้าคนเดียวกัน → ใช้เป็นค่าสำรอง
   function toRow(o) {
     var insts = (o.installments || []).map(function (i) { return mkInst(i, 'main'); }).concat((o.accessoryInstallments || []).map(function (i) { return mkInst(i, 'accessory'); }));
     if (!insts.length) return null;
@@ -85,9 +86,12 @@
     }).sort(function (a, b) { return a.at < b.at ? -1 : a.at > b.at ? 1 : 0; });
     var payments = [];
     insts.forEach(function (i) { if (i.paid > 0 && i.paidDate) payments.push({ date: i.paidDate, amt: i.paid }); });
-    return { id: o.customerId, name: o.customerName, so: o.orderId, phone: o.phone || '', refName: o.referenceName || '', refPhone: o.referencePhone || '', insts: insts, dueDay: dayGroup(day), calls: calls, payments: payments, owner: o.callOwner || null, ownerLog: o.callOwnerLog || [], order: o };
+    return { id: o.customerId, name: o.customerName, so: o.orderId, phone: o.phone || '', refName: o.referenceName || (REFS[o.customerId] || {}).n || '', refPhone: o.referencePhone || (REFS[o.customerId] || {}).p || '', insts: insts, dueDay: dayGroup(day), calls: calls, payments: payments, owner: o.callOwner || null, ownerLog: o.callOwnerLog || [], order: o };
   }
-  function buildRows() { return CTX.orders().map(toRow).filter(Boolean); }
+  function buildRows() {
+    REFS = {};
+    CTX.orders().forEach(function (o) { if (o.customerId && (o.referenceName || o.referencePhone)) { var x = REFS[o.customerId] || (REFS[o.customerId] = { n: '', p: '' }); if (!x.n) x.n = o.referenceName || ''; if (!x.p) x.p = o.referencePhone || ''; } });
+    return CTX.orders().map(toRow).filter(Boolean); }
 
   /* ---------- รอบตัดยอด / ยอดค้างที่ดึงมา ---------- */
   function cutoffFor(dd, y, m) {
@@ -420,6 +424,7 @@
     return '<div class="mask" data-cm-act="closeMask"><div class="modal">' +
       '<div class="mh"><div><h2 style="margin:0;font-size:19px">' + esc(r.name) + ' <span class="code" style="font-size:14px">' + esc(r.id) + '</span></h2>' +
       '<div class="muted" style="margin-top:4px">คำสั่งซื้อ <b style="color:var(--o2)">' + esc(r.so) + '</b> · โทร ' + esc(r.phone) + ' · ผู้บันทึก: <b>' + esc(me()) + '</b> (ระบบบันทึกชื่อพนักงานให้อัตโนมัติ)</div>' +
+      '<div class="muted" style="margin-top:3px">👤 บุคคลอ้างอิง: <b style="color:#7048e8">' + esc(r.refName || '-') + '</b> · โทร ' + (r.refPhone ? '<a href="tel:' + esc(String(r.refPhone).replace(/[^0-9+]/g, '')) + '" style="color:#7048e8;font-weight:700">' + esc(r.refPhone) + '</a>' : '-') + '</div>' +
       '<div style="margin-top:8px">' + (u.length ? '<span class="pill p-red">' + esc(instLabel(u)) + ' · ยอดค้างที่ดึงมา ฿' + money(rowSnap(r)) + '</span>' : '<span class="pill p-green">ชำระครบแล้ว</span>') + ' ' + (ra ? '<span class="pill p-violet">🔔 ' + esc(ra.why) + '</span>' : '') + ' ' + (r.owner ? '<span class="pill p-blue">🔒 ผู้รับผิดชอบ: ' + esc(r.owner) + '</span>' : '<span class="pill p-amber">ยังไม่มีผู้รับผิดชอบ — ผู้ที่บันทึกการโทรก่อนจะเป็นเจ้าของ</span>') + '</div></div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap">' + (canXfer ? '<button class="btn ghost sm" data-cm-act="xferOpen" data-v="' + esc(r.so) + '">🔄 โอนเคส</button>' : '') + '<button class="btn ghost sm" data-cm-act="close">✕ ปิด</button></div></div>' +
       '<div class="cols"><div><div class="box"><h4>📞 บันทึกการโทร</h4>' + summary + callBox + '</div>' + ownerLogHtml + '<div class="box"><h4>🕐 ประวัติการโทร (' + r.calls.length + ')</h4>' + hist + '</div></div>' +
