@@ -218,7 +218,8 @@
 
   /* ---------- เงื่อนไขการขอเลื่อนชำระ ---------- */
   function reschedulePlan(r, ptpDate) {
-    var u = unpaid(r).sort(function (a, b) { return a.due < b.due ? -1 : 1; }), n = u.length, fees = rowFine(r) + rowSysFee(r);
+    // นับทุกงวดที่ค้าง ณ วันนี้ (ยอดที่ดึงมา + งวดที่เลยกำหนดหลังรอบตัดยอด) เพื่อกำหนดระดับเงื่อนไข
+    var u = unpaid(r).concat(extraOverdue(r)).sort(function (a, b) { return a.due < b.due ? -1 : 1; }), n = u.length, fees = rowFine(r) + rowSysFee(r);
     var items = [], now = 0, waive = false, tier = '';
     function feeItem() { if (fees > 0) items.push({ t: 'ค่าปรับชำระล่าช้า + ค่าธรรมเนียมระบบ (ณ วันที่นัด)', a: fees, due: ptpDate }); }
     function nm(i) { return instLabel([i]); }
@@ -229,7 +230,7 @@
     } else if (n === 3) {
       tier = 'ค้างมากกว่า 2 งวด ไม่เกิน 3 งวด'; now = rem(u[0]) + rem(u[1]) + fees;
       items.push({ t: 'ชำระ ' + instLabel([u[0], u[1]]) + ' (ค้างนานสุด 2 งวด) ณ วันที่นัด', a: rem(u[0]) + rem(u[1]), due: ptpDate }); feeItem();
-      var snapKeys = {}; chaseInsts(r).forEach(function (i) { snapKeys[i.key] = true; });
+      var snapKeys = {}; u.forEach(function (i) { snapKeys[i.key] = true; });
       var nx = r.insts.filter(function (i) { return i.due > TODAY_ISO && rem(i) > 0.005 && !snapKeys[i.key]; }).sort(function (a, b) { return a.due < b.due ? -1 : 1; })[0];
       items.push({ t: nm(u[2]) + ' (งวดที่ค้างปัจจุบัน) ทะยอยชำระก่อนครบกำหนดงวดถัดไป' + (nx ? ' (' + nm(nx) + ')' : ''), a: rem(u[2]), later: true, due: nx ? nx.due : '' });
     } else if (n === 2) {
