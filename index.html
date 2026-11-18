@@ -433,8 +433,11 @@
   function fmtMoney(n) {
     var v = Number(n || 0);
     if (!isFinite(v)) return '0.00';
-    return v.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return _moneyFmt.format(v);
   }
+  // Number.prototype.toLocaleString สร้าง Intl.NumberFormat ใหม่ทุกครั้งที่เรียก (ช้ามาก — computeOrdersUncached เรียกราว 15 ครั้ง/ออเดอร์ × หลายหมื่นออเดอร์ = หลายวินาที)
+  // จึงสร้างตัวจัดรูปแบบครั้งเดียวแล้วใช้ซ้ำ ผลลัพธ์เหมือนเดิมทุกประการ
+  var _moneyFmt = new Intl.NumberFormat('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   function fmtDate(s) {
     if (!s) return '-';
     var d = new Date(s);
@@ -2426,13 +2429,18 @@
   // True once today >= i.dueDate (date-only comparison, same "midnight" normalization computeStatus
   // itself uses). Named separately from computeStatus's internal diffDays so withEffectiveStatus can
   // ask this one question without re-deriving the auto status — see overrideStale below.
+  // เรียกซ้ำเป็นแสนครั้งต่อการ render — แคชเที่ยงคืนของวันนี้ (รีเฟรชทุก 1 วินาที) และเที่ยงคืนของแต่ละวันครบกำหนด แทนการสร้าง Date ใหม่ทุกครั้ง (ผลลัพธ์เท่าเดิม)
+  var _todayMidCache = { at: 0, ms: 0 }, _dueMidCache = Object.create(null);
   function isDueDateReached(inst) {
-    var due = new Date(inst.dueDate);
-    if (isNaN(due.getTime())) return false;
-    var today = new Date();
-    var todayMid = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    var dueMid = new Date(due.getFullYear(), due.getMonth(), due.getDate());
-    return todayMid >= dueMid;
+    var now = Date.now();
+    if (now - _todayMidCache.at > 1000) { var t = new Date(now); _todayMidCache = { at: now, ms: new Date(t.getFullYear(), t.getMonth(), t.getDate()).getTime() }; }
+    var key = String(inst.dueDate), dm = _dueMidCache[key];
+    if (dm === undefined) {
+      var due = new Date(inst.dueDate);
+      dm = isNaN(due.getTime()) ? NaN : new Date(due.getFullYear(), due.getMonth(), due.getDate()).getTime();
+      _dueMidCache[key] = dm;
+    }
+    return dm === dm && _todayMidCache.ms >= dm;
   }
   // เปลี่ยนภาพพักหน้าจอ (plain, manual — see confirmPostpone) now also expires once its OWN due
   // date arrives, not just on payment: a "เลื่อนวันชำระ" postpone sets this status as a placeholder
@@ -15914,7 +15922,7 @@
   var CT_TH_MONTHS = ['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน', 'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'];
   function ctThMonth(mk) { return CT_TH_MONTHS[Number(mk.slice(5, 7)) - 1] + ' ' + (Number(mk.slice(0, 4)) + 543); }
   function ctThDate(iso) { var p = iso.split('-').map(Number); return p[2] + ' ' + CT_TH_MONTHS[p[1] - 1] + ' ' + (p[0] + 543); }
-  function ctM2(n) { return Number(n || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function ctM2(n) { return _moneyFmt.format(Number(n || 0)); }
   // บันทึกภายใน: Target เริ่มนับจากเดือนที่โทร 2026-10 (user สั่ง 2026-11-18) — ตัวเลือกเดือนตั้งแต่ ต.ค. 2026 ถึงเดือนปัจจุบัน
   var CT_MEMO_FIRST_MONTH = '2025-10', CT_MEMO_DEFAULT_MONTH = '2026-10';
   function ctMemoMonths() {
