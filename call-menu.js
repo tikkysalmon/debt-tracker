@@ -125,32 +125,6 @@
     return UI.month === 'latest' ? lastCutoff(dd) : null;
   }
   var NOT_OWED_STATUS = ['ชำระแล้ว', 'ยังไม่ถึงกำหนดชำระ', 'ถึงกำหนดชำระ', 'ยกเลิกบิล', 'ยกเลิกสัญญา คืนเครื่อง'];
-  // กระทบยอดกับกราฟ Dashboard 'ยอดรวมหนี้ทั้งหมดแยกตามเดือนวันครบกำหนดชำระ' — ใช้กติกานับเดียวกับ Dashboard (computeDashboard: ค้างชำระ/ชำระบางส่วน/หนี้สงสัยจะสูญ
-  // + งวดสถานะอื่นที่ยังมียอดคงเหลือเมื่อบัญชียังไม่ปิดยอด) แล้วแยกว่ายอดส่วนไหนอยู่ในเมนูนี้ / ส่วนไหนเมนูนี้ไม่ดึงมา (ดำเนินคดี, รอดำเนินคดี, อยู่กับบริษัทติดตามหนี้)
-  function monthRecon(mk) {
-    var inCm = {}, NOTDUE = ['ยังไม่ถึงกำหนดชำระ', 'ถึงกำหนดชำระ'], cat = { cm: 0, legal: 0, pending: 0, collector: 0, other: 0 };
-    CTX.orders().forEach(function (o) { inCm[o.orderId] = 1; });
-    CTX.allOrders().forEach(function (o) {
-      var all = (o.installments || []).concat(o.accessoryInstallments || []), net = 0, paid = 0, legal = CTX.isLegal(o);
-      all.forEach(function (i) { net += Math.max(0, Number(i.amountDue || 0) - Number(i.discount || 0)); paid += Number(i.amountPaid || 0); });
-      var settled = paid >= net - 0.005;
-      all.forEach(function (i) {
-        if (!i.dueDate || String(i.dueDate).slice(0, 7) !== mk || String(i.dueDate).slice(0, 10) > TODAY_ISO) return;
-        var rem = Math.max(0, Math.max(0, Number(i.amountDue || 0) - Number(i.discount || 0)) - Number(i.amountPaid || 0));
-        if (rem <= 0.005) return;
-        var st = i.effectiveStatus, grp = CTX.statusGroup(st), explicit = st === 'ชำระบางส่วน' || grp === 'ค้างชำระ' || grp === 'หนี้สงสัยจะสูญ', notdue = NOTDUE.indexOf(st) !== -1;
-        var counted = legal ? !(!explicit && !notdue && settled) : (explicit || (!notdue && !settled));
-        if (!counted) return;
-        if (inCm[o.orderId] && !legal && NOT_OWED_STATUS.indexOf(st) === -1) cat.cm += rem;
-        else if (legal) cat.legal += rem;
-        else if (st === 'รอดำเนินคดี') cat.pending += rem;
-        else if (o.isSold || st === 'ติดตามโดยบริษัทติดตามหนี้' || st === 'จำหน่ายชื่อให้บริษัทติดตามหนี้') cat.collector += rem;
-        else cat.other += rem;
-      });
-    });
-    cat.total = cat.cm + cat.legal + cat.pending + cat.collector + cat.other;
-    return cat;
-  }
   // ระบบเก็บวันที่ชำระล่าสุดของแต่ละงวดเพียงค่าเดียว — ถือว่างวดที่ชำระหลังวันตัดยอดยังค้างอยู่ ณ วันตัดยอด
   function paidAsOf(i, c) { return (i.paidDate && i.paidDate <= c) ? i.paid : 0; }
   function snap(r) {
@@ -349,7 +323,6 @@
       '<div class="rule">• <b>ยอดที่ดึงมาจะแสดงคงเดิม</b> แม้ลูกค้าชำระหลังดึงยอด — ยอดที่ชำระหลังตัดรอบแสดงแยกในคอลัมน์ "ยอดที่ชำระ" · <b>รอบถัดไปยอดค้างบวกสะสม</b> (ยอดค้างเดิมที่ยังไม่ชำระ + งวดใหม่ที่ครบกำหนด) · ลูกค้าที่ค้างแต่ยังไม่ถึงรอบตัดยอด (' + belowN + ' ราย) ยังอยู่ในขั้น SMS/จดหมาย/ล็อคเครื่อง จึงไม่แสดงในรายการนี้<br>• <b>ลูกค้าถูกล็อกเป็นของพนักงานคนแรกที่กดรับหรือบันทึกการโทร</b> — คนอื่นโทรแทนไม่ได้ ยอดชำระนับให้ผู้รับผิดชอบ (Admin โอนเคสได้)</div></div>';
     h += '<div class="card" style="padding:12px 18px;display:flex;gap:12px;align-items:center;flex-wrap:wrap"><b>📅 ยอดค้างชำระตามเดือนครบกำหนดชำระ</b>' +
       '<select data-cm-bind="monthSel"><option value="latest"' + (UI.month === 'latest' ? ' selected' : '') + '>รอบล่าสุดที่ดึงแล้ว — ยอดสะสม (ค่าเริ่มต้น)</option>' + monthOptions().slice().reverse().map(function (mk) { return '<option value="' + mk + '"' + (UI.month === mk ? ' selected' : '') + '>' + esc(monthLabel(mk)) + '</option>'; }).join('') + '</select>' +
-      (UI.month === 'latest' ? '' : (function () { var rc = monthRecon(UI.month); return '<div style="flex-basis:100%;font-size:12.5px;background:#f6f8fb;border-radius:10px;padding:8px 12px;line-height:1.7">🔎 <b>กระทบยอดกับกราฟ Dashboard เดือน' + esc(monthLabel(UI.month)) + ': ฿' + money(rc.total) + '</b> = เมนูนี้ ฿' + money(rc.cm) + ' + ดำเนินคดีทางกฎหมาย ฿' + money(rc.legal) + ' + รอดำเนินคดี ฿' + money(rc.pending) + ' + อยู่กับบริษัทติดตามหนี้ ฿' + money(rc.collector) + (rc.other > 0.005 ? ' + อื่นๆ ฿' + money(rc.other) : '') + ' <span class="muted">(สามกลุ่มหลังไม่ถูกดึงเข้าเมนูโทร)</span></div>'; })()) +
       '<span class="muted">' + (UI.month === 'latest' ? 'ยอดสะสม ณ วันตัดยอดล่าสุดของแต่ละวันครบกำหนด (รวมค้างเดือนก่อนๆ)' : 'เฉพาะงวดที่ครบกำหนดเดือน' + esc(monthLabel(UI.month)) + ' ยอดคงเหลือปัจจุบัน — ตรงกับกราฟ Dashboard แต่ไม่รวมลูกค้าดำเนินคดี/จำหน่ายชื่อ/ยกเลิก · ยังแยกตามวันครบกำหนดเหมือนเดิม') + '</span></div>';
     var tabsDef = [['all', 'ทั้งหมด', active.length], ['due', 'วันครบกำหนดชำระ', active.length], ['unowned', 'ยังไม่มีผู้รับผิดชอบ', unowned.length], ['mine', 'ลูกค้าของฉัน', mine.length]];
     if (isAdmin()) tabsDef.push(['paid', '✅ ชำระแล้ว', paidRows.length]);
