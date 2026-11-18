@@ -17,12 +17,13 @@
     { key: 'cancel', label: 'ติดต่อได้ - ขอยกเลิกคืนเครื่อง' },
     { key: 'busy', label: 'ติดต่อไม่ได้ - สายไม่ว่าง' },
     { key: 'unreachable', label: 'ติดต่อไม่ได้ - ปิดเครื่อง/เบอร์ผิด' },
+    { key: 'reference', label: 'ติดต่อได้ - ติดต่อกับบุคคลอ้างอิง' },
     { key: 'no_answer', label: 'ติดต่อไม่ได้ - ไม่รับสาย' },
     { key: 'voicemail', label: 'ฝากข้อความ' }
   ];
-  var RES_LABEL = { ptp: 'ติดต่อได้ - รับปากจะจ่าย', reschedule: 'ติดต่อได้ - ขอเลื่อน', cancel: 'ติดต่อได้ - ขอยกเลิกคืนเครื่อง', refuse: 'ติดต่อได้ - ปฏิเสธจ่าย', dispute: 'ติดต่อได้ - โต้แย้งยอดหนี้', busy: 'ติดต่อไม่ได้ - สายไม่ว่าง', unreachable: 'ติดต่อไม่ได้ - ปิดเครื่อง/เบอร์ผิด', no_answer: 'ติดต่อไม่ได้ - ไม่รับสาย', voicemail: 'ฝากข้อความ' };
+  var RES_LABEL = { reference: 'ติดต่อได้ - ติดต่อกับบุคคลอ้างอิง', ptp: 'ติดต่อได้ - รับปากจะจ่าย', reschedule: 'ติดต่อได้ - ขอเลื่อน', cancel: 'ติดต่อได้ - ขอยกเลิกคืนเครื่อง', refuse: 'ติดต่อได้ - ปฏิเสธจ่าย', dispute: 'ติดต่อได้ - โต้แย้งยอดหนี้', busy: 'ติดต่อไม่ได้ - สายไม่ว่าง', unreachable: 'ติดต่อไม่ได้ - ปิดเครื่อง/เบอร์ผิด', no_answer: 'ติดต่อไม่ได้ - ไม่รับสาย', voicemail: 'ฝากข้อความ' };
   var NEED_DATE = { reschedule: true, ptp: true };
-  var RECALL_DAYS = { busy: 1, no_answer: 1, voicemail: 1, unreachable: 2, cancel: 3, refuse: 3, dispute: 3 };
+  var RECALL_DAYS = { reference: 1, busy: 1, no_answer: 1, voicemail: 1, unreachable: 2, cancel: 3, refuse: 3, dispute: 3 };
   var DUE_DAYS = [1, 5, 15, 25, 30];
   // รอบตัดยอดลูกหนี้เข้าเมนู: ดึงเวลา 00:00 น. ของวันโทร (= วันตัดยอด + 1) โดยใช้ยอดค้าง ณ สิ้นวันตัดยอด
   var CUT_RULES = {
@@ -84,7 +85,7 @@
     }).sort(function (a, b) { return a.at < b.at ? -1 : a.at > b.at ? 1 : 0; });
     var payments = [];
     insts.forEach(function (i) { if (i.paid > 0 && i.paidDate) payments.push({ date: i.paidDate, amt: i.paid }); });
-    return { id: o.customerId, name: o.customerName, so: o.orderId, phone: o.phone || '', insts: insts, dueDay: dayGroup(day), calls: calls, payments: payments, owner: o.callOwner || null, ownerLog: o.callOwnerLog || [], order: o };
+    return { id: o.customerId, name: o.customerName, so: o.orderId, phone: o.phone || '', refName: o.referenceName || '', refPhone: o.referencePhone || '', insts: insts, dueDay: dayGroup(day), calls: calls, payments: payments, owner: o.callOwner || null, ownerLog: o.callOwnerLog || [], order: o };
   }
   function buildRows() { return CTX.orders().map(toRow).filter(Boolean); }
 
@@ -235,7 +236,7 @@
     } else {
       if (!RECALL_DAYS[c.result]) return null;
       due = iso(addDays(parse(cd), RECALL_DAYS[c.result]));
-      why = { busy: 'สายไม่ว่าง — โทรซ้ำ', no_answer: 'ไม่รับสาย — โทรซ้ำ', voicemail: 'ฝากข้อความไว้ — โทรซ้ำ', unreachable: 'ปิดเครื่อง/เบอร์ผิด — หาเบอร์ใหม่/โทรซ้ำ', cancel: 'ขอยกเลิกคืนเครื่อง — ส่งเรื่องให้ฝ่ายสัญญา/หัวหน้า แล้วติดตามผล', refuse: 'ปฏิเสธจ่าย — ติดตามซ้ำ/รายงานหัวหน้า', dispute: 'โต้แย้งยอด — ตรวจสอบแล้วโทรกลับ' }[c.result];
+      why = { reference: 'ติดต่อผ่านบุคคลอ้างอิงแล้ว — โทรหาลูกค้าซ้ำ', busy: 'สายไม่ว่าง — โทรซ้ำ', no_answer: 'ไม่รับสาย — โทรซ้ำ', voicemail: 'ฝากข้อความไว้ — โทรซ้ำ', unreachable: 'ปิดเครื่อง/เบอร์ผิด — หาเบอร์ใหม่/โทรซ้ำ', cancel: 'ขอยกเลิกคืนเครื่อง — ส่งเรื่องให้ฝ่ายสัญญา/หัวหน้า แล้วติดตามผล', refuse: 'ปฏิเสธจ่าย — ติดตามซ้ำ/รายงานหัวหน้า', dispute: 'โต้แย้งยอด — ตรวจสอบแล้วโทรกลับ' }[c.result];
     }
     if (!due || due > TODAY_ISO) return null;
     return { r: r, c: c, due: due, why: why, late: diffDays(TODAY_ISO, due) };
@@ -370,6 +371,12 @@
       }).join('') : '<tr><td colspan="10" style="text-align:center;padding:32px;color:#8d93a0">ไม่มีรายการที่ต้องติดตามซ้ำ 🎉</td></tr>') + '</tbody></table></div></div>';
   }
   var PLAN_COLORS = [{ bg: '#e7f1ff', bd: '#339af0' }, { bg: '#ffe9e9', bd: '#e03131' }, { bg: '#e6f8f0', bd: '#12b886' }, { bg: '#f1ebff', bd: '#7048e8' }];
+  var REF_SHOW = { no_answer: true, busy: true, unreachable: true, voicemail: true, reference: true };
+  function refBox(r) {   // ลูกค้าติดต่อไม่ได้ → แสดงบุคคลอ้างอิงให้โทรต่อ
+    var has = r.refName || r.refPhone;
+    return '<div style="background:#f1ebff;border:1px solid #d0bfff;border-left:4px solid #7048e8;border-radius:10px;padding:8px 12px;margin-bottom:12px;font-size:12.5px"><b>👤 บุคคลอ้างอิง</b>' +
+      (has ? '<div style="margin-top:4px">ชื่อ: <b>' + esc(r.refName || '-') + '</b></div><div>เบอร์โทร: ' + (r.refPhone ? '<a href="tel:' + esc(String(r.refPhone).replace(/[^0-9+]/g, '')) + '" style="color:#7048e8;font-weight:700">' + esc(r.refPhone) + '</a>' : '<b>-</b>') + '</div>' : '<div class="muted" style="margin-top:4px">ไม่มีข้อมูลบุคคลอ้างอิงในระบบ</div>') + '</div>';
+  }
   function planBox(p) {
     return '<div style="background:#fff8e6;border:1px solid #f0d9a0;border-radius:12px;padding:10px 12px;margin-bottom:12px;font-size:12.5px"><b>เงื่อนไขการขอเลื่อนชำระ</b> <span class="pill p-amber">' + esc(p.tier) + '</span>' +
       p.items.map(function (x, ix) { var c = PLAN_COLORS[ix % PLAN_COLORS.length]; return '<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 8px;margin:4px 0;border-radius:8px;background:' + c.bg + ';border-left:4px solid ' + c.bd + '"><span style="flex:1;min-width:0">' + (x.later ? '⏱ ' : '• ') + esc(x.t) + (x.due ? '<br><span class="pill p-amber" style="white-space:normal">📅 ครบกำหนดชำระ ' + fmtD(x.due) + '</span>' : x.needPtp ? '<br><span class="muted">📅 ระบุวันที่นัดชำระ เพื่อให้ระบบคำนวณวันครบกำหนด</span>' : '') + '</span>' + (x.a ? '<b class="nowrap" style="flex-shrink:0">฿' + money(x.a) + '</b>' : '') + '</div>'; }).join('') +
@@ -389,6 +396,7 @@
       '<div class="field"><label>ผลการโทร</label><select data-cm-bind="result"><option value="">— เลือกผลการโทร —</option>' + CALL_RESULTS.map(function (o) { return '<option value="' + o.key + '" ' + (d.result === o.key ? 'selected' : '') + '>' + esc(o.label) + '</option>'; }).join('') + '</select></div>' +
       (needDate ? '<div style="display:flex;gap:8px"><div class="field" style="flex:1"><label>วันที่ลูกค้าขอเลื่อนไป (วันที่นัดชำระ)</label><input type="date" data-cm-bind="ptpDate" value="' + esc(d.ptpDate) + '"></div><div class="field" style="flex:1"><label>ยอดที่ต้องชำระ ณ วันนัด (บาท)</label><input type="number" min="0" step="0.01" data-cm-bind="ptpAmt" value="' + esc(d.ptpAmt) + '"></div></div>' : '') +
       (d.result === 'reschedule' ? planBox(reschedulePlan(r, d.ptpDate)) : '') +
+      (REF_SHOW[d.result] ? refBox(r) : '') +
       '<div class="field"><label>บันทึกเพิ่มเติม (ไม่บังคับ)</label><input type="text" data-cm-bind="note" value="' + esc(d.note) + '"></div><button class="btn" data-cm-act="saveCall" style="width:100%">บันทึกการโทร</button>';
     var summary = '<div style="background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:12px;font-size:13px">' +
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><b>สรุปยอดที่ต้องชำระ</b><span class="pill ' + payStatus(r).cls + '">' + esc(payStatus(r).label) + '</span></div>' +
@@ -486,13 +494,14 @@
     if (!d.result) return toast('กรุณาเลือกผลการโทร');
     if (r.owner && r.owner !== me() && !isAdmin()) return toast('ลูกค้ารายนี้เป็นของ ' + r.owner + ' — โทรได้เฉพาะเจ้าของ');
     var entry = { at: CTX.nowTimestamp(), by: me(), result: d.result, note: d.note.trim(), insts: d.nos.slice() };
+    if (d.result === 'reference') { entry.refName = r.refName; entry.refPhone = r.refPhone; }
     var plan = null;
     if (NEED_DATE[d.result]) {
       if (!d.ptpDate) return toast('กรุณาระบุวันที่นัดชำระ');
       entry.ptpDate = d.ptpDate; entry.ptpAmount = Number(d.ptpAmt) > 0 ? Number(d.ptpAmt) : null;
       plan = reschedulePlan(r, d.ptpDate); entry.plan = plan.items.map(function (x) { return x.t + (x.due ? ' [ครบกำหนด ' + fmtD(x.due) + ']' : '') + (x.a ? ' ฿' + money(x.a) : ''); });
     }
-    var label = 'โทร' + (RES_LABEL[entry.result] || '').replace(/\s*-\s*/g, '-') + (entry.ptpDate ? ' นัด ' + fmtD(entry.ptpDate) + (entry.ptpAmount ? ' ฿' + money(entry.ptpAmount) : '') : '') + (entry.note ? ' — ' + entry.note : '') + ' (' + entry.at + ' โดย ' + entry.by + ')';
+    var label = 'โทร' + (RES_LABEL[entry.result] || '').replace(/\s*-\s*/g, '-') + (entry.ptpDate ? ' นัด ' + fmtD(entry.ptpDate) + (entry.ptpAmount ? ' ฿' + money(entry.ptpAmount) : '') : '') + (d.result === 'reference' ? ' [' + (r.refName || '-') + ' ' + (r.refPhone || '-') + ']' : '') + (entry.note ? ' — ' + entry.note : '') + ' (' + entry.at + ' โดย ' + entry.by + ')';
     var selected = {}; d.nos.forEach(function (k) { selected[k] = true; });
     var waiveKeys = {}; if (plan && plan.waive) unpaid(r).forEach(function (i) { waiveKeys[i.key] = true; });
     function patchList(list, track) {
