@@ -183,27 +183,45 @@
   function reschedulePlan(r, ptpDate) {
     var u = unpaid(r).sort(function (a, b) { return a.due < b.due ? -1 : 1; }), n = u.length, fees = rowFine(r) + rowSysFee(r);
     var items = [], now = 0, waive = false, tier = '';
-    function feeItem() { if (fees > 0) items.push({ t: 'ค่าปรับชำระล่าช้า + ค่าธรรมเนียมระบบ (ณ วันที่นัด)', a: fees }); }
+    function feeItem() { if (fees > 0) items.push({ t: 'ค่าปรับชำระล่าช้า + ค่าธรรมเนียมระบบ (ณ วันที่นัด)', a: fees, due: ptpDate }); }
     function nm(i) { return instLabel([i]); }
     if (n >= 4) {
       tier = 'ค้างเกิน 3 งวด'; now = rem(u[0]); waive = true;
-      items.push({ t: 'ชำระ ' + nm(u[0]) + ' (ค้างนานสุด 1 งวด) ณ วันที่นัด', a: rem(u[0]) });
+      items.push({ t: 'ชำระ ' + nm(u[0]) + ' (ค้างนานสุด 1 งวด) ณ วันที่นัด', a: rem(u[0]), due: ptpDate });
       items.push({ t: 'ยกเว้นค่าปรับชำระล่าช้า + ค่าธรรมเนียมระบบ (ลงประวัติในตารางงวด) — หากชำระงวดถัดไปล่าช้า จะคิดตามปกติ ไม่ได้รับการยกเว้น', a: 0 });
     } else if (n === 3) {
       tier = 'ค้างมากกว่า 2 งวด ไม่เกิน 3 งวด'; now = rem(u[0]) + rem(u[1]) + fees;
-      items.push({ t: 'ชำระ ' + instLabel([u[0], u[1]]) + ' (ค้างนานสุด 2 งวด) ณ วันที่นัด', a: rem(u[0]) + rem(u[1]) }); feeItem();
+      items.push({ t: 'ชำระ ' + instLabel([u[0], u[1]]) + ' (ค้างนานสุด 2 งวด) ณ วันที่นัด', a: rem(u[0]) + rem(u[1]), due: ptpDate }); feeItem();
       var snapKeys = {}; chaseInsts(r).forEach(function (i) { snapKeys[i.key] = true; });
       var nx = r.insts.filter(function (i) { return i.due > TODAY_ISO && rem(i) > 0.005 && !snapKeys[i.key]; }).sort(function (a, b) { return a.due < b.due ? -1 : 1; })[0];
-      items.push({ t: nm(u[2]) + ' (งวดที่ค้างปัจจุบัน) ทะยอยชำระก่อนครบกำหนดงวดถัดไป' + (nx ? ' (' + nm(nx) + ' ครบ ' + fmtD(nx.due) + ')' : ''), a: rem(u[2]), later: true });
+      items.push({ t: nm(u[2]) + ' (งวดที่ค้างปัจจุบัน) ทะยอยชำระก่อนครบกำหนดงวดถัดไป' + (nx ? ' (' + nm(nx) + ')' : ''), a: rem(u[2]), later: true, due: nx ? nx.due : '' });
     } else if (n === 2) {
       tier = 'ค้างมากกว่า 1 งวด ไม่เกิน 2 งวด'; now = rem(u[0]) + fees;
-      items.push({ t: 'ชำระ ' + nm(u[0]) + ' (ค้างนานสุด 1 งวด) ณ วันที่นัด', a: rem(u[0]) }); feeItem();
-      items.push({ t: nm(u[1]) + ' (งวดที่ค้างปัจจุบัน) ชำระ 70% ของค่างวด ภายใน 7 วันหลังวันที่นัดชำระ' + (ptpDate ? ' (ภายใน ' + fmtD(iso(addDays(parse(ptpDate), 7))) + ')' : ''), a: Math.round(u[1].amt * 0.7), later: true });
+      items.push({ t: 'ชำระ ' + nm(u[0]) + ' (ค้างนานสุด 1 งวด) ณ วันที่นัด', a: rem(u[0]), due: ptpDate }); feeItem();
+      items.push({ t: nm(u[1]) + ' (งวดที่ค้างปัจจุบัน) ชำระ 70% ของค่างวด ภายใน 7 วันหลังวันที่นัดชำระ', a: Math.round(u[1].amt * 0.7), later: true, due: ptpDate ? iso(addDays(parse(ptpDate), 7)) : '', needPtp: !ptpDate });
     } else {
       tier = 'ค้าง 1 งวด (ยังไม่มีเงื่อนไขพิเศษ)'; now = n ? rem(u[0]) : 0;
-      if (n) items.push({ t: 'ชำระ ' + nm(u[0]) + ' ณ วันที่นัด', a: rem(u[0]) });
+      if (n) items.push({ t: 'ชำระ ' + nm(u[0]) + ' ณ วันที่นัด', a: rem(u[0]), due: ptpDate });
     }
-    return { n: n, tier: tier, items: items, now: now, waive: waive };
+    // เงื่อนไขรายงวด — ใช้ลงหมายเหตุ/ประวัติการโทรของแต่ละงวดให้ตรงกับงวดนั้น
+    var per = {}, pd = ptpDate ? fmtD(ptpDate) : '';
+    function setPer(i, text, amt, due) { per[i.key] = { text: text, amt: amt, due: due || '' }; }
+    if (n >= 4) {
+      setPer(u[0], 'ชำระ ฿' + money(rem(u[0])) + ' ณ วันที่นัด ' + pd + ' (ยกเว้นค่าปรับชำระล่าช้า + ค่าธรรมเนียมระบบ)', rem(u[0]), ptpDate);
+      u.slice(1).forEach(function (i) { setPer(i, 'ยังไม่ต้องชำระ ณ วันที่นัด — ยกเว้นค่าปรับชำระล่าช้า + ค่าธรรมเนียมระบบ (หากชำระล่าช้าคิดตามปกติ)', 0, ''); });
+    } else if (n === 3) {
+      setPer(u[0], 'ชำระ ฿' + money(rem(u[0])) + ' ณ วันที่นัด ' + pd, rem(u[0]), ptpDate);
+      setPer(u[1], 'ชำระ ฿' + money(rem(u[1])) + ' ณ วันที่นัด ' + pd, rem(u[1]), ptpDate);
+      var l3 = items[items.length - 1];
+      setPer(u[2], 'ทะยอยชำระ ฿' + money(rem(u[2])) + ' ก่อนครบกำหนดงวดถัดไป' + (l3.due ? ' (ภายใน ' + fmtD(l3.due) + ')' : ''), rem(u[2]), l3.due);
+    } else if (n === 2) {
+      var l2 = items[items.length - 1];
+      setPer(u[0], 'ชำระ ฿' + money(rem(u[0])) + ' ณ วันที่นัด ' + pd, rem(u[0]), ptpDate);
+      setPer(u[1], 'ชำระ 70% ของค่างวด ฿' + money(l2.a) + ' ภายใน 7 วันหลังวันที่นัด' + (l2.due ? ' (ภายใน ' + fmtD(l2.due) + ')' : ''), l2.a, l2.due);
+    } else if (n === 1) {
+      setPer(u[0], 'ชำระ ฿' + money(rem(u[0])) + ' ณ วันที่นัด ' + pd, rem(u[0]), ptpDate);
+    }
+    return { n: n, tier: tier, items: items, now: now, waive: waive, per: per };
   }
 
   /* ---------- แจ้งเตือนติดตามซ้ำ ---------- */
@@ -351,9 +369,10 @@
           '<td><button class="btn sm" data-cm-act="open" data-v="' + esc(a.r.so) + '">📞 โทรซ้ำ</button></td></tr>';
       }).join('') : '<tr><td colspan="10" style="text-align:center;padding:32px;color:#8d93a0">ไม่มีรายการที่ต้องติดตามซ้ำ 🎉</td></tr>') + '</tbody></table></div></div>';
   }
+  var PLAN_COLORS = [{ bg: '#e7f1ff', bd: '#339af0' }, { bg: '#ffe9e9', bd: '#e03131' }, { bg: '#e6f8f0', bd: '#12b886' }, { bg: '#f1ebff', bd: '#7048e8' }];
   function planBox(p) {
     return '<div style="background:#fff8e6;border:1px solid #f0d9a0;border-radius:12px;padding:10px 12px;margin-bottom:12px;font-size:12.5px"><b>เงื่อนไขการขอเลื่อนชำระ</b> <span class="pill p-amber">' + esc(p.tier) + '</span>' +
-      p.items.map(function (x) { return '<div style="display:flex;justify-content:space-between;gap:10px;padding:4px 0;border-bottom:1px dashed rgba(0,0,0,.08)"><span>' + (x.later ? '⏱ ' : '• ') + esc(x.t) + '</span>' + (x.a ? '<b class="nowrap">฿' + money(x.a) + '</b>' : '') + '</div>'; }).join('') +
+      p.items.map(function (x, ix) { var c = PLAN_COLORS[ix % PLAN_COLORS.length]; return '<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 8px;margin:4px 0;border-radius:8px;background:' + c.bg + ';border-left:4px solid ' + c.bd + '"><span>' + (x.later ? '⏱ ' : '• ') + esc(x.t) + (x.due ? '<br><span class="pill p-amber">📅 ครบกำหนดชำระ ' + fmtD(x.due) + '</span>' : x.needPtp ? '<br><span class="muted">📅 ระบุวันที่นัดชำระ เพื่อให้ระบบคำนวณวันครบกำหนด</span>' : '') + '</span>' + (x.a ? '<b class="nowrap">฿' + money(x.a) + '</b>' : '') + '</div>'; }).join('') +
       '<div style="display:flex;justify-content:space-between;padding-top:6px"><b>ยอดที่ต้องชำระ ณ วันที่นัด</b><b style="color:#e03131">฿' + money(p.now) + '</b></div></div>';
   }
   function modalHtml(rowsAll) {
@@ -471,7 +490,7 @@
     if (NEED_DATE[d.result]) {
       if (!d.ptpDate) return toast('กรุณาระบุวันที่นัดชำระ');
       entry.ptpDate = d.ptpDate; entry.ptpAmount = Number(d.ptpAmt) > 0 ? Number(d.ptpAmt) : null;
-      plan = reschedulePlan(r, d.ptpDate); entry.plan = plan.items.map(function (x) { return x.t + (x.a ? ' ฿' + money(x.a) : ''); });
+      plan = reschedulePlan(r, d.ptpDate); entry.plan = plan.items.map(function (x) { return x.t + (x.due ? ' [ครบกำหนด ' + fmtD(x.due) + ']' : '') + (x.a ? ' ฿' + money(x.a) : ''); });
     }
     var label = 'โทร' + (RES_LABEL[entry.result] || '').replace(/\s*-\s*/g, '-') + (entry.ptpDate ? ' นัด ' + fmtD(entry.ptpDate) + (entry.ptpAmount ? ' ฿' + money(entry.ptpAmount) : '') : '') + (entry.note ? ' — ' + entry.note : '') + ' (' + entry.at + ' โดย ' + entry.by + ')';
     var selected = {}; d.nos.forEach(function (k) { selected[k] = true; });
@@ -479,7 +498,14 @@
     function patchList(list, track) {
       return (list || []).map(function (i) {
         var k = (track === 'accessory' ? 'A' : '') + i.no, p = {};
-        if (selected[k]) { p.callLog = (i.callLog || []).concat([{ at: entry.at, by: entry.by, result: entry.result, note: entry.note, ptpDate: entry.ptpDate, ptpAmount: entry.ptpAmount }]); p.note = i.note ? i.note + '\n' + label : label; }
+        if (selected[k]) {
+          var pr = plan && plan.per[k], lg = { at: entry.at, by: entry.by, result: entry.result, note: entry.note, ptpDate: entry.ptpDate, ptpAmount: entry.ptpAmount }, lb = label;
+          if (pr) {   // ลงข้อมูลเลื่อนให้ตรงงวด: วันครบกำหนด/ยอดของงวดนี้โดยเฉพาะ
+            lg.ptpDate = pr.due || ''; lg.ptpAmount = pr.amt > 0 ? pr.amt : null; lg.plan = pr.text;
+            lb = 'โทร' + (RES_LABEL[entry.result] || '').replace(/\s*-\s*/g, '-') + ' → ' + pr.text + (entry.note ? ' — ' + entry.note : '') + ' (' + entry.at + ' โดย ' + entry.by + ')';
+          }
+          p.callLog = (i.callLog || []).concat([lg]); p.note = i.note ? i.note + '\n' + lb : lb;
+        }
         if (waiveKeys[k]) p.feeWaived = true;
         return Object.keys(p).length ? Object.assign({}, i, p) : i;
       });
