@@ -104,8 +104,9 @@
     for (var k = -3; k <= 1; k++) { var c = cutoffFor(dd, TODAY.getFullYear(), TODAY.getMonth() + k); if (c < TODAY && (!best || c > best)) best = c; }
     return best;
   }
-  // เลือกยอดค้างตาม "เดือนที่โทร" (2026-11-18): รอบ 1/5 = งวดครบกำหนดเดือนเดียวกับเดือนที่โทร · รอบ 15/25/30 = งวดครบกำหนดเดือนก่อนหน้า
-  // (ตรงกับหน้า Debt Collection Target) · UI.month = 'latest' = รอบล่าสุดที่ดึงแล้วต่อกลุ่ม (พฤติกรรมเดิม) · รอบที่วันตัดยอดยังมาไม่ถึง = ยังไม่ดึง
+  // เลือกยอดค้างตาม "เดือนครบกำหนดชำระ" (2026-11-18, แก้ให้ตรงกับกราฟ Dashboard 'ยอดรวมหนี้ทั้งหมดแยกตามเดือนวันครบกำหนดชำระ'):
+  // UI.month = 'YYYY-MM' → เฉพาะงวดที่ครบกำหนดในเดือนนั้น ยอดคงเหลือปัจจุบัน (ค้างชำระ/ชำระบางส่วน/หนี้สงสัยจะสูญ ที่ถึงกำหนดแล้ว) แยกตามกลุ่มวันครบกำหนดของลูกค้า
+  // ไม่รวมลูกค้าดำเนินคดี/จำหน่ายชื่อ/ยกเลิก (ซึ่ง Dashboard นับรวม) · UI.month = 'latest' = รอบล่าสุดที่ดึงแล้วต่อกลุ่ม ยอดสะสม ณ วันตัดยอด (พฤติกรรมเดิม)
   var FIRST_MONTH = '2026-10';
   function monthOptions() {
     var cur = TODAY.getFullYear() + '-' + pad(TODAY.getMonth() + 1), out = [], y = Number(FIRST_MONTH.slice(0, 4)), m = Number(FIRST_MONTH.slice(5, 7));
@@ -121,10 +122,9 @@
   }
   function cutoffSel(dd) {
     if (!CUT_RULES[dd]) return null;
-    if (UI.month === 'latest') return lastCutoff(dd);
-    var dm = dueMonthOf(dd, UI.month), c = cutoffFor(dd, dm.y, dm.m);
-    return c < TODAY ? c : null;   // วันตัดยอดต้องผ่านมาแล้ว (ดึงตอน 00:00 ของวันถัดไป)
+    return UI.month === 'latest' ? lastCutoff(dd) : null;
   }
+  var NOT_OWED_STATUS = ['ชำระแล้ว', 'ยังไม่ถึงกำหนดชำระ', 'ถึงกำหนดชำระ', 'ยกเลิกบิล', 'ยกเลิกสัญญา คืนเครื่อง'];
   // ระบบเก็บวันที่ชำระล่าสุดของแต่ละงวดเพียงค่าเดียว — ถือว่างวดที่ชำระหลังวันตัดยอดยังค้างอยู่ ณ วันตัดยอด
   function paidAsOf(i, c) { return (i.paidDate && i.paidDate <= c) ? i.paid : 0; }
   function snap(r) {
@@ -132,6 +132,14 @@
     return (r._snap = snapCalc(r));
   }
   function snapCalc(r) {
+    if (UI.month !== 'latest') {   // มุมมองตามเดือนครบกำหนด (ตรงกับ Dashboard): ยอดคงเหลือปัจจุบันของงวดที่ครบกำหนดในเดือนนั้น
+      var its = [];
+      r.insts.forEach(function (i) {
+        if (!i.due || i.due.slice(0, 7) !== UI.month || i.due > TODAY_ISO || NOT_OWED_STATUS.indexOf(i.status) !== -1) return;
+        var out = i.amt - i.paid; if (out > 0.005) its.push({ i: i, out: out, since: 0 });
+      });
+      return { cut: TODAY_ISO, call: TODAY_ISO, items: its, total: its.reduce(function (a, x) { return a + x.out; }, 0), paid: 0 };
+    }
     var c = cutoffSel(r.dueDay);
     if (!c) return { cut: null, call: null, items: [], total: 0, paid: 0 };
     var ci = iso(c), items = [];
@@ -310,12 +318,12 @@
     var unowned = active.filter(function (r) { return !r.owner; }), mine = active.filter(function (r) { return r.owner && r.owner === me(); });
     var h = '';
     h += '<div class="card" style="padding:16px 20px;background:#fff8e6"><b>รอบตัดยอดลูกหนี้เข้าเมนูโทรติดตาม</b> <span class="muted">— ระบบดึงยอดค้างชำระ เวลา 00:00 น. ของวันโทร (ใช้ยอดค้าง ณ สิ้นวันตัดยอด)</span>' +
-      '<div style="overflow-x:auto;margin:10px 0"><table style="font-size:12.5px;background:#fff;border-radius:10px"><thead><tr><th>วันครบกำหนดชำระ</th><th>ตัดยอด</th><th>เริ่มโทรติดตาม</th><th>' + (UI.month === 'latest' ? 'รอบล่าสุดที่ดึงแล้ว' : 'รอบตัดยอดของเดือนที่เลือก') + ' (วันตัดยอด)</th><th>ลูกค้าในรอบ</th></tr></thead><tbody>' +
-      DUE_DAYS.map(function (d) { var lc = cutoffSel(d); return '<tr><td><b>ทุกวันที่ ' + d + '</b></td><td>' + CUT_RULES[d].label + '</td><td>' + CUT_RULES[d].call + '</td><td>' + (lc ? fmtD(iso(lc)) : (UI.month === 'latest' ? '-' : 'ยังไม่ถึงรอบตัดยอด')) + '</td><td>' + active.filter(function (r) { return r.dueDay === d; }).length + ' ราย</td></tr>'; }).join('') + '</tbody></table></div>' +
+      '<div style="overflow-x:auto;margin:10px 0"><table style="font-size:12.5px;background:#fff;border-radius:10px"><thead><tr><th>วันครบกำหนดชำระ</th><th>ตัดยอด</th><th>เริ่มโทรติดตาม</th><th>' + (UI.month === 'latest' ? 'รอบล่าสุดที่ดึงแล้ว' : 'รอบตัดยอด') + ' (วันตัดยอด)</th><th>ลูกค้าในรอบ</th></tr></thead><tbody>' +
+      DUE_DAYS.map(function (d) { var lc = cutoffSel(d); return '<tr><td><b>ทุกวันที่ ' + d + '</b></td><td>' + CUT_RULES[d].label + '</td><td>' + CUT_RULES[d].call + '</td><td>' + (lc ? fmtD(iso(lc)) : (UI.month === 'latest' ? '-' : 'ไม่ใช้ (นับตามเดือนครบกำหนด)')) + '</td><td>' + active.filter(function (r) { return r.dueDay === d; }).length + ' ราย</td></tr>'; }).join('') + '</tbody></table></div>' +
       '<div class="rule">• <b>ยอดที่ดึงมาจะแสดงคงเดิม</b> แม้ลูกค้าชำระหลังดึงยอด — ยอดที่ชำระหลังตัดรอบแสดงแยกในคอลัมน์ "ยอดที่ชำระ" · <b>รอบถัดไปยอดค้างบวกสะสม</b> (ยอดค้างเดิมที่ยังไม่ชำระ + งวดใหม่ที่ครบกำหนด) · ลูกค้าที่ค้างแต่ยังไม่ถึงรอบตัดยอด (' + belowN + ' ราย) ยังอยู่ในขั้น SMS/จดหมาย/ล็อคเครื่อง จึงไม่แสดงในรายการนี้<br>• <b>ลูกค้าถูกล็อกเป็นของพนักงานคนแรกที่กดรับหรือบันทึกการโทร</b> — คนอื่นโทรแทนไม่ได้ ยอดชำระนับให้ผู้รับผิดชอบ (Admin โอนเคสได้)</div></div>';
-    h += '<div class="card" style="padding:12px 18px;display:flex;gap:12px;align-items:center;flex-wrap:wrap"><b>📅 ยอดค้างชำระตามเดือนที่โทร</b>' +
-      '<select data-cm-bind="monthSel"><option value="latest"' + (UI.month === 'latest' ? ' selected' : '') + '>รอบล่าสุดที่ดึงแล้ว (ค่าเริ่มต้น)</option>' + monthOptions().slice().reverse().map(function (mk) { return '<option value="' + mk + '"' + (UI.month === mk ? ' selected' : '') + '>' + esc(monthLabel(mk)) + '</option>'; }).join('') + '</select>' +
-      '<span class="muted">' + (UI.month === 'latest' ? 'แต่ละวันครบกำหนดแสดงยอดตามรอบตัดยอดล่าสุดของตัวเอง' : 'ทุกวันที่ 1/5 = งวดครบกำหนดเดือน' + esc(monthLabel(UI.month)) + ' · ทุกวันที่ 15/25/30 = งวดครบกำหนดเดือนก่อนหน้า · ยังแยกตามวันครบกำหนดเหมือนเดิม') + '</span></div>';
+    h += '<div class="card" style="padding:12px 18px;display:flex;gap:12px;align-items:center;flex-wrap:wrap"><b>📅 ยอดค้างชำระตามเดือนครบกำหนดชำระ</b>' +
+      '<select data-cm-bind="monthSel"><option value="latest"' + (UI.month === 'latest' ? ' selected' : '') + '>รอบล่าสุดที่ดึงแล้ว — ยอดสะสม (ค่าเริ่มต้น)</option>' + monthOptions().slice().reverse().map(function (mk) { return '<option value="' + mk + '"' + (UI.month === mk ? ' selected' : '') + '>' + esc(monthLabel(mk)) + '</option>'; }).join('') + '</select>' +
+      '<span class="muted">' + (UI.month === 'latest' ? 'ยอดสะสม ณ วันตัดยอดล่าสุดของแต่ละวันครบกำหนด (รวมค้างเดือนก่อนๆ)' : 'เฉพาะงวดที่ครบกำหนดเดือน' + esc(monthLabel(UI.month)) + ' ยอดคงเหลือปัจจุบัน — ตรงกับกราฟ Dashboard แต่ไม่รวมลูกค้าดำเนินคดี/จำหน่ายชื่อ/ยกเลิก · ยังแยกตามวันครบกำหนดเหมือนเดิม') + '</span></div>';
     var tabsDef = [['all', 'ทั้งหมด', active.length], ['due', 'วันครบกำหนดชำระ', active.length], ['unowned', 'ยังไม่มีผู้รับผิดชอบ', unowned.length], ['mine', 'ลูกค้าของฉัน', mine.length]];
     if (isAdmin()) tabsDef.push(['paid', '✅ ชำระแล้ว', paidRows.length]);
     if (!tabsDef.some(function (t) { return t[0] === UI.bucket; })) UI.bucket = 'all';
