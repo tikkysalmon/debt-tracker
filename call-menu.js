@@ -151,6 +151,9 @@
   function rem(i) { return Math.max(0, i.amt - i.paid); }
   function chaseInsts(r) { return snap(r).items.map(function (x) { return x.i; }); }
   function unpaid(r) { return chaseInsts(r).filter(function (i) { return rem(i) > 0.005; }); }
+  // งวดที่เลยกำหนดและยังไม่ชำระ "ณ วันนี้" ทั้งหมด (ไม่จำกัดเฉพาะที่ดึงมาตามรอบตัดยอด) — พนักงานอาจโทรตามงวดที่ค้างล่าสุด
+  function overdueInsts(r) { return r.insts.filter(function (i) { return i.due && i.due < TODAY_ISO && rem(i) > 0.005; }).sort(function (a, b) { return a.due < b.due ? -1 : a.due > b.due ? 1 : 0; }); }
+  function extraOverdue(r) { var sk = {}; unpaid(r).forEach(function (i) { sk[i.key] = true; }); return overdueInsts(r).filter(function (i) { return !sk[i.key]; }); }
   function rowSnap(r) { return snap(r).total; }
   function rowRemain(r) { return unpaid(r).reduce(function (s, i) { return s + rem(i); }, 0); }
   function rowPaid(r) { return snap(r).paid; }
@@ -425,9 +428,9 @@
     var snapKeys = {}; chaseInsts(r).forEach(function (i) { snapKeys[i.key] = true; });
     var callBox;
     if (locked) callBox = '<div class="muted" style="color:#c2650a">🔒 ลูกค้ารายนี้เป็นของ <b>' + esc(r.owner) + '</b> — บันทึกการโทรได้เฉพาะเจ้าของ (Admin โอนเคสได้)</div>';
-    else if (!u.length) callBox = '<div class="muted">ไม่มียอดค้างชำระแล้ว</div>';
-    else callBox = '<div class="field"><label>เลือกงวดที่โทรติดตาม (บันทึกการโทรลงหมายเหตุของแต่ละงวดที่เลือก)</label>' + u.map(function (i) {
-      return '<label class="instrow"><input type="checkbox" data-cm-bind="nos" value="' + esc(i.key) + '" ' + (d.nos.indexOf(i.key) !== -1 ? 'checked' : '') + '><span><b>' + esc(instLabel([i])) + '</b> · ครบกำหนด ' + fmtD(i.due) + ' · ค้าง ' + diffDays(TODAY_ISO, i.due) + ' วัน<br><span style="color:#e03131;font-weight:600">฿' + money(rem(i)) + '</span></span></label>';
+    else if (!u.length && !extraOverdue(r).length) callBox = '<div class="muted">ไม่มียอดค้างชำระแล้ว</div>';
+    else callBox = '<div class="field"><label>เลือกงวดที่โทรติดตาม (บันทึกการโทรลงหมายเหตุของแต่ละงวดที่เลือก)</label>' + u.concat(extraOverdue(r)).map(function (i) {
+      return '<label class="instrow"><input type="checkbox" data-cm-bind="nos" value="' + esc(i.key) + '" ' + (d.nos.indexOf(i.key) !== -1 ? 'checked' : '') + '><span><b>' + esc(instLabel([i])) + '</b> · ครบกำหนด ' + fmtD(i.due) + ' · ค้าง ' + diffDays(TODAY_ISO, i.due) + ' วัน' + (snapKeys[i.key] ? '' : ' <span class="pill p-amber" style="white-space:normal">เลยกำหนด · ยังไม่อยู่ในยอดที่ดึง</span>') + '<br><span style="color:#e03131;font-weight:600">฿' + money(rem(i)) + '</span></span></label>';
     }).join('') + '</div>' +
       '<div class="field"><label>ผลการโทร</label><select data-cm-bind="result"><option value="">— เลือกผลการโทร —</option>' + CALL_RESULTS.map(function (o) { return '<option value="' + o.key + '" ' + (d.result === o.key ? 'selected' : '') + '>' + esc(o.label) + '</option>'; }).join('') + '</select></div>' +
       (needDate ? '<div style="display:flex;gap:8px"><div class="field" style="flex:1"><label>วันที่ลูกค้าขอเลื่อนไป (วันที่นัดชำระ)</label><input type="date" data-cm-bind="ptpDate" value="' + esc(d.ptpDate) + '"></div><div class="field" style="flex:1"><label>ยอดที่ต้องชำระ ณ วันนัด (บาท)</label><input type="number" min="0" step="0.01" data-cm-bind="ptpAmt" value="' + esc(d.ptpAmt) + '"></div></div>' : '') +
@@ -440,6 +443,7 @@
       '<div style="display:flex;justify-content:space-between;padding:3px 0"><span>ค่าปรับชำระล่าช้า</span><b>฿' + money(rowFine(r)) + '</b></div>' +
       '<div style="display:flex;justify-content:space-between;padding:3px 0"><span>ค่าธรรมเนียมระบบ</span><b>฿' + money(rowSysFee(r)) + '</b></div>' +
       '<div style="display:flex;justify-content:space-between;padding:6px 0 0;margin-top:4px;border-top:1px solid var(--line)"><b>ยอดรวมทั้งสิ้น</b><b style="color:' + (rowGrand(r) > 0 ? '#e03131' : '#12b886') + ';font-size:15px">฿' + money(rowGrand(r)) + '</b></div>' +
+      (function () { var od = overdueInsts(r), tot = od.reduce(function (a, i) { return a + rem(i); }, 0); return od.length ? '<div style="margin-top:8px;background:#fff0f0;border-left:4px solid #e03131;border-radius:8px;padding:6px 10px"><div style="display:flex;justify-content:space-between"><b>ยอดค้างทั้งหมด ณ วันนี้ (' + od.length + ' งวด)</b><b style="color:#e03131">฿' + money(tot) + '</b></div><div class="muted">' + od.map(function (i) { return instLabel([i]) + ' ฿' + money(rem(i)); }).join(' + ') + ' · ไม่รวมค่าปรับ/ค่าธรรมเนียม</div></div>' : ''; })() +
       (sn.cut ? '<div class="muted" style="margin-top:8px;line-height:1.7">📌 ดึงยอดรอบตัดยอด <b>' + fmtD(sn.cut) + '</b> (เข้าเมนู 00:00 น. ' + fmtD(sn.call) + ') · ยอดสะสม ' + sn.items.length + ' งวด: ' + sn.items.map(function (x) { return instLabel([x.i]) + ' ฿' + money(x.out); }).join(' + ') + '<br>ชำระหลังตัดรอบ <b style="color:#0b7a5b">฿' + money(sn.paid) + '</b> · คงเหลือปัจจุบัน <b>฿' + money(rowRemain(r)) + '</b> <span>(ยอดที่ดึงมาไม่ถูกหักออก)</span></div>' : '') + '</div>';
     var hist = r.calls.length ? r.calls.slice().reverse().map(function (c) {
       return '<div class="hist"><b style="color:#f58a0a">' + fmtDT(c.at) + ' · ' + esc(c.by) + '</b> · ' + esc(RES_LABEL[c.result] || c.result || '-') + '<br><span class="muted">' + (c.nos && c.nos.length ? esc(keysLabel(c.nos, r)) : '') + (c.ptpDate ? ' · นัด ' + fmtD(c.ptpDate) + (c.ptpAmt ? ' ฿' + money(c.ptpAmt) : '') : '') + '</span>' +
@@ -616,5 +620,5 @@
     document.addEventListener('input', onInput);
     document.addEventListener('change', onChange);
   }
-  global.CallMenu = { init: init, render: render, _test: { toRow: toRow, snap: snap, reschedulePlan: reschedulePlan, rowFine: rowFine, rowSysFee: rowSysFee, payTiming: payTiming, setCtx: function (c) { CTX = c; }, refreshToday: refreshToday, rowsOf: buildRows, isActive: isActive, isPaidRow: isPaidRow, lastCutoff: lastCutoff } };
+  global.CallMenu = { init: init, render: render, _test: { toRow: toRow, snap: snap, reschedulePlan: reschedulePlan, rowFine: rowFine, rowSysFee: rowSysFee, payTiming: payTiming, setCtx: function (c) { CTX = c; }, refreshToday: refreshToday, rowsOf: buildRows, isActive: isActive, isPaidRow: isPaidRow, lastCutoff: lastCutoff, overdueInsts: overdueInsts, extraOverdue: extraOverdue } };
 })(typeof window !== 'undefined' ? window : globalThis);
