@@ -434,8 +434,8 @@
       return '<label class="instrow"><input type="checkbox" data-cm-bind="nos" value="' + esc(i.key) + '" ' + (d.nos.indexOf(i.key) !== -1 ? 'checked' : '') + '><span><b>' + esc(instLabel([i])) + '</b> · ครบกำหนด ' + fmtD(i.due) + ' · ค้าง ' + diffDays(TODAY_ISO, i.due) + ' วัน' + (snapKeys[i.key] ? '' : ' <span class="pill p-amber" style="white-space:normal">เลยกำหนด · ยังไม่อยู่ในยอดที่ดึง</span>') + '<br><span style="color:#e03131;font-weight:600">฿' + money(rem(i)) + '</span></span></label>';
     }).join('') + '</div>' +
       '<div class="field"><label>ผลการโทร</label><select data-cm-bind="result"><option value="">— เลือกผลการโทร —</option>' + CALL_RESULTS.map(function (o) { return '<option value="' + o.key + '" ' + (d.result === o.key ? 'selected' : '') + '>' + esc(o.label) + '</option>'; }).join('') + '</select></div>' +
-      (needDate ? '<div style="display:flex;gap:8px"><div class="field" style="flex:1"><label>วันที่ลูกค้าขอเลื่อนไป (วันที่นัดชำระ)</label><input type="date" data-cm-bind="ptpDate" value="' + esc(d.ptpDate) + '"></div><div class="field" style="flex:1"><label>ยอดที่ต้องชำระ ณ วันนัด (บาท)</label><input type="number" min="0" step="0.01" data-cm-bind="ptpAmt" value="' + esc(d.ptpAmt) + '"></div></div>' : '') +
-      (d.result === 'reschedule' ? planBox(reschedulePlan(r, d.ptpDate)) : '') +
+      (needDate ? '<div style="display:flex;gap:8px"><div class="field" style="flex:1"><label>วันที่ลูกค้าขอเลื่อนไป (วันที่นัดชำระ)</label><input type="date" data-cm-bind="ptpDate" value="' + esc(d.ptpDate) + '"></div><div class="field" style="flex:1"><label>ยอดที่ต้องชำระ ณ วันนัด (บาท)</label><input type="number" id="cmPtpAmt" min="0" step="0.01" data-cm-bind="ptpAmt" value="' + esc(d.ptpAmt) + '"></div></div>' : '') +
+      (d.result === 'reschedule' ? '<div id="cmPlanWrap">' + planBox(reschedulePlan(r, d.ptpDate)) + '</div>' : '') +
       (REF_SHOW[d.result] ? refBox(r) : '') +
       '<div class="field"><label>บันทึกเพิ่มเติม (ไม่บังคับ)</label><input type="text" data-cm-bind="note" value="' + esc(d.note) + '"></div><button class="btn" data-cm-act="saveCall" style="width:100%">บันทึกการโทร</button>';
     var summary = '<div style="background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:12px;font-size:13px">' +
@@ -597,10 +597,20 @@
     else if (a === 'xferMask') { if (e.target === t) { UI.xfer = null; rerender(); } }
     else if (a === 'xferConfirm') xferConfirm();
   }
+  // เปลี่ยนวันที่นัด → อัปเดตกล่องเงื่อนไข + ยอดที่ต้องชำระ "ในที่เดิม" ทันที ไม่ render ทั้งแอป (ข้อมูลหลายหมื่นงวด ทำให้หน้าค้าง)
+  function applyPtpDate(v) {
+    UI.draft.ptpDate = v;
+    var r = findRow(cache, UI.modal), w = document.getElementById('cmPlanWrap');
+    if (!r || !w) return;
+    var p = reschedulePlan(r, v);
+    w.innerHTML = prefixClasses(planBox(p));
+    if (p.now) { UI.draft.ptpAmt = p.now; var a = document.getElementById('cmPtpAmt'); if (a) a.value = p.now; }
+  }
   function onInput(e) {
     if (!CTX || !CTX.active()) return;
     var t = e.target, b = t.getAttribute && t.getAttribute('data-cm-bind'); if (!b) return;
     if (b === 'q') { UI.q = t.value; UI.page = 1; rerender(); var el = document.getElementById('cmQBox'); if (el) { el.focus(); el.setSelectionRange(t.value.length, t.value.length); } return; }
+    if (b === 'ptpDate' && UI.draft) { applyPtpDate(t.value); return; }
     if (b === 'xferWhy' && UI.xfer) UI.xfer.why = t.value;
     else if (UI.draft && (b === 'note' || b === 'ptpAmt')) UI.draft[b] = t.value;
   }
@@ -612,7 +622,7 @@
     else if (b === 'pageSize') { UI.pageSize = parseInt(t.value, 10) || 50; UI.page = 1; rerender(); }
     else if (b === 'nos') { var i = UI.draft.nos.indexOf(t.value); if (t.checked && i === -1) UI.draft.nos.push(t.value); if (!t.checked && i !== -1) UI.draft.nos.splice(i, 1); }
     else if (b === 'result') { UI.draft.result = t.value; if (t.value === 'reschedule') { var r = findRow(cache, UI.modal); UI.draft.ptpAmt = r ? (reschedulePlan(r, UI.draft.ptpDate).now || '') : ''; } rerender(); }
-    else if (b === 'ptpDate') { UI.draft.ptpDate = t.value; rerender(); }
+    else if (b === 'ptpDate') { if (UI.draft.result === 'reschedule') applyPtpDate(t.value); else UI.draft.ptpDate = t.value; }
     else if (b === 'xferWhyS') { UI.xfer.whyS = t.value; }
   }
   function init(ctx) {
