@@ -12,7 +12,7 @@
 (function (global) {
   'use strict';
   var CTX = null;
-  var UI = { tab: 'ready', q: '', sel: {}, selInit: false, modal: null, run: null, drawer: null };
+  var UI = { tab: 'ready', q: '', sel: {}, selR: {}, selInit: false, modal: null, run: null, drawer: null };
 
   function esc(s) { return CTX.esc(s == null ? '' : s); }
   function key(o) { return String(o.customerId || '').trim() + '||' + String(o.customerName || '').trim(); }
@@ -69,8 +69,8 @@
       r.due = dueDates.sort()[0] || '';
       var ls = null, ll = null;
       r.orders.forEach(function (o) {
-        var s1 = latest((o.smsHistory || []).concat(o.accessorySmsHistory || []));
-        (o.installments || []).concat(o.accessoryInstallments || []).forEach(function (i) { var s2 = latest(i.smsHistory); if (s2 && (!s1 || tsNum(s2.at) > tsNum(s1.at))) s1 = s2; });
+        var s1 = latest((o.smsHistory || []).concat(o.accessorySmsHistory || []).filter(function (h) { return !CTX.isRestr(h); }));
+        (o.installments || []).concat(o.accessoryInstallments || []).forEach(function (i) { var s2 = latest((i.smsHistory || []).filter(function (h) { return !CTX.isRestr(h); })); if (s2 && (!s1 || tsNum(s2.at) > tsNum(s1.at))) s1 = s2; });
         if (s1 && (!ls || tsNum(s1.at) > tsNum(ls.at))) ls = s1;
         // จดหมายล่าสุด = ที่ "จัดการเสร็จแล้ว" เท่านั้น — ฉบับที่ออก PDF แล้วแต่รอส่งอีเมล (emailPending) ไม่นับ
         [['letterHistory', 'emailHistory'], ['accessoryLetterHistory', 'accessoryEmailHistory']].forEach(function (f) {
@@ -105,8 +105,13 @@
   }
 
   /* ---------- งานที่จะส่ง ---------- */
+  function restrRows() { return CTX.restructure().map(function (it) { it.k = key(it); return it; }); }
   function tasksFor(rows) {
     var t = [];
+    if (UI.tab === 'restr') {
+      if (CTX.can('send_sms')) restrRows().forEach(function (it) { if (it.eligible && UI.selR[it.gk]) { var pv = CTX.restructurePreview(it); if (pv.ok) t.push({ kind: 'restr', r: { k: it.k, name: it.customerName }, it: it, pv: pv, label: '📱 SMS ปรับโครงสร้างหนี้ (' + it.soDisplay + ')' }); } });
+      return t;
+    }
     rows.forEach(function (r) {
       if (!UI.sel[r.k]) return;
       if (CTX.can('send_sms')) r.sms.forEach(function (g) { if (g.p.ok) t.push({ kind: 'sms', r: r, g: g, label: '📱 SMS ' + g.templateName + (g.occasion ? ' (ซ้ำรอบใหม่)' : '') }); });
@@ -151,6 +156,7 @@
     var readyKeys = {}; ready.forEach(function (r) { readyKeys[r.k] = 1; });
     var done = doneToday(readyKeys);
     // ไม่เลือกรายการไว้ล่วงหน้า — ต้องติ๊กเองหรือกด "เลือกทั้งหมด" (กันกดส่งพลาดทีเดียวทั้งหมด)
+    var restr = restrRows();
     var tasks = tasksFor(ready);
     var nSms = tasks.filter(function (t) { return t.kind === 'sms'; }).length, nLet = tasks.filter(function (t) { return t.kind === 'letter'; }).length, nMail = tasks.filter(function (t) { return t.kind === 'mail'; }).length;
     var nIssue = ready.filter(function (r) { return r.issues.length; }).length;
@@ -164,7 +170,7 @@
       '<div class="bs-k" style="--c:#e03131"><small>ข้อมูลไม่ครบ / ติดเงื่อนไข</small><b>' + nIssue + ' ราย</b><span>ต้องตรวจก่อนส่ง</span></div>' +
       '<div class="bs-k" style="--c:#339af0"><small>ส่งแล้ววันนี้</small><b>' + done.length + ' ราย</b><span>กันส่งซ้ำอัตโนมัติ</span></div></div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center">' +
-      [['ready', 'พร้อมส่งติดตามหนี้', ready.length], ['done', 'ส่งแล้ววันนี้', done.length]].map(function (d) { return '<div class="bs-tab ' + (UI.tab === d[0] ? 'on' : '') + '" data-bs="tab" data-v="' + d[0] + '">' + d[1] + ' <i>' + d[2] + '</i></div>'; }).join('') +
+      [['ready', 'พร้อมส่งติดตามหนี้', ready.length], ['restr', '📱 SMS ปรับโครงสร้างหนี้', restr.filter(function (x) { return x.eligible; }).length], ['done', 'ส่งแล้ววันนี้', done.length]].map(function (d) { return '<div class="bs-tab ' + (UI.tab === d[0] ? 'on' : '') + '" data-bs="tab" data-v="' + d[0] + '">' + d[1] + ' <i>' + d[2] + '</i></div>'; }).join('') +
       '<input type="text" data-bs-bind="q" id="bsQ" placeholder="ค้นหาชื่อ / เลข SO" value="' + esc(UI.q) + '" style="margin-left:8px;width:240px;padding:9px 11px;border-radius:10px;border:1px solid rgba(247,130,59,.25);font-size:13.5px;outline:none"></div>';
     if (UI.tab === 'ready') {
       var vis = ready.filter(function (r) { return !q || (r.name + ' ' + r.so.join(' ')).toLowerCase().indexOf(q) >= 0; }).sort(function (a, b) { return (a.due || 'z') < (b.due || 'z') ? -1 : 1; });
@@ -179,12 +185,24 @@
             '<td>' + nextCell(r) + '</td><td>' + (r.issues.length ? r.issues.map(function (t) { return '<div class="bs-p bs-am" style="margin-bottom:3px;white-space:normal">⚠ ' + esc(t) + '</div>'; }).join('') : '<span class="bs-p bs-ok">พร้อมส่ง</span>') + '</td>' +
             '<td>' + actionsCell(r) + '</td></tr>';
         }).join('') || '<tr><td colspan="8" style="text-align:center;color:#8d93a0;padding:30px">ไม่มีรายการ</td></tr>') + '</tbody></table></div></div>';
+    } else if (UI.tab === 'restr') {
+      var rv = restr.filter(function (x) { return !q || (x.customerName + ' ' + x.soDisplay).toLowerCase().indexOf(q) >= 0; }).sort(function (a, b) { return b.days - a.days; });
+      var elig = restr.filter(function (x) { return x.eligible; });
+      h += '<div style="font-size:12.5px;color:#4b5563;margin-bottom:10px">ข้อความตายตัว (ไม่ผูกกับขั้นติดตามหนี้ปกติ) · แสดงเฉพาะลูกค้าที่มีสถานะบัญชี <b>ดำเนินคดี</b> และ <b>รอดำเนินคดี</b> · ต้องมีเบอร์โทร + ยังไม่เคยส่ง SMS นี้ (ส่งครั้งเดียวต่อบิล ไม่ส่งซ้ำ)</div>' +
+        '<div style="background:rgba(255,255,255,.97);border:1px solid #eceef2;border-radius:20px;overflow:hidden"><div style="overflow-x:auto"><table class="bs-t"><thead><tr><th style="width:34px"><input type="checkbox" data-bs-bind="allR"' + (elig.length && elig.every(function (x) { return UI.selR[x.gk]; }) ? ' checked' : '') + '></th><th>ลูกค้า</th><th>ยอดค้างชำระ</th><th>สถานะบัญชี</th><th>SMS ปรับโครงสร้างหนี้ล่าสุด</th><th>ต้องส่ง</th></tr></thead><tbody>' +
+        (rv.map(function (x) {
+          return '<tr' + (x.eligible ? '' : ' style="opacity:.6"') + '><td><input type="checkbox" data-bs-bind="selR" data-k="' + esc(x.gk) + '"' + (UI.selR[x.gk] ? ' checked' : '') + (x.eligible ? '' : ' disabled') + '></td>' +
+            '<td><b>' + esc(x.customerName) + '</b><div class="bs-m">' + esc(x.soDisplay) + (x.track === 'accessory' ? ' (อุปกรณ์เสริม)' : '') + '</div><div class="bs-m">' + (x.phone ? '📱 ' + esc(x.phone) : '<span style="color:#e03131">📱 ไม่มีเบอร์</span>') + '</div></td>' +
+            '<td><b style="color:#e03131">฿' + money(x.amount) + '</b><div class="bs-m">ครบกำหนดงวดแรกที่ค้าง ' + esc(CTX.fmtDate(x.due)) + '</div></td><td><span class="bs-p ' + (x.acct === 'ดำเนินคดี' ? 'bs-red' : 'bs-am') + '">' + esc(x.acct) + '</span><div class="bs-m">ค้างมา ' + x.days + ' วัน</div></td>' +
+            '<td>' + (x.last ? '<b>ปรับโครงสร้างหนี้</b><div class="bs-m">' + fmtAt(x.last) + '</div>' : '<span class="bs-m">ยังไม่เคยส่ง</span>') + '</td>' +
+            '<td>' + (x.eligible ? '<div class="bs-it bs-sms"><b>📱 SMS ปรับโครงสร้างหนี้</b><br><span class="bs-m">ข้อความตายตัว</span></div>' : (x.last ? '<span class="bs-m">ส่งแล้ว — ไม่ส่งซ้ำ</span>' : '<span class="bs-p bs-am">⚠ ไม่มีเบอร์โทร</span>')) + '</td></tr>';
+        }).join('') || '<tr><td colspan="6" style="text-align:center;color:#8d93a0;padding:30px">ไม่มีรายการ</td></tr>') + '</tbody></table></div></div>';
     } else {
       var dv = done.filter(function (r) { return !q || (r.name + ' ' + r.so.join(' ')).toLowerCase().indexOf(q) >= 0; });
       h += '<div style="background:rgba(255,255,255,.97);border:1px solid #eceef2;border-radius:20px;overflow:hidden"><table class="bs-t"><thead><tr><th>ลูกค้า</th><th>ที่ส่ง/ออกเอกสารวันนี้</th></tr></thead><tbody>' +
         (dv.map(function (r) { return '<tr><td><b>' + esc(r.name) + '</b><div class="bs-m">' + esc(r.so.join(', ')) + '</div></td><td>' + r.acts.sort(function (a, b) { return tsNum(a.at) - tsNum(b.at); }).map(function (a) { return '<div>' + a.t + ' <span class="bs-m">· ' + esc(a.at) + (a.by ? ' · ' + esc(a.by) : '') + '</span></div>'; }).join('') + '</td></tr>'; }).join('') || '<tr><td colspan="2" style="text-align:center;color:#8d93a0;padding:30px">ยังไม่มีรายการที่ส่งวันนี้</td></tr>') + '</tbody></table></div>';
     }
-    h += '<div class="bs-bar"><div style="font-size:13.5px">' + (tasks.length ? 'เลือกแล้ว <b style="font-size:17px">' + ready.filter(function (r) { return UI.sel[r.k]; }).length + '</b> ราย · 📱 SMS <b>' + nSms + '</b> · 📄 จดหมายใหม่ <b>' + nLet + '</b> (✉️ อีเมล ' + tasks.filter(function (t) { return t.kind === 'letter' && t.r.email; }).length + ')' + (nMail ? ' · ✉️ รอส่งอีเมล <b>' + nMail + '</b>' : '') : 'ยังไม่ได้เลือกรายการ') + '</div>' +
+    h += '<div class="bs-bar"><div style="font-size:13.5px">' + (UI.tab === 'restr' ? (tasks.length ? 'เลือกแล้ว <b style="font-size:17px">' + tasks.length + '</b> บิล · 📱 SMS ปรับโครงสร้างหนี้ <b>' + tasks.length + '</b>' : 'ยังไม่ได้เลือกรายการ') : tasks.length ? 'เลือกแล้ว <b style="font-size:17px">' + ready.filter(function (r) { return UI.sel[r.k]; }).length + '</b> ราย · 📱 SMS <b>' + nSms + '</b> · 📄 จดหมายใหม่ <b>' + nLet + '</b> (✉️ อีเมล ' + tasks.filter(function (t) { return t.kind === 'letter' && t.r.email; }).length + ')' + (nMail ? ' · ✉️ รอส่งอีเมล <b>' + nMail + '</b>' : '') : 'ยังไม่ได้เลือกรายการ') + '</div>' +
       '<div style="display:flex;gap:10px;align-items:center"><span class="bs-m">ส่งแล้วย้อนกลับไม่ได้ — ตรวจรายการก่อน</span><button class="bs-b big" data-bs="send"' + (tasks.length && !UI.run ? '' : ' disabled') + '>🚀 ส่งทั้งหมด' + (tasks.length ? ' (' + tasks.length + ' รายการ)' : '') + '</button></div></div></div>';
     if (UI.modal) h += UI.modal.html(tasks);
     if (UI.drawer) h += drawerHtml(ready, rows);
@@ -215,7 +233,8 @@
     var segs = 0, cnt = {}, custs = {}, mails = 0, post = 0;
     tasks.forEach(function (t) {
       custs[t.r.k] = 1;
-      if (t.kind === 'sms') { segs += t.g.p.segs; cnt['📱 SMS ' + t.g.templateName] = (cnt['📱 SMS ' + t.g.templateName] || 0) + 1; }
+      if (t.kind === 'restr') { segs += t.pv.segs; cnt['📱 SMS ปรับโครงสร้างหนี้'] = (cnt['📱 SMS ปรับโครงสร้างหนี้'] || 0) + 1; }
+      else if (t.kind === 'sms') { segs += t.g.p.segs; cnt['📱 SMS ' + t.g.templateName] = (cnt['📱 SMS ' + t.g.templateName] || 0) + 1; }
       else if (t.kind === 'letter') { var l = '📄 ออกจดหมายฉบับที่ ' + t.x.letterNo + (t.r.email ? ' + ✉️ ส่งอีเมล' : ' (PDF — ไม่มีอีเมล)'); cnt[l] = (cnt[l] || 0) + 1; if (t.r.email) mails++; else post++; }
       else { var l2 = '✉️ ส่งอีเมลจดหมายที่ออกเอกสารไว้แล้ว'; cnt[l2] = (cnt[l2] || 0) + 1; mails++; }
     });
@@ -236,7 +255,8 @@
       if (i >= tasks.length) { run.finished = true; CTX.render(); return; }
       var t = tasks[i++], p;
       try {
-        if (t.kind === 'sms') p = CTX.sendSmsGroup(t.g);
+        if (t.kind === 'restr') p = CTX.sendRestructure(t.it);
+        else if (t.kind === 'sms') p = CTX.sendSmsGroup(t.g);
         else if (t.kind === 'letter') p = CTX.issueLetter(t.x).then(function (res) { if (!t.r.email) return res; return CTX.sendMail({ orderId: t.x.orderId, track: t.x.track, no: res.no, to: t.r.email }).then(function () { return res; }, function (e) { throw new Error('ออกจดหมายแล้ว (' + res.docNo + ') แต่ส่งอีเมลไม่สำเร็จ: ' + e.message + ' — ลูกค้ารายนี้จะอยู่ใน "รอส่งอีเมล"'); }); });
         else p = CTX.sendMail({ orderId: t.m.orderId, track: t.m.track, no: t.m.no, to: t.m.to });
       } catch (e) { p = Promise.reject(e); }
@@ -279,7 +299,7 @@
     if (a === 'send') return openConfirm(build());
     if (a === 'modalClose') { UI.modal = null; return rerender(); }
     if (a === 'go') { if (document.getElementById('bsGo').disabled) return; var tk = UI.modal.tasks; UI.modal = null; return runTasks(tk); }
-    if (a === 'runClose') { UI.run = null; UI.modal = null; UI.selInit = false; return rerender(); }
+    if (a === 'runClose') { UI.run = null; UI.modal = null; UI.selR = {}; return rerender(); }
     if (a === 'csv') return csv();
     if (a === 'retry') { var again = UI.run.fail.slice(); return runTasks(again); }
     if (a === 'issue1' || a === 'mail1') {
@@ -312,7 +332,9 @@
     if (!CTX || !CTX.active()) return;
     var t = e.target, b = t.getAttribute && t.getAttribute('data-bs-bind');
     if (t.id === 'bsAck') { goCheck(); return; }
-    if (b === 'sel') { UI.sel[t.getAttribute('data-k')] = t.checked; rerender(); }
+    if (b === 'selR') { UI.selR[t.getAttribute('data-k')] = t.checked; rerender(); }
+    else if (b === 'allR') { restrRows().forEach(function (x) { if (x.eligible) UI.selR[x.gk] = t.checked; }); rerender(); }
+    else if (b === 'sel') { UI.sel[t.getAttribute('data-k')] = t.checked; rerender(); }
     else if (b === 'all') { build().forEach(function (r) { if (r.ready) UI.sel[r.k] = t.checked; }); rerender(); }
   }
   function init(ctx) {
