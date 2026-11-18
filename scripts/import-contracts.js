@@ -473,7 +473,9 @@ async function main() {
   log('ระบบติดตามหนี้: ออเดอร์ทั้งหมด ' + state0.orders.length + ' · ที่ AI นำเข้า (Lark+CRM) ' + state0.orders.filter(o => o.importedFrom === 'lark-contract-import').length + ' · ในนั้นมีตารางอุปกรณ์เสริม ' + state0.orders.filter(o => o.importedFrom === 'lark-contract-import' && (o.accessoryInstallments || []).length).length);
   log('แหล่งข้อมูล Lark: ' + (EASY_CASH ? 'Easy phone Easy cash · สถานะ ' + LARK_STATUS_VALUES.join(', ') : 'ตารางสัญญาปกติ'));
   const rows = (await fetchLarkRows(await larkToken())).map(parseLarkRow);
-  let cands = rows.filter(r => r.soNumber && r.contractDate >= DATE_FROM && r.contractDate <= DATE_TO);
+  // REF_ONLY=1 → เติมบุคคลอ้างอิงย้อนหลังให้ออเดอร์เดิม "ทุกช่วงวันที่" เท่านั้น ไม่นำเข้าออเดอร์ใหม่
+  const REF_ONLY = String(process.env.REF_ONLY || '') === '1';
+  let cands = rows.filter(r => r.soNumber && (REF_ONLY || (r.contractDate >= DATE_FROM && r.contractDate <= DATE_TO)));
   log('Lark: สถานะ 5. ทั้งหมด ' + rows.length + ' · อยู่ในช่วงวันที่ ' + cands.length);
   const typeCount = {}; cands.forEach(r => { const k = r.purchaseType || '(ไม่ระบุ)'; typeCount[k] = (typeCount[k] || 0) + 1; });
   log('แยกตามประเภทการซื้อ (ในช่วงวันที่): ' + Object.keys(typeCount).map(k => k + '=' + typeCount[k]).join(' · '));
@@ -497,7 +499,7 @@ async function main() {
     if (o && o.easyFee === undefined && r.easyFee !== undefined) feeFills.push({ orderId: o.orderId, fee: r.easyFee, other: r.easyOtherFee });
   });
   log('ค่าธรรมเนียม/ค่าใช้จ่ายอื่นๆ ที่จะเติมให้ออเดอร์เดิม ' + feeFills.length);
-  cands = cands.filter(r => !isExisting(r));
+  cands = REF_ONLY ? [] : cands.filter(r => !isExisting(r));
   if (LIMIT) cands = cands.slice(0, LIMIT);
   log('มีในระบบติดตามหนี้อยู่แล้ว ' + already + ' · จะประมวลผล ' + cands.length);
 

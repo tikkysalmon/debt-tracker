@@ -21,6 +21,9 @@ on:
       easy_cash:
         description: 'นำเข้าลูกหนี้ Easy phone Easy cash (สถานะ 4. โอนเงินเรียบร้อยแล้ว) แทนตารางสัญญาปกติ (true/false)'
         default: 'false'
+      ref_only:
+        description: 'เติมบุคคลอ้างอิงย้อนหลังให้ออเดอร์เดิมทุกช่วงวันที่ (ไม่นำเข้าออเดอร์ใหม่) (true/false)'
+        default: 'false'
       dry_run:
         description: 'dry-run = ตรวจอย่างเดียวไม่เขียนข้อมูล (true/false)'
         default: 'true'
@@ -45,5 +48,6 @@ jobs:
           DATE_TO: ${{ inputs.date_to }}
           LIMIT: ${{ inputs.limit }}
           DRY_RUN: ${{ inputs.dry_run }}
+          REF_ONLY: ${{ inputs.ref_only == 'true' && '1' || '' }}
           EASY_CASH: ${{ inputs.easy_cash == 'true' && '1' || '' }}
         run: node scripts/import-contracts.js
