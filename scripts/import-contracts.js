@@ -134,6 +134,7 @@ function parseEasyCashRow(f) {
     referencePhone: larkText(f['เบอร์ติดต่อบุคคลอ้างอิงที่1']).trim(),
     // ค่าธรรมเนียมอนุมัติวงเงิน / ค่าใช้จ่ายอื่นๆ ที่ฟอร์มเขียนลง Lark — Dashboard เมนู Easy Phone Easy Cash แยกยอดสองอย่างนี้ออกจากยอดชำระค่างวด
     easyFee: larkNumber(f['ค่าธรรมเนียม']), easyOtherFee: larkNumber(f['ค่าใช้จ่ายอื่นๆ']),
+    easyNetReceived: larkNumber(f['จำนวนเงินที่ลูกค้าได้รับ']),
   };
 }
 function parseLarkRow(fields) {
@@ -271,7 +272,7 @@ function orderFromTrack(lark, so, t) {
     _discountAppliedToInstallments: t.discount > 0 ? true : undefined,
     crmCustomerName: (function () { const n = ((so.customerFirstName || '') + (so.customerLastName || '')); return n && normName(n) !== normName(lark.customerName) ? ((so.customerFirstName || '') + ' ' + (so.customerLastName || '')).replace(/\s+/g, ' ').trim() : undefined; })(),
     importedFrom: 'lark-contract-import', importedAt: new Date().toISOString(),
-    ...(lark.easyFee !== undefined ? { easyFee: lark.easyFee, easyOtherFee: lark.easyOtherFee } : {}),
+    ...(lark.easyFee !== undefined ? { easyFee: lark.easyFee, easyOtherFee: lark.easyOtherFee, easyNetReceived: lark.easyNetReceived } : {}),
   };
 }
 
@@ -496,7 +497,7 @@ async function main() {
   const feeFills = [];
   if (EASY_CASH) cands.filter(isExisting).forEach(r => {
     const o = state0.orders.find(x => r.soList.includes(x.orderId) || x.orderId === r.soNumber);
-    if (o && o.easyFee === undefined && r.easyFee !== undefined) feeFills.push({ orderId: o.orderId, fee: r.easyFee, other: r.easyOtherFee });
+    if (o && (o.easyFee === undefined || o.easyNetReceived === undefined) && r.easyFee !== undefined) feeFills.push({ orderId: o.orderId, fee: r.easyFee, other: r.easyOtherFee, net: r.easyNetReceived });
   });
   log('ค่าธรรมเนียม/ค่าใช้จ่ายอื่นๆ ที่จะเติมให้ออเดอร์เดิม ' + feeFills.length);
   cands = REF_ONLY ? [] : cands.filter(r => !isExisting(r));
@@ -594,7 +595,7 @@ async function main() {
       if (!o.referenceName && x.name) { o.referenceName = x.name; filled++; }
       if (!o.referencePhone && x.phone) { o.referencePhone = x.phone; filled++; }
     });
-    feeFills.forEach(x => { const o = state.orders.find(y => y.orderId === x.orderId); if (o && o.easyFee === undefined) { o.easyFee = x.fee; o.easyOtherFee = x.other; } });
+    feeFills.forEach(x => { const o = state.orders.find(y => y.orderId === x.orderId); if (!o) return; if (o.easyFee === undefined) { o.easyFee = x.fee; o.easyOtherFee = x.other; } if (o.easyNetReceived === undefined) o.easyNetReceived = x.net; });
     await uploadState(dtToken, state);
     log('เขียนสำเร็จ: เพิ่ม ' + added + ' orders · เติมบุคคลอ้างอิง ' + filled + ' ช่อง');
     console.log('::notice::imported=' + added + ' mismatch=' + mismatch.length);
