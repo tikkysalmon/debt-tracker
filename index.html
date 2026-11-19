@@ -1258,8 +1258,20 @@
   function waitForCloudSaveSettled(timeoutMs) {
     return new Promise(function (resolve, reject) {
       var deadline = Date.now() + (timeoutMs || 25000);
+      var retried = false;
       function check() {
+        // Fixed 2026-11-19: scheduleCloudSave() sets cloudDirty immediately but only starts the upload
+        // after a 600ms debounce, so "dirty + nothing in flight" right after an edit used to be read as
+        // a failed save ("ไม่ทราบสาเหตุ") for the first item of every bulk send. Keep waiting while queued.
+        if (cloudSaveQueued) {
+          if (Date.now() > deadline) { reject(new Error('บันทึกขึ้นฐานข้อมูลกลางใช้เวลานานเกินไป')); return; }
+          setTimeout(check, 200); return;
+        }
         if (!cloudSaveInFlight && !cloudSavePending) {
+          // Dirty with no error recorded and nothing running: kick one save ourselves before giving up.
+          if (cloudDirty && !cloudErrorDetail && !retried && CLOUD_ENABLED && db && cloudConnected) {
+            retried = true; cloudSaveNow(); setTimeout(check, 200); return;
+          }
           if (cloudDirty) reject(new Error('บันทึกขึ้นฐานข้อมูลกลางไม่สำเร็จ — ' + (cloudErrorDetail || 'ไม่ทราบสาเหตุ')));
           else resolve();
           return;
@@ -1333,6 +1345,7 @@
   var lastServerTs = null;       // updated_at of the last state we know about
   var cloudStatus = CLOUD_ENABLED ? 'connecting' : 'local'; // local|connecting|online|saving|offline
   var cloudSaveTimer = null;
+  var cloudSaveQueued = false; // true while the 600ms debounce timer is waiting to fire cloudSaveNow
   var cloudPollTimer = null;
   var applyingRemote = false;    // guard: don't re-save while applying a remote snapshot
   // The last state this client knows is confirmed on the server — NOT necessarily what's on the
@@ -1881,7 +1894,8 @@
     if (!CLOUD_ENABLED || !db || !cloudConnected || applyingRemote) return;
     cloudDirty = true;
     if (cloudSaveTimer) clearTimeout(cloudSaveTimer);
-    cloudSaveTimer = setTimeout(cloudSaveNow, 600);
+    cloudSaveQueued = true;
+    cloudSaveTimer = setTimeout(function () { cloudSaveQueued = false; cloudSaveNow(); }, 600);
   }
   var cloudErrorDetail = ''; // last save/poll failure reason, surfaced in the status pill's title
   // The payload can run 15-20MB, so an upload can legitimately take several seconds — long enough
