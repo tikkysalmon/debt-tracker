@@ -12,7 +12,7 @@
 (function (global) {
   'use strict';
   var CTX = null;
-  var UI = { tab: 'ready', q: '', chk: 'all', size: 50, page: { ready: 1, restr: 1 }, visReady: [], visRestr: [], sel: {}, selR: {}, selInit: false, modal: null, run: null, drawer: null };
+  var UI = { tab: 'ready', q: '', chk: 'all', next: 'all', size: 50, page: { ready: 1, restr: 1 }, visReady: [], visRestr: [], sel: {}, selR: {}, selInit: false, modal: null, run: null, drawer: null };
 
   function esc(s) { return CTX.esc(s == null ? '' : s); }
   function key(o) { return String(o.customerId || '').trim() + '||' + String(o.customerName || '').trim(); }
@@ -54,6 +54,18 @@
     return true;
   }
   function chkRestr(x) { var c = UI.chk; if (c === 'ok') return x.eligible; if (c === 'nophone') return !x.phone && !x.last; return true; }
+  // ตัวกรอง "ต้องส่งถัดไป" — SMS = มี SMS ค้างส่ง · จดหมาย = มีจดหมายที่ต้องออก หรือจดหมายที่ออกแล้วรอส่งอีเมล (ไม่แยกฉบับที่)
+  var NEXT_OPTS = [['all', 'ทั้งหมด'], ['letter', 'จดหมาย'], ['sms', 'SMS']];
+  function nextMatch(r) {
+    if (UI.next === 'sms') return r.sms.length > 0;
+    if (UI.next === 'letter') return (r.letters.length + r.mails.length) > 0;
+    return true;
+  }
+  function nextSelect() {
+    if (UI.tab !== 'ready') return '';
+    return '<span class="bs-m" style="margin:0 4px 0 14px;font-size:13px;color:#4b5563">ต้องส่งถัดไป:</span><select data-bs-bind="next" style="padding:9px 11px;border-radius:10px;border:1px solid rgba(247,130,59,.25);font-size:13.5px">' +
+      NEXT_OPTS.map(function (o) { return '<option value="' + o[0] + '"' + (UI.next === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>';
+  }
   function chkSelect() {
     if (UI.tab === 'done') return '';
     var opts = UI.tab === 'restr' ? CHK_RESTR : CHK_READY;
@@ -214,9 +226,9 @@
       '<div class="bs-k" style="--c:#339af0"><small>ส่งแล้ววันนี้</small><b>' + done.length + ' ราย</b><span>กันส่งซ้ำอัตโนมัติ</span></div></div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center">' +
       [['ready', 'พร้อมส่งติดตามหนี้', ready.length], ['restr', '📱 SMS ปรับโครงสร้างหนี้', restr.filter(function (x) { return x.eligible; }).length], ['done', 'ส่งแล้ววันนี้', done.length]].map(function (d) { return '<div class="bs-tab ' + (UI.tab === d[0] ? 'on' : '') + '" data-bs="tab" data-v="' + d[0] + '">' + d[1] + ' <i>' + d[2] + '</i></div>'; }).join('') +
-      '<input type="text" data-bs-bind="q" id="bsQ" placeholder="ค้นหาชื่อ / เลข SO" value="' + esc(UI.q) + '" style="margin-left:8px;width:240px;padding:9px 11px;border-radius:10px;border:1px solid rgba(247,130,59,.25);font-size:13.5px;outline:none">' + chkSelect() + '</div>';
+      '<input type="text" data-bs-bind="q" id="bsQ" placeholder="ค้นหาชื่อ / เลข SO" value="' + esc(UI.q) + '" style="margin-left:8px;width:240px;padding:9px 11px;border-radius:10px;border:1px solid rgba(247,130,59,.25);font-size:13.5px;outline:none">' + chkSelect() + nextSelect() + '</div>';
     if (UI.tab === 'ready') {
-      var vis = ready.filter(function (r) { return (!q || (r.name + ' ' + r.so.join(' ')).toLowerCase().indexOf(q) >= 0) && chkReady(r); }).sort(function (a, b) { return (a.due || 'z') < (b.due || 'z') ? -1 : 1; });
+      var vis = ready.filter(function (r) { return (!q || (r.name + ' ' + r.so.join(' ')).toLowerCase().indexOf(q) >= 0) && chkReady(r) && nextMatch(r); }).sort(function (a, b) { return (a.due || 'z') < (b.due || 'z') ? -1 : 1; });
       var pgR = pageOf(vis, 'ready');
       UI.visReady = pgR.rows.map(function (r) { return r.k; });
       h += pagerHtml(pgR, true) + '<div style="background:rgba(255,255,255,.97);border:1px solid #eceef2;border-radius:20px;overflow:hidden"><div style="overflow-x:auto"><table class="bs-t"><thead><tr><th style="width:34px"><input type="checkbox" data-bs-bind="all" title="เลือกทั้งหมดในหน้านี้"' + (pgR.rows.length && pgR.rows.every(function (r) { return UI.sel[r.k]; }) ? ' checked' : '') + '></th><th>ลูกค้า</th><th>ยอดค้างชำระ</th><th>SMS ล่าสุด</th><th>จดหมาย / อีเมล ล่าสุด</th><th style="min-width:300px">ต้องส่งถัดไป</th><th>ตรวจสอบ</th><th></th></tr></thead><tbody>' +
@@ -385,6 +397,7 @@
     var t = e.target, b = t.getAttribute && t.getAttribute('data-bs-bind');
     if (t.id === 'bsAck') { goCheck(); return; }
     if (b === 'chk') { UI.chk = t.value; resetPages(); rerender(); }
+    else if (b === 'next') { UI.next = t.value; resetPages(); rerender(); }
     else if (b === 'size') { UI.size = Number(t.value) || 50; resetPages(); rerender(); }
     else if (b === 'selR') { UI.selR[t.getAttribute('data-k')] = t.checked; rerender(); }
     else if (b === 'allR') { UI.visRestr.forEach(function (gk) { UI.selR[gk] = t.checked; }); rerender(); }
