@@ -12,7 +12,7 @@
 (function (global) {
   'use strict';
   var CTX = null;
-  var UI = { tab: 'ready', q: '', chk: 'all', visReady: [], visRestr: [], sel: {}, selR: {}, selInit: false, modal: null, run: null, drawer: null };
+  var UI = { tab: 'ready', q: '', chk: 'all', size: 50, page: { ready: 1, restr: 1 }, visReady: [], visRestr: [], sel: {}, selR: {}, selInit: false, modal: null, run: null, drawer: null };
 
   function esc(s) { return CTX.esc(s == null ? '' : s); }
   function key(o) { return String(o.customerId || '').trim() + '||' + String(o.customerName || '').trim(); }
@@ -26,6 +26,21 @@
   function issuedToday(o, track) {
     var today = CTX.todayDmy(), hist = (track === 'accessory' ? o.accessoryLetterHistory : o.letterHistory) || [];
     return hist.filter(function (h) { return dpart(h.at) === today; })[0] || null;
+  }
+  /* ---------- แบ่งหน้า (ตัวเลือก 50/100/200 รายการต่อหน้า) ---------- */
+  function pageOf(list, key) {
+    var size = UI.size, pages = Math.max(1, Math.ceil(list.length / size));
+    var page = Math.min(Math.max(1, UI.page[key] || 1), pages); UI.page[key] = page;
+    var start = (page - 1) * size;
+    return { key: key, rows: list.slice(start, start + size), page: page, pages: pages, start: start, end: Math.min(start + size, list.length), total: list.length };
+  }
+  function resetPages() { UI.page.ready = 1; UI.page.restr = 1; }
+  function pagerHtml(pg, withSize) {
+    var btn = function (dir, label, off) { return '<button class="bs-b sm" data-bs="page" data-w="' + pg.key + '" data-dir="' + dir + '"' + (off ? ' disabled style="opacity:.45;cursor:default"' : '') + '>' + label + '</button>'; };
+    var sel = withSize ? '<span class="bs-m" style="margin-left:auto;font-size:13px;color:#4b5563">แสดง <select data-bs-bind="size" style="padding:6px 10px;border-radius:8px;border:1px solid rgba(247,130,59,.25);font-size:13px">' +
+      [50, 100, 200].map(function (n) { return '<option value="' + n + '"' + (UI.size === n ? ' selected' : '') + '>' + n + '</option>'; }).join('') + '</select> รายการ/หน้า</span>' : '';
+    return '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:' + (withSize ? '0 0 10px' : '12px 0 4px') + '">' +
+      (pg.total ? btn('prev', '‹ ก่อนหน้า', pg.page <= 1) + '<span class="bs-m" style="font-size:13px;color:#4b5563">หน้า ' + pg.page + ' / ' + pg.pages + ' (แสดง ' + (pg.start + 1) + '–' + pg.end + ' จาก ' + pg.total + ' รายการ)</span>' + btn('next', 'ถัดไป ›', pg.page >= pg.pages) : '<span class="bs-m">ไม่มีรายการ</span>') + sel + '</div>';
   }
   /* ---------- ตัวกรอง "ตรวจสอบ" ---------- */
   var CHK_READY = [['all', 'ทั้งหมด'], ['ok', 'พร้อมส่ง'], ['issue', 'ข้อมูลไม่ครบ / ติดเงื่อนไข'], ['nophone', 'ไม่มีเบอร์โทร'], ['noemail', 'ไม่มีอีเมล']];
@@ -202,9 +217,10 @@
       '<input type="text" data-bs-bind="q" id="bsQ" placeholder="ค้นหาชื่อ / เลข SO" value="' + esc(UI.q) + '" style="margin-left:8px;width:240px;padding:9px 11px;border-radius:10px;border:1px solid rgba(247,130,59,.25);font-size:13.5px;outline:none">' + chkSelect() + '</div>';
     if (UI.tab === 'ready') {
       var vis = ready.filter(function (r) { return (!q || (r.name + ' ' + r.so.join(' ')).toLowerCase().indexOf(q) >= 0) && chkReady(r); }).sort(function (a, b) { return (a.due || 'z') < (b.due || 'z') ? -1 : 1; });
-      UI.visReady = vis.map(function (r) { return r.k; });
-      h += '<div style="background:rgba(255,255,255,.97);border:1px solid #eceef2;border-radius:20px;overflow:hidden"><div style="overflow-x:auto"><table class="bs-t"><thead><tr><th style="width:34px"><input type="checkbox" data-bs-bind="all" title="เลือกทั้งหมดที่แสดงอยู่"' + (vis.length && vis.every(function (r) { return UI.sel[r.k]; }) ? ' checked' : '') + '></th><th>ลูกค้า</th><th>ยอดค้างชำระ</th><th>SMS ล่าสุด</th><th>จดหมาย / อีเมล ล่าสุด</th><th style="min-width:300px">ต้องส่งถัดไป</th><th>ตรวจสอบ</th><th></th></tr></thead><tbody>' +
-        (vis.map(function (r) {
+      var pgR = pageOf(vis, 'ready');
+      UI.visReady = pgR.rows.map(function (r) { return r.k; });
+      h += pagerHtml(pgR, true) + '<div style="background:rgba(255,255,255,.97);border:1px solid #eceef2;border-radius:20px;overflow:hidden"><div style="overflow-x:auto"><table class="bs-t"><thead><tr><th style="width:34px"><input type="checkbox" data-bs-bind="all" title="เลือกทั้งหมดในหน้านี้"' + (pgR.rows.length && pgR.rows.every(function (r) { return UI.sel[r.k]; }) ? ' checked' : '') + '></th><th>ลูกค้า</th><th>ยอดค้างชำระ</th><th>SMS ล่าสุด</th><th>จดหมาย / อีเมล ล่าสุด</th><th style="min-width:300px">ต้องส่งถัดไป</th><th>ตรวจสอบ</th><th></th></tr></thead><tbody>' +
+        (pgR.rows.map(function (r) {
           var ls = r.lastSms, ll = r.lastLetter;
           return '<tr><td><input type="checkbox" data-bs-bind="sel" data-k="' + esc(r.k) + '"' + (UI.sel[r.k] ? ' checked' : '') + '></td>' +
             '<td><b>' + esc(r.name) + '</b><div class="bs-m">' + esc(r.so.join(', ')) + '</div><div class="bs-m">' + (r.phone ? '📱 ' + esc(r.phone) : '<span style="color:#e03131">📱 ไม่มีเบอร์</span>') + ' · ' + (r.email ? '✉️ ' + esc(r.email) : '<span style="color:#e03131">✉️ ไม่มีอีเมล</span>') + '</div></td>' +
@@ -213,20 +229,21 @@
             '<td>' + (ll ? '<b>ฉบับที่ ' + esc(ll.h.cycleNo || ll.h.no) + '</b><div class="bs-m">' + fmtAt(ll.h) + '</div>' + (ll.email ? '<span class="bs-p bs-ok">✉️ ส่งอีเมลแล้ว</span>' : '<span class="bs-p bs-g">ยังไม่ได้ส่งอีเมล</span>') : '<span class="bs-m">ยังไม่เคยออก</span>') + '</td>' +
             '<td>' + nextCell(r) + '</td><td>' + (r.issues.length ? r.issues.map(function (t) { return '<div class="bs-p bs-am" style="margin-bottom:3px;white-space:normal">⚠ ' + esc(t) + '</div>'; }).join('') : '<span class="bs-p bs-ok">พร้อมส่ง</span>') + '</td>' +
             '<td>' + actionsCell(r) + '</td></tr>';
-        }).join('') || '<tr><td colspan="8" style="text-align:center;color:#8d93a0;padding:30px">ไม่มีรายการ</td></tr>') + '</tbody></table></div></div>';
+        }).join('') || '<tr><td colspan="8" style="text-align:center;color:#8d93a0;padding:30px">ไม่มีรายการ</td></tr>') + '</tbody></table></div></div>' + pagerHtml(pgR, false);
     } else if (UI.tab === 'restr') {
       var rv = restr.filter(function (x) { return (!q || (x.customerName + ' ' + x.soDisplay).toLowerCase().indexOf(q) >= 0) && chkRestr(x); }).sort(function (a, b) { return b.days - a.days; });
-      var elig = rv.filter(function (x) { return x.eligible; });
+      var pgS = pageOf(rv, 'restr');
+      var elig = pgS.rows.filter(function (x) { return x.eligible; });
       UI.visRestr = elig.map(function (x) { return x.gk; });
       h += '<div style="font-size:12.5px;color:#4b5563;margin-bottom:10px">ข้อความตายตัว (ไม่ผูกกับขั้นติดตามหนี้ปกติ) · แสดงเฉพาะลูกค้าที่มีสถานะบัญชี <b>ดำเนินคดี</b> และ <b>รอดำเนินคดี</b> · ต้องมีเบอร์โทร + ยังไม่เคยส่ง SMS นี้ (ส่งครั้งเดียวต่อบิล ไม่ส่งซ้ำ)</div>' +
-        '<div style="background:rgba(255,255,255,.97);border:1px solid #eceef2;border-radius:20px;overflow:hidden"><div style="overflow-x:auto"><table class="bs-t"><thead><tr><th style="width:34px"><input type="checkbox" data-bs-bind="allR" title="เลือกทั้งหมดที่แสดงอยู่"' + (elig.length && elig.every(function (x) { return UI.selR[x.gk]; }) ? ' checked' : '') + '></th><th>ลูกค้า</th><th>ยอดค้างชำระ</th><th>สถานะบัญชี</th><th>SMS ปรับโครงสร้างหนี้ล่าสุด</th><th>ต้องส่ง</th></tr></thead><tbody>' +
-        (rv.map(function (x) {
+        pagerHtml(pgS, true) + '<div style="background:rgba(255,255,255,.97);border:1px solid #eceef2;border-radius:20px;overflow:hidden"><div style="overflow-x:auto"><table class="bs-t"><thead><tr><th style="width:34px"><input type="checkbox" data-bs-bind="allR" title="เลือกทั้งหมดในหน้านี้"' + (elig.length && elig.every(function (x) { return UI.selR[x.gk]; }) ? ' checked' : '') + '></th><th>ลูกค้า</th><th>ยอดค้างชำระ</th><th>สถานะบัญชี</th><th>SMS ปรับโครงสร้างหนี้ล่าสุด</th><th>ต้องส่ง</th></tr></thead><tbody>' +
+        (pgS.rows.map(function (x) {
           return '<tr' + (x.eligible ? '' : ' style="opacity:.6"') + '><td><input type="checkbox" data-bs-bind="selR" data-k="' + esc(x.gk) + '"' + (UI.selR[x.gk] ? ' checked' : '') + (x.eligible ? '' : ' disabled') + '></td>' +
             '<td><b>' + esc(x.customerName) + '</b><div class="bs-m">' + esc(x.soDisplay) + (x.track === 'accessory' ? ' (อุปกรณ์เสริม)' : '') + '</div><div class="bs-m">' + (x.phone ? '📱 ' + esc(x.phone) : '<span style="color:#e03131">📱 ไม่มีเบอร์</span>') + '</div></td>' +
             '<td><b style="color:#e03131">฿' + money(x.amount) + '</b><div class="bs-m">ครบกำหนดงวดแรกที่ค้าง ' + esc(CTX.fmtDate(x.due)) + '</div></td><td><span class="bs-p ' + (x.acct === 'ดำเนินคดี' ? 'bs-red' : 'bs-am') + '">' + esc(x.acct) + '</span><div class="bs-m">ค้างมา ' + x.days + ' วัน</div></td>' +
             '<td>' + (x.last ? '<b>ปรับโครงสร้างหนี้</b><div class="bs-m">' + fmtAt(x.last) + '</div>' : '<span class="bs-m">ยังไม่เคยส่ง</span>') + '</td>' +
             '<td>' + (x.eligible ? '<div class="bs-it bs-sms"><b>📱 SMS ปรับโครงสร้างหนี้</b><br><span class="bs-m">ข้อความตายตัว</span></div>' : (x.last ? '<span class="bs-m">ส่งแล้ว — ไม่ส่งซ้ำ</span>' : '<span class="bs-p bs-am">⚠ ไม่มีเบอร์โทร</span>')) + '</td></tr>';
-        }).join('') || '<tr><td colspan="6" style="text-align:center;color:#8d93a0;padding:30px">ไม่มีรายการ</td></tr>') + '</tbody></table></div></div>';
+        }).join('') || '<tr><td colspan="6" style="text-align:center;color:#8d93a0;padding:30px">ไม่มีรายการ</td></tr>') + '</tbody></table></div></div>' + pagerHtml(pgS, false);
     } else {
       var dv = done.filter(function (r) { return !q || (r.name + ' ' + r.so.join(' ')).toLowerCase().indexOf(q) >= 0; });
       h += '<div style="background:rgba(255,255,255,.97);border:1px solid #eceef2;border-radius:20px;overflow:hidden"><table class="bs-t"><thead><tr><th>ลูกค้า</th><th>ที่ส่ง/ออกเอกสารวันนี้</th></tr></thead><tbody>' +
@@ -326,6 +343,7 @@
     var a = t.getAttribute('data-bs'), k = t.getAttribute('data-k');
     if (a === 'drawerMask') { if (e.target !== t) return; UI.drawer = null; return rerender(); }
     if (a === 'tab') { UI.tab = t.getAttribute('data-v'); return rerender(); }
+    if (a === 'page') { var w = t.getAttribute('data-w'); UI.page[w] = (UI.page[w] || 1) + (t.getAttribute('data-dir') === 'next' ? 1 : -1); rerender(); var bar = document.querySelector('.bs-t'); if (bar && bar.scrollIntoView) bar.scrollIntoView({ block: 'start' }); return; }
     if (a === 'view') { UI.drawer = k; return rerender(); }
     if (a === 'drawerClose') { UI.drawer = null; return rerender(); }
     if (a === 'openCust') { var rr = build().filter(function (x) { return x.k === k; })[0]; UI.drawer = null; if (rr) CTX.openCustomer(rr.cid, rr.name); return; }
@@ -360,13 +378,14 @@
   }
   function onInput(e) {
     if (!CTX || !CTX.active()) return;
-    var t = e.target; if (t.id === 'bsCnt') { goCheck(); return; } if (t.getAttribute && t.getAttribute('data-bs-bind') === 'q') { UI.q = t.value; rerender(); var el = document.getElementById('bsQ'); if (el) { el.focus(); el.setSelectionRange(t.value.length, t.value.length); } }
+    var t = e.target; if (t.id === 'bsCnt') { goCheck(); return; } if (t.getAttribute && t.getAttribute('data-bs-bind') === 'q') { UI.q = t.value; resetPages(); rerender(); var el = document.getElementById('bsQ'); if (el) { el.focus(); el.setSelectionRange(t.value.length, t.value.length); } }
   }
   function onChange(e) {
     if (!CTX || !CTX.active()) return;
     var t = e.target, b = t.getAttribute && t.getAttribute('data-bs-bind');
     if (t.id === 'bsAck') { goCheck(); return; }
-    if (b === 'chk') { UI.chk = t.value; rerender(); }
+    if (b === 'chk') { UI.chk = t.value; resetPages(); rerender(); }
+    else if (b === 'size') { UI.size = Number(t.value) || 50; resetPages(); rerender(); }
     else if (b === 'selR') { UI.selR[t.getAttribute('data-k')] = t.checked; rerender(); }
     else if (b === 'allR') { UI.visRestr.forEach(function (gk) { UI.selR[gk] = t.checked; }); rerender(); }
     else if (b === 'sel') { UI.sel[t.getAttribute('data-k')] = t.checked; rerender(); }
