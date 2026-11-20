@@ -117,7 +117,8 @@
       r.issues = [];
       if (r.sms.length && r.sms.some(function (g) { return !g.p.ok; })) r.issues.push('SMS: ' + r.sms.filter(function (g) { return !g.p.ok; })[0].p.why);
       if ((r.letters.length) && !r.email) r.issues.push('ไม่มีอีเมล — ออกจดหมาย PDF ได้ แต่ส่งอีเมลไม่ได้ (พิมพ์ส่งไปรษณีย์)');
-      r.mails = r.mails.filter(function (m) { return !!m.to; });
+      // ลูกค้าไม่มีอีเมลแต่ออกจดหมายแล้ว: คงแถวไว้ในรายการ (พนักงานต้องมาเติมอีเมลแล้วส่งภายหลัง) — แค่ยังไม่มีปุ่ม/งานส่งอีเมลจนกว่าจะมีอีเมล
+      if (r.mails.length && !r.email) r.issues.push('ออกจดหมายแล้ว แต่ไม่มีอีเมล — เติมอีเมลลูกค้าก่อน จึงส่งอีเมลได้');
       var dueDates = [];
       Object.keys(r.trackSeen).forEach(function (tk) { var pr = tk.split('|'), o = orders[pr[0]]; var d = o && CTX.earliestDue(o, pr[1]); if (d) dueDates.push(d); });
       r.due = dueDates.sort()[0] || '';
@@ -172,7 +173,7 @@
       if (CTX.can('send_sms')) r.sms.forEach(function (g) { if (g.p.ok) t.push({ kind: 'sms', r: r, g: g, label: '📱 SMS ' + g.templateName + (g.occasion ? ' (ซ้ำรอบใหม่)' : '') }); });
       if (CTX.can('send_letter')) {
         r.letters.forEach(function (x) { t.push({ kind: 'letter', r: r, x: x, label: '📄 ออกจดหมายฉบับที่ ' + x.letterNo + (x.track === 'accessory' ? ' (อุปกรณ์เสริม)' : '') + (r.email ? ' + ✉️ ส่งอีเมล' : ' (PDF)') }); });
-        r.mails.forEach(function (m) { t.push({ kind: 'mail', r: r, m: m, label: '✉️ ส่งอีเมลจดหมายฉบับที่ ' + (m.cycleNo || m.no) + ' (' + m.docNo + ')' }); });
+        r.mails.forEach(function (m) { if (!m.to) return; t.push({ kind: 'mail', r: r, m: m, label: '✉️ ส่งอีเมลจดหมายฉบับที่ ' + (m.cycleNo || m.no) + ' (' + m.docNo + ')' }); });
       }
     });
     return t;
