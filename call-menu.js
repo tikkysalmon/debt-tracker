@@ -75,6 +75,7 @@
     };
   }
   var REFS = {};   // บุคคลอ้างอิงอาจกรอกไว้ที่ order อื่นของลูกค้าคนเดียวกัน → ใช้เป็นค่าสำรอง
+  function prodHtml(r) { return r.product || r.accessory ? esc(r.product || '-') + (r.accessory ? '<div class="muted">+ ' + esc(r.accessory) + '</div>' : '') : '<span class="muted">-</span>'; }
   function toRow(o) {
     var insts = (o.installments || []).map(function (i) { return mkInst(i, 'main'); }).concat((o.accessoryInstallments || []).map(function (i) { return mkInst(i, 'accessory'); }));
     if (!insts.length) return null;
@@ -86,7 +87,7 @@
     }).sort(function (a, b) { return a.at < b.at ? -1 : a.at > b.at ? 1 : 0; });
     var payments = [];
     insts.forEach(function (i) { if (i.paid > 0 && i.paidDate) payments.push({ date: i.paidDate, amt: i.paid }); });
-    return { id: o.customerId, name: o.customerName, so: o.orderId, phone: o.phone || '', refName: o.referenceName || (REFS[o.customerId] || {}).n || '', refPhone: o.referencePhone || (REFS[o.customerId] || {}).p || '', insts: insts, dueDay: dayGroup(day), calls: calls, payments: payments, owner: o.callOwner || null, ownerLog: o.callOwnerLog || [], order: o };
+    return { id: o.customerId, name: o.customerName, so: o.orderId, product: String(o.productList || '').trim(), accessory: String(o.accessoryProductList || '').trim(), phone: o.phone || '', refName: o.referenceName || (REFS[o.customerId] || {}).n || '', refPhone: o.referencePhone || (REFS[o.customerId] || {}).p || '', insts: insts, dueDay: dayGroup(day), calls: calls, payments: payments, owner: o.callOwner || null, ownerLog: o.callOwnerLog || [], order: o };
   }
   function buildRows() {
     REFS = {};
@@ -299,7 +300,7 @@
     var rm = rowSnap(r), cur = rowRemain(r), pd = rowPaid(r), age = rowAge(r), ps = payStatus(r);
     var t = paidView ? payTiming(r) : null;
     return '<tr class="click" data-cm-act="open" data-v="' + esc(r.so) + '">' +
-      '<td class="code">' + esc(r.id) + '</td><td style="font-weight:600;white-space:nowrap">' + esc(r.name) + '</td><td class="nowrap" style="color:var(--o2);font-weight:600">' + esc(r.so) + '</td>' +
+      '<td class="code">' + esc(r.id) + '</td><td style="font-weight:600;white-space:nowrap">' + esc(r.name) + '</td><td class="nowrap" style="color:var(--o2);font-weight:600">' + esc(r.so) + '</td><td style="min-width:150px">' + prodHtml(r) + '</td>' +
       '<td class="nowrap"><span class="pill p-red" style="' + (u.length ? '' : 'background:rgba(18,184,134,.12);color:#0b7a5b') + '">' + esc(nos) + '</span></td>' +
       '<td class="nowrap">ทุกวันที่ ' + r.dueDay + '</td>' +
       '<td class="nowrap">' + (u.length ? '<b style="color:' + (age > 90 ? '#e03131' : age > 50 ? '#c2650a' : '#495057') + '">' + age + ' วัน</b><div class="muted">' + stageOf(age) + '</div>' : '-') + '</td>' +
@@ -389,8 +390,8 @@
       '<input type="text" id="cmQBox" data-cm-bind="q" placeholder="ค้นหารหัสลูกค้า, ชื่อ หรือคำสั่งซื้อ" value="' + esc(UI.q) + '" style="flex:1;min-width:240px">' +
       '<select data-cm-bind="staffF"><option value="all">พนักงานที่ติดตาม: ทั้งหมด</option>' + Object.keys(owners).sort().map(function (s) { return '<option ' + (UI.staff === s ? 'selected' : '') + '>' + esc(s) + '</option>'; }).join('') + '</select>' +
       '<span class="muted">พบ ' + rows.length + ' รายการ</span></div>' +
-      '<div style="overflow-x:auto"><table><thead><tr><th>รหัสลูกค้า</th><th>ชื่อลูกค้า</th><th>คำสั่งซื้อ</th><th>งวดที่ค้าง</th><th>วันครบกำหนด</th><th>อายุลูกหนี้</th><th class="right">ยอดค้างชำระ (ที่ดึงมา)</th><th class="right">ยอดที่ชำระ</th><th>วันที่ชำระ</th><th>สถานะการชำระเงิน</th>' + (UI.bucket === 'paid' ? '<th>ชำระก่อน/หลังโทร</th><th class="right">ยอดที่นับค่าคอม</th>' : '') + '<th>พนักงานที่ติดตาม</th><th>บันทึกการโทร</th></tr></thead><tbody>' +
-      (shown.length ? shown.map(rowHtml).join('') : '<tr><td colspan="' + (UI.bucket === 'paid' ? 14 : 12) + '" style="text-align:center;padding:32px;color:#8d93a0">ไม่พบรายการ</td></tr>') + '</tbody></table></div>' + pager() + '</div>';
+      '<div style="overflow-x:auto"><table><thead><tr><th>รหัสลูกค้า</th><th>ชื่อลูกค้า</th><th>คำสั่งซื้อ</th><th>สินค้าที่ผ่อน</th><th>งวดที่ค้าง</th><th>วันครบกำหนด</th><th>อายุลูกหนี้</th><th class="right">ยอดค้างชำระ (ที่ดึงมา)</th><th class="right">ยอดที่ชำระ</th><th>วันที่ชำระ</th><th>สถานะการชำระเงิน</th>' + (UI.bucket === 'paid' ? '<th>ชำระก่อน/หลังโทร</th><th class="right">ยอดที่นับค่าคอม</th>' : '') + '<th>พนักงานที่ติดตาม</th><th>บันทึกการโทร</th></tr></thead><tbody>' +
+      (shown.length ? shown.map(rowHtml).join('') : '<tr><td colspan="' + (UI.bucket === 'paid' ? 15 : 13) + '" style="text-align:center;padding:32px;color:#8d93a0">ไม่พบรายการ</td></tr>') + '</tbody></table></div>' + pager() + '</div>';
     return h;
   }
   function viewAlert(alerts) {
@@ -399,16 +400,16 @@
       '• <b>สายไม่ว่าง / ไม่รับสาย / ฝากข้อความ</b> → โทรซ้ำภายใน 1 วัน &nbsp;·&nbsp; <b>ปิดเครื่อง/เบอร์ผิด</b> → 2 วัน (หาเบอร์ใหม่จากบุคคลอ้างอิง)<br>' +
       '• <b>ติดต่อได้ - ขอยกเลิกคืนเครื่อง</b> → ติดตามซ้ำหลัง 3 วัน (ส่งเรื่องให้ฝ่ายสัญญา/หัวหน้า)<br>' +
       '• รายการจะหายไปเมื่อลูกค้าชำระครบ หรือชำระตามที่นัด หรือมีการบันทึกการโทรครั้งใหม่ที่ยังไม่ถึงกำหนดติดตาม</div></div>' +
-      '<div class="card"><h3>รายการที่ต้องติดตามซ้ำ (' + alerts.length + ')</h3><div style="overflow-x:auto"><table><thead><tr><th>รหัสลูกค้า</th><th>ชื่อลูกค้า</th><th>คำสั่งซื้อ</th><th>งวดที่ค้าง</th><th class="right">ยอดค้างชำระ (ที่ดึงมา)</th><th>ผู้รับผิดชอบ</th><th>ผลโทรล่าสุด</th><th>เหตุผลที่ต้องติดตาม</th><th>กำหนดติดตาม</th><th></th></tr></thead><tbody>' +
+      '<div class="card"><h3>รายการที่ต้องติดตามซ้ำ (' + alerts.length + ')</h3><div style="overflow-x:auto"><table><thead><tr><th>รหัสลูกค้า</th><th>ชื่อลูกค้า</th><th>คำสั่งซื้อ</th><th>สินค้าที่ผ่อน</th><th>งวดที่ค้าง</th><th class="right">ยอดค้างชำระ (ที่ดึงมา)</th><th>ผู้รับผิดชอบ</th><th>ผลโทรล่าสุด</th><th>เหตุผลที่ต้องติดตาม</th><th>กำหนดติดตาม</th><th></th></tr></thead><tbody>' +
       (alerts.length ? alerts.map(function (a) {
-        return '<tr class="click" data-cm-act="open" data-v="' + esc(a.r.so) + '"><td class="code">' + esc(a.r.id) + '</td><td style="font-weight:600">' + esc(a.r.name) + '</td><td class="nowrap" style="color:var(--o2);font-weight:600">' + esc(a.r.so) + '</td>' +
+        return '<tr class="click" data-cm-act="open" data-v="' + esc(a.r.so) + '"><td class="code">' + esc(a.r.id) + '</td><td style="font-weight:600">' + esc(a.r.name) + '</td><td class="nowrap" style="color:var(--o2);font-weight:600">' + esc(a.r.so) + '</td><td style="min-width:150px">' + prodHtml(a.r) + '</td>' +
           '<td class="nowrap"><span class="pill p-red">' + esc(instLabel(unpaid(a.r))) + '</span></td><td class="right nowrap" style="font-weight:700;color:#e03131">฿' + money(rowSnap(a.r)) + '</td>' +
           '<td class="nowrap">' + (a.r.owner ? '<b>' + esc(a.r.owner) + '</b>' : '<span class="pill p-amber">ยังไม่มีผู้รับผิดชอบ</span>') + '</td>' +
           '<td><span class="pill p-blue">' + esc(RES_LABEL[a.c.result] || a.c.result) + '</span><div class="muted">' + fmtDT(a.c.at) + ' · ' + esc(a.c.by) + '</div>' + (a.c.ptpDate ? '<div class="muted" style="color:#c2650a">นัด ' + fmtD(a.c.ptpDate) + (a.c.ptpAmt ? ' ฿' + money(a.c.ptpAmt) : '') + '</div>' : '') + '</td>' +
           '<td style="max-width:230px">' + esc(a.why) + '</td>' +
           '<td class="nowrap"><span class="pill ' + (a.late > 0 ? 'p-red' : 'p-amber') + '">' + (a.late > 0 ? 'เลยมา ' + a.late + ' วัน' : 'ครบกำหนดวันนี้') + '</span><div class="muted">' + fmtD(a.due) + '</div></td>' +
           '<td><button class="btn sm" data-cm-act="open" data-v="' + esc(a.r.so) + '">📞 โทรซ้ำ</button></td></tr>';
-      }).join('') : '<tr><td colspan="10" style="text-align:center;padding:32px;color:#8d93a0">ไม่มีรายการที่ต้องติดตามซ้ำ 🎉</td></tr>') + '</tbody></table></div></div>';
+      }).join('') : '<tr><td colspan="11" style="text-align:center;padding:32px;color:#8d93a0">ไม่มีรายการที่ต้องติดตามซ้ำ 🎉</td></tr>') + '</tbody></table></div></div>';
   }
   var PLAN_COLORS = [{ bg: '#e7f1ff', bd: '#339af0' }, { bg: '#ffe9e9', bd: '#e03131' }, { bg: '#e6f8f0', bd: '#12b886' }, { bg: '#f1ebff', bd: '#7048e8' }];
   var REF_SHOW = { no_answer: true, busy: true, unreachable: true, voicemail: true, reference: true };
@@ -460,7 +461,7 @@
     }).join('');
     return '<div class="mask" data-cm-act="closeMask"><div class="modal">' +
       '<div class="mh"><div><h2 style="margin:0;font-size:19px">' + esc(r.name) + ' <span class="code" style="font-size:14px">' + esc(r.id) + '</span></h2>' +
-      '<div class="muted" style="margin-top:4px">คำสั่งซื้อ <b style="color:var(--o2)">' + esc(r.so) + '</b> · โทร ' + esc(r.phone) + ' · ผู้บันทึก: <b>' + esc(me()) + '</b> (ระบบบันทึกชื่อพนักงานให้อัตโนมัติ)</div>' +
+      '<div class="muted" style="margin-top:4px">คำสั่งซื้อ <b style="color:var(--o2)">' + esc(r.so) + '</b> · โทร ' + esc(r.phone) + '</div><div class="muted" style="margin-top:3px">📱 สินค้าที่ผ่อน: <b>' + esc(r.product || '-') + '</b>' + (r.accessory ? ' · อุปกรณ์เสริม: <b>' + esc(r.accessory) + '</b>' : '') + '</div><div class="muted" style="margin-top:3px">ผู้บันทึก: <b>' + esc(me()) + '</b> (ระบบบันทึกชื่อพนักงานให้อัตโนมัติ)</div>' +
       '<div class="muted" style="margin-top:3px">👤 บุคคลอ้างอิง: <b style="color:#7048e8">' + esc(r.refName || '-') + '</b> · โทร ' + (r.refPhone ? '<a href="tel:' + esc(String(r.refPhone).replace(/[^0-9+]/g, '')) + '" style="color:#7048e8;font-weight:700">' + esc(r.refPhone) + '</a>' : '-') + '</div>' +
       '<div style="margin-top:8px">' + (u.length ? '<span class="pill p-red">' + esc(instLabel(u)) + ' · ยอดค้างที่ดึงมา ฿' + money(rowSnap(r)) + '</span>' : '<span class="pill p-green">ชำระครบแล้ว</span>') + ' ' + (ra ? '<span class="pill p-violet">🔔 ' + esc(ra.why) + '</span>' : '') + ' ' + (r.owner ? '<span class="pill p-blue">🔒 ผู้รับผิดชอบ: ' + esc(r.owner) + '</span>' : '<span class="pill p-amber">ยังไม่มีผู้รับผิดชอบ — ผู้ที่บันทึกการโทรก่อนจะเป็นเจ้าของ</span>') + '</div></div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap">' + (canXfer ? '<button class="btn ghost sm" data-cm-act="xferOpen" data-v="' + esc(r.so) + '">🔄 โอนเคส</button>' : '') + '<button class="btn ghost sm" data-cm-act="close">✕ ปิด</button></div></div>' +
@@ -631,5 +632,5 @@
     document.addEventListener('input', onInput);
     document.addEventListener('change', onChange);
   }
-  global.CallMenu = { init: init, render: render, _test: { toRow: toRow, snap: snap, reschedulePlan: reschedulePlan, rowFine: rowFine, rowSysFee: rowSysFee, payTiming: payTiming, setCtx: function (c) { CTX = c; }, refreshToday: refreshToday, rowsOf: buildRows, isActive: isActive, isPaidRow: isPaidRow, lastCutoff: lastCutoff, overdueInsts: overdueInsts, extraOverdue: extraOverdue } };
+  global.CallMenu = { init: init, render: render, isModalOpen: function () { return !!(UI.modal || UI.xfer); }, _test: { toRow: toRow, snap: snap, reschedulePlan: reschedulePlan, rowFine: rowFine, rowSysFee: rowSysFee, payTiming: payTiming, setCtx: function (c) { CTX = c; }, refreshToday: refreshToday, rowsOf: buildRows, isActive: isActive, isPaidRow: isPaidRow, lastCutoff: lastCutoff, overdueInsts: overdueInsts, extraOverdue: extraOverdue } };
 })(typeof window !== 'undefined' ? window : globalThis);

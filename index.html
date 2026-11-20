@@ -2223,7 +2223,12 @@
             return;
           }
           applySnapshot(parsed);
-          cloudStatus = 'online'; render();
+          cloudStatus = 'online';
+          // เมนูโทรติดตามหนี้: ระหว่างเปิดหน้าข้อมูลลูกค้า (โมดัล) อยู่ ห้าม render ทับจากการซิงก์เบื้องหลัง —
+          // เดิมทุก 12 วินาทีที่มีคนอื่นแก้ข้อมูล โมดัลถูกสร้างใหม่ทั้งหมด เลื่อนกลับบนสุด/ฟอร์มที่กรอกค้างกระตุก ดูเหมือนเด้งออก
+          // (ข้อมูลใน state อัปเดตแล้ว การกระทำถัดไปของผู้ใช้จะ render ด้วยข้อมูลล่าสุดเอง)
+          if (state.view === 'callmenu' && window.CallMenu && window.CallMenu.isModalOpen && window.CallMenu.isModalOpen()) { updateCloudStatus(); return; }
+          render();
         });
       }).catch(function () { cloudStatus = 'offline'; updateCloudStatus(); });
     }).catch(function (err) { cloudStatus = 'offline'; cloudErrorDetail = err && err.message ? err.message : String(err); updateCloudStatus(); });
@@ -16564,6 +16569,9 @@
     var prevEsignScroll = document.getElementById('esignPdfScroll');
     var esignScrollTop = prevEsignScroll ? prevEsignScroll.scrollTop : null;
     var pageScrollY = window.scrollY;
+    // โมดัลของเมนูโทรติดตามหนี้ (.cm-mask) เลื่อนในตัวเอง — เก็บ/คืนตำแหน่งเหมือนโมดัลลูกค้าเดิม
+    var prevCmMask = document.querySelector('.cm-mask');
+    var cmMaskScrollTop = prevCmMask ? prevCmMask.scrollTop : null;
     if (state.erDetail && state.view !== 'easyrestart') { state.erDetail = false; state.selectedCustomerId = null; }
     CV = computeView();
     var inner = document.getElementById('main-inner');
@@ -16591,6 +16599,10 @@
     if (esignScrollTop !== null) {
       var newEsignScroll = document.getElementById('esignPdfScroll');
       if (newEsignScroll) newEsignScroll.scrollTop = esignScrollTop;
+    }
+    if (cmMaskScrollTop) {
+      var newCmMask = document.querySelector('.cm-mask');
+      if (newCmMask) newCmMask.scrollTop = cmMaskScrollTop;
     }
     if (pageScrollY) window.scrollTo(0, pageScrollY);
   }
