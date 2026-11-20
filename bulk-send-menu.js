@@ -108,7 +108,8 @@
     });
     CTX.mails().forEach(function (m) {
       var o = orders[m.orderId]; if (!o) return;
-      row(o).mails.push(m);
+      var rm = row(o); rm.mails.push(m);
+      addAmt(rm, o, m.track); // ต้องมียอด/วันครบกำหนดด้วย ไม่งั้นแถวที่ออกจดหมายแล้ว (เหลือแค่รอส่งอีเมล) จะถูกเรียงไปท้ายสุดของรายการแล้วหายจากหน้าที่ดูอยู่
     });
     var list = order.map(function (k) { return rows[k]; });
     list.forEach(function (r) {
