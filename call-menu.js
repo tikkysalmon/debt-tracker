@@ -341,12 +341,15 @@
       var dsub = [['all', 'ทุกวัน', rows.length, sumOf(rows), calledOf(rows)]].concat(DUE_DAYS.map(function (d) { var rs = rows.filter(function (r) { return r.dueDay === d; }); return [String(d), 'ทุกวันที่ ' + d, rs.length, sumOf(rs), calledOf(rs)]; }));
       if (UI.bucket === 'due') {
         var totAmt = Math.max(1, dsub[0][3]);
+        // ยอด Target ต่อเดือนครบกำหนด (ชุดเดียวกับบันทึกภายใน) — มีเฉพาะเมื่อเลือกเดือน ไม่ใช่โหมดยอดสะสม
+        var tgtOn = UI.month !== 'latest' && !!CTX.targets, tgt = tgtOn ? CTX.targets(UI.month) : null;
         h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px">' + dsub.map(function (t) {
           var on = String(UI.dueDay) === t[0], pct = t[0] === 'all' ? 100 : t[3] / totAmt * 100;
           return '<div data-cm-act="dueDay" data-v="' + t[0] + '" style="cursor:pointer;border-radius:16px;padding:14px 16px;border:1px solid ' + (on ? 'transparent' : 'var(--line)') + ';background:' + (on ? 'linear-gradient(135deg,var(--o1),var(--o2))' : '#fff') + ';color:' + (on ? '#fff' : 'var(--ink)') + ';box-shadow:' + (on ? '0 8px 20px rgba(255,149,29,.35)' : '0 2px 8px rgba(0,0,0,.04)') + '">' +
             '<div style="font-size:12.5px;font-weight:600;opacity:' + (on ? 0.95 : 0.7) + '">' + (t[0] === 'all' ? 'ทุกวันครบกำหนด' : t[1]) + '</div>' +
             '<div class="pf" style="font-size:20px;font-weight:700;margin:6px 0 2px;color:' + (on ? '#fff' : '#e03131') + '">฿' + money(t[3]) + '</div>' +
             '<div style="font-size:12px;opacity:' + (on ? 0.95 : 0.7) + '">' + t[2] + ' ราย' + (t[0] === 'all' ? '' : ' · ' + pct.toFixed(1) + '% ของยอดรวม') + '</div>' +
+            (tgt ? '<div style="font-size:12.5px;margin-top:6px;font-weight:600;opacity:' + (on ? 1 : 0.9) + '">🎯 Target ฿' + money(t[0] === 'all' ? tgt.total : (tgt.rounds[t[0]] || 0)) + (t[0] === 'all' ? '<div style="font-size:11px;font-weight:400">ตามที่ขออนุมัติ ' + esc(tgt.no) + '</div>' : '') + '</div>' : tgtOn && t[0] === 'all' ? '<div style="font-size:11.5px;margin-top:6px;opacity:0.8">🎯 Target: ยังไม่มีการขออนุมัติของเดือนนี้</div>' : '') +
             '<div style="height:5px;border-radius:5px;background:' + (on ? 'rgba(255,255,255,.35)' : 'rgba(0,0,0,.07)') + ';margin-top:8px;overflow:hidden"><i style="display:block;height:100%;width:' + pct + '%;border-radius:5px;background:' + (on ? '#fff' : 'linear-gradient(90deg,#ff951d,#e03131)') + '"></i></div>' +
             (function () { var n = t[2], c = t[4], cp = n ? c / n * 100 : 0; return '<div style="font-size:11.5px;margin-top:8px;line-height:1.5;opacity:' + (on ? 0.95 : 0.85) + '">📞 โทรแล้ว (ตั้งแต่ 18/11/2026) <b>' + cp.toFixed(1) + '%</b> (' + c + '/' + n + ' ราย)<br>เหลือ <b>' + (n ? 100 - cp : 0).toFixed(1) + '%</b> (' + (n - c) + ' ราย)</div>'; })() + '</div>';
         }).join('') + '</div>';
